@@ -4,10 +4,15 @@ from pathlib import Path
 
 from . import config
 from .agent import Agent, sqlite_checkpointer
+from .db import create_db_engine
 from .loaders import load_text
+from .materials import MaterialStore
 from .skills import SKILLS
 
-REPL_HELP = "命令：/file <路径> [指令]  读取文件  |  /reset  开始新会话  |  /exit  退出"
+REPL_HELP = (
+    "命令：/file <路径> [指令]  读取文件  |  /add <路径>  存入材料库  |  /materials  列出材料"
+    "  |  /reset  开始新会话  |  /exit  退出"
+)
 
 
 def repl(agent: Agent, skill: str | None) -> None:
@@ -25,6 +30,20 @@ def repl(agent: Agent, skill: str | None) -> None:
         if line == "/reset":
             agent.reset()
             print(f"（已开始新会话 {agent.thread_id}）")
+            continue
+        if line.startswith("/add "):
+            path = Path(line[5:].strip())
+            try:
+                material, created = agent.store.add_file(path.name, path.read_bytes())
+            except (OSError, ValueError) as e:
+                print(f"导入失败: {e}")
+                continue
+            state = "已导入" if created else "已存在"
+            print(f"（{state}：材料 {material.id}《{material.title}》，{material.char_count} 字）")
+            continue
+        if line == "/materials":
+            for m in agent.store.list_materials():
+                print(f"  {m.id}. {m.title}（{m.char_count} 字）")
             continue
         if line.startswith("/file "):
             path, _, instruction = line[6:].strip().partition(" ")
@@ -45,7 +64,11 @@ def main() -> None:
     ap.add_argument("-t", "--thread", help="会话编号，用于恢复之前的对话")
     args = ap.parse_args()
 
-    agent = Agent(checkpointer=sqlite_checkpointer(config.DB_PATH), thread_id=args.thread)
+    agent = Agent(
+        checkpointer=sqlite_checkpointer(config.DB_PATH),
+        thread_id=args.thread,
+        store=MaterialStore(create_db_engine()),
+    )
     if args.input is None:
         repl(agent, args.skill)
         return

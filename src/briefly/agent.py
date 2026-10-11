@@ -5,7 +5,6 @@
 """
 import sqlite3
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
 
 from langchain.agents import create_agent
@@ -24,18 +23,14 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from . import config
+from .context import Context
 from .llm import create_chat_model
+from .materials import MaterialStore, split_chunks, wrap_material
 from .skills import SKILLS, read_prompt
 from .tools import DEFAULT_TOOLS
+from .tools.materials import material_tools
 
 TOOL_ROUNDS_EXCEEDED = "工具调用次数过多，已中止，请换一种方式描述需求。"
-
-
-@dataclass
-class Context:
-    """单次调用的运行时参数，不进入会话记忆。"""
-
-    skill: str | None = None
 
 
 def build_system_prompt(skill: str | None = None) -> str:
@@ -96,10 +91,15 @@ class Agent:
         tools: list[BaseTool] | None = None,
         checkpointer: BaseCheckpointSaver | None = None,
         thread_id: str | None = None,
+        store: MaterialStore | None = None,
     ) -> None:
+        self.store = store
+        tools = list(DEFAULT_TOOLS if tools is None else tools)
+        if store is not None:
+            tools += material_tools(store)
         self.graph = create_agent(
             model or create_chat_model(),
-            tools=DEFAULT_TOOLS if tools is None else tools,
+            tools=tools,
             middleware=[
                 _system_prompt,
                 _trim_history,
@@ -120,15 +120,30 @@ class Agent:
         state = self.graph.get_state({"configurable": {"thread_id": self.thread_id}})
         return state.values.get("messages", [])
 
-    def chat(self, text: str, skill: str | None = None) -> str:
+    def chat(self, text: str, skill: str | None = None, material_ids: list[int] | None = None) -> str:
         if skill and skill not in SKILLS:
             raise ValueError(f"未知技能: {skill}，可选: {', '.join(SKILLS)}")
+        if material_ids:
+            text = self._attach_materials(text, material_ids)
         result = self.graph.invoke(
             {"messages": [HumanMessage(text)]},
             config={"configurable": {"thread_id": self.thread_id}},
-            context=Context(skill=skill),
+            context=Context(skill=skill, material_ids=material_ids or None),
         )
         return result["messages"][-1].text
+
+    def _attach_materials(self, text: str, material_ids: list[int]) -> str:
+        """选中材料较短时全文附在消息后；较长时只附清单，由模型用材料工具读取。"""
+        if self.store is None:
+            raise ValueError("未配置材料库，无法使用材料")
+        materials = [self.store.get(i) for i in material_ids]
+        if sum(m.char_count for m in materials) <= config.INLINE_MATERIAL_CHARS:
+            blocks = [wrap_material(f"【材料 {m.id}《{m.title}》】", m.content) for m in materials]
+            return "\n\n".join([text, *blocks])
+        listing = "\n".join(
+            f"- 材料 {m.id}《{m.title}》：{m.char_count} 字，{len(split_chunks(m.content))} 块" for m in materials
+        )
+        return f"{text}\n\n【已选材料】内容较长未附全文，请用 search_materials / read_material 读取：\n{listing}"
 
 
 def _new_thread_id() -> str:

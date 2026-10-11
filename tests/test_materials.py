@@ -1,0 +1,254 @@
+from io import BytesIO
+
+import pytest
+from langchain_core.messages import HumanMessage, ToolMessage
+
+from briefly import config
+from briefly.agent import Agent
+from briefly.context import Context
+from briefly.db import create_db_engine
+from briefly.materials import MaterialStore, split_chunks
+from fakes import fake, text_msg, tool_msg
+
+
+@pytest.fixture
+def store():
+    engine = create_db_engine("sqlite://")
+    yield MaterialStore(engine)
+    engine.dispose()
+
+
+def run_tool(store: MaterialStore, name: str, args: dict, material_ids: list[int] | None = None) -> ToolMessage:
+    """让假模型调用一次工具，返回工具结果消息。"""
+    model = fake(tool_msg(name, args), text_msg("ok"))
+    agent = Agent(model, tools=[], store=store)
+    agent.graph.invoke(
+        {"messages": [HumanMessage("x")]},
+        config={"configurable": {"thread_id": "t"}},
+        context=Context(material_ids=material_ids),
+    )
+    return model.calls[1][-1]
+
+
+def docx_bytes(*paragraphs: str) -> bytes:
+    from docx import Document
+
+    doc = Document()
+    for text in paragraphs:
+        doc.add_paragraph(text)
+    buf = BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+# ---- 服务层 ----
+
+
+def test_add_text_and_get(store):
+    material, created = store.add_text("周报素材", "  本周完成了接口联调。  ")
+    assert created
+    got = store.get(material.id)
+    assert got.content == "本周完成了接口联调。"
+    assert got.char_count == 10 and got.source == "paste" and got.file_type is None
+
+
+def test_blank_title_falls_back_to_content(store):
+    material, _ = store.add_text("", "会议纪要：讨论了上线计划")
+    assert material.title == "会议纪要：讨论了上线计划"
+
+
+def test_empty_text_rejected(store):
+    with pytest.raises(ValueError, match="为空"):
+        store.add_text("t", "   \n ")
+
+
+def test_duplicate_content_returns_existing(store):
+    first, _ = store.add_text("a", "相同内容")
+    second, created = store.add_text("b", "相同内容")
+    assert not created and second.id == first.id
+    assert len(store.list_materials()) == 1
+
+
+def test_add_txt_file_utf8_and_gbk(store):
+    utf8, _ = store.add_file("a.txt", "完成登录模块".encode("utf-8"))
+    gbk, _ = store.add_file("b.md", "修复支付缺陷".encode("gbk"))
+    assert store.get(utf8.id).content == "完成登录模块"
+    assert store.get(gbk.id).content == "修复支付缺陷"
+    assert gbk.file_type == "md" and gbk.source == "file" and gbk.title == "b.md"
+
+
+def test_windows_line_endings_are_normalized(store):
+    material, _ = store.add_file("a.txt", "第一行\r\n第二行\r\n".encode("utf-8"))
+    assert material.content == "第一行\n第二行" and material.char_count == 7
+    _, created = store.add_text("b", "第一行\n第二行")
+    assert not created  # 换行不同不影响去重
+
+
+def test_add_docx_file(store):
+    material, _ = store.add_file("纪要.docx", docx_bytes("第一段", "第二段"))
+    assert material.content == "第一段\n第二段"
+
+
+def test_pdf_without_text_rejected(store):
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    buf = BytesIO()
+    writer.write(buf)
+    with pytest.raises(ValueError, match="扫描版"):
+        store.add_file("scan.pdf", buf.getvalue())
+
+
+def test_unsupported_and_oversized_files_rejected(store, monkeypatch):
+    with pytest.raises(ValueError, match="不支持"):
+        store.add_file("a.xlsx", b"x")
+    monkeypatch.setattr(config, "MAX_UPLOAD_MB", 0)
+    with pytest.raises(ValueError, match="上限"):
+        store.add_file("a.txt", b"x")
+
+
+def test_delete(store):
+    material, _ = store.add_text("t", "内容")
+    store.delete(material.id)
+    assert store.list_materials() == []
+    with pytest.raises(ValueError, match="不存在"):
+        store.get(material.id)
+
+
+def test_list_materials_filters_by_ids(store):
+    a, _ = store.add_text("a", "甲")
+    store.add_text("b", "乙")
+    assert [m.id for m in store.list_materials([a.id])] == [a.id]
+
+
+def test_long_text_is_split_into_overlapping_chunks(monkeypatch):
+    monkeypatch.setattr(config, "CHUNK_SIZE", 50)
+    monkeypatch.setattr(config, "CHUNK_OVERLAP", 10)
+    text = "".join(f"第{i}句内容比较长一些。" for i in range(30))
+    chunks = split_chunks(text)
+    assert len(chunks) > 1
+    assert all(len(c) <= 50 for c in chunks)
+    assert chunks[0].endswith("。")  # 优先在句号处切分
+
+
+def test_headings_are_not_split_into_tiny_chunks(monkeypatch):
+    monkeypatch.setattr(config, "CHUNK_SIZE", 100)
+    monkeypatch.setattr(config, "CHUNK_OVERLAP", 0)
+    day = "\n".join(["这一行是十个字的内容。"] * 13)  # 每天约 140 字，略超一块
+    text = "\n\n".join(f"## 周{d}\n\n{day}" for d in "一二三")
+    chunks = split_chunks(text)
+    assert all(len(c) > 20 for c in chunks)
+    headings = [c for c in chunks if c.startswith("## ")]
+    assert headings and all("这一行" in c for c in headings)  # 标题与正文在同一块
+
+
+def test_search_ranks_by_hit_count(store):
+    a, _ = store.add_text("a", "接口联调完成。")
+    b, _ = store.add_text("b", "接口文档更新，接口测试通过。")
+    hits = store.search("接口")
+    assert [h.material_id for h in hits] == [b.id, a.id]
+    assert hits[0].hits == 2 and hits[0].chunk == 1
+
+
+def test_search_multiple_keywords_and_case(store):
+    store.add_text("a", "Release 计划已确认")
+    store.add_text("b", "无关内容")
+    assert len(store.search("release 预算")) == 1
+
+
+def test_search_snippet_is_trimmed(store):
+    store.add_text("a", "甲" * 300 + "关键" + "乙" * 300)
+    snippet = store.search("关键")[0].snippet
+    assert "关键" in snippet and snippet.startswith("…") and snippet.endswith("…")
+    assert len(snippet) < 300
+
+
+# ---- 工具 ----
+
+
+def test_list_materials_tool(store):
+    store.add_text("周报素材", "内容")
+    result = run_tool(store, "list_materials", {})
+    assert "材料 1《周报素材》" in result.content and "1 块" in result.content
+
+
+def test_read_material_tool_wraps_content(store):
+    material, _ = store.add_text("t", "本周完成接口联调")
+    result = run_tool(store, "read_material", {"material_id": material.id})
+    assert "第 1/1 块" in result.content
+    assert "【材料开始】\n本周完成接口联调\n【材料结束】" in result.content
+
+
+def test_read_material_chunk_out_of_range(store):
+    material, _ = store.add_text("t", "内容")
+    result = run_tool(store, "read_material", {"material_id": material.id, "chunk": 2})
+    assert "工具执行失败" in result.content and "共 1 块" in result.content
+
+
+def test_search_materials_tool(store):
+    store.add_text("t", "接口联调完成")
+    result = run_tool(store, "search_materials", {"keywords": "联调"})
+    assert "第 1 块，命中 1 次" in result.content
+    assert "没有找到" in run_tool(store, "search_materials", {"keywords": "预算"}).content
+
+
+def test_tools_respect_selected_scope(store):
+    a, _ = store.add_text("a", "接口联调")
+    b, _ = store.add_text("b", "接口测试")
+    listed = run_tool(store, "list_materials", {}, material_ids=[a.id])
+    assert "《a》" in listed.content and "《b》" not in listed.content
+    denied = run_tool(store, "read_material", {"material_id": b.id}, material_ids=[a.id])
+    assert "不在用户本次选择的范围内" in denied.content
+    searched = run_tool(store, "search_materials", {"keywords": "接口"}, material_ids=[a.id])
+    assert "《a》" in searched.content and "《b》" not in searched.content
+    denied = run_tool(store, "search_materials", {"keywords": "接口", "material_ids": [b.id]}, material_ids=[a.id])
+    assert "不在用户本次选择的范围内" in denied.content
+
+
+def test_runtime_is_hidden_from_model_schema(store):
+    from briefly.tools.materials import material_tools
+
+    for t in material_tools(store):
+        assert "runtime" not in t.tool_call_schema.model_json_schema().get("properties", {})
+
+
+# ---- 智能体 ----
+
+
+def test_short_materials_are_inlined(store):
+    a, _ = store.add_text("素材A", "完成登录模块")
+    model = fake(text_msg("ok"))
+    Agent(model, tools=[], store=store).chat("写周报", skill="weekly", material_ids=[a.id])
+    message = model.calls[0][-1].content
+    assert message.startswith("写周报")
+    assert "【材料 1《素材A》】\n【材料开始】\n完成登录模块\n【材料结束】" in message
+
+
+def test_long_materials_are_listed_not_inlined(store, monkeypatch):
+    monkeypatch.setattr(config, "INLINE_MATERIAL_CHARS", 5)
+    a, _ = store.add_text("素材A", "完成登录模块和支付模块")
+    model = fake(text_msg("ok"))
+    Agent(model, tools=[], store=store).chat("写周报", material_ids=[a.id])
+    message = model.calls[0][-1].content
+    assert "【已选材料】" in message and "材料 1《素材A》" in message
+    assert "完成登录模块" not in message
+
+
+def test_selecting_missing_material_raises(store):
+    with pytest.raises(ValueError, match="不存在"):
+        Agent(fake(), tools=[], store=store).chat("x", material_ids=[99])
+
+
+def test_search_then_read_then_answer(store, monkeypatch):
+    monkeypatch.setattr(config, "INLINE_MATERIAL_CHARS", 0)
+    a, _ = store.add_text("周报素材", "周一：接口联调。周三：修复支付缺陷。")
+    model = fake(
+        tool_msg("search_materials", {"keywords": "支付"}, id="s"),
+        tool_msg("read_material", {"material_id": a.id, "chunk": 1}, id="r"),
+        text_msg("本周修复了支付缺陷。"),
+    )
+    reply = Agent(model, tools=[], store=store).chat("写周报", material_ids=[a.id])
+    assert reply == "本周修复了支付缺陷。"
+    assert "命中 1 次" in model.calls[1][-1].content
+    assert "周三：修复支付缺陷" in model.calls[2][-1].content

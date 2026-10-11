@@ -1,7 +1,4 @@
-from typing import Any
-
 import pytest
-from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -9,31 +6,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from briefly import config
 from briefly.agent import Agent, build_system_prompt, trim_history
 from briefly.skills import SKILLS
-
-
-class FakeModel(GenericFakeChatModel):
-    """按顺序返回预设响应，并记录每次调用时收到的消息。"""
-
-    calls: list = []
-
-    def bind_tools(self, tools: Any, **kwargs: Any) -> "FakeModel":
-        return self
-
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        self.calls.append(list(messages))
-        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
-
-
-def fake(*responses: AIMessage) -> FakeModel:
-    return FakeModel(messages=iter(responses), calls=[])
-
-
-def text_msg(text: str) -> AIMessage:
-    return AIMessage(text)
-
-
-def tool_msg(name: str, args: dict, id: str = "t1") -> AIMessage:
-    return AIMessage("", tool_calls=[{"name": name, "args": args, "id": id}])
+from fakes import fake, text_msg, tool_msg
 
 
 def date_tool(fail: bool = False):
