@@ -1,0 +1,14 @@
+.env
+.venv/
+__pycache__/
+*.egg-info/
+data/inputs/*
+data/outputs/*
+!data/inputs/.gitkeep
+!data/outputs/.gitkeep
+
+# 个人资料与报告文件夹
+files/
+
+# 项目说明（仅本地使用）
+AGENTS.md
