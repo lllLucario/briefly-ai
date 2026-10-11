@@ -2,15 +2,16 @@ import argparse
 import sys
 from pathlib import Path
 
-from .agent import Agent
+from . import config
+from .agent import Agent, sqlite_checkpointer
 from .loaders import load_text
 from .skills import SKILLS
 
-REPL_HELP = "命令：/file <路径> [指令]  读取文件  |  /reset  清空对话  |  /exit  退出"
+REPL_HELP = "命令：/file <路径> [指令]  读取文件  |  /reset  开始新会话  |  /exit  退出"
 
 
 def repl(agent: Agent, skill: str | None) -> None:
-    print(f"Briefly 已就绪。{REPL_HELP}")
+    print(f"Briefly 已就绪（会话 {agent.thread_id}，可用 -t 恢复）。{REPL_HELP}")
     while True:
         try:
             line = input("你> ").strip()
@@ -23,7 +24,7 @@ def repl(agent: Agent, skill: str | None) -> None:
             break
         if line == "/reset":
             agent.reset()
-            print("（对话已清空）")
+            print(f"（已开始新会话 {agent.thread_id}）")
             continue
         if line.startswith("/file "):
             path, _, instruction = line[6:].strip().partition(" ")
@@ -41,9 +42,10 @@ def main() -> None:
     ap.add_argument("-s", "--skill", choices=list(SKILLS), help="指定能力；不指定则由模型判断")
     ap.add_argument("-e", "--extra", default="", help="额外要求，如“控制在200字内”")
     ap.add_argument("-o", "--output", help="结果写入文件，默认打印")
+    ap.add_argument("-t", "--thread", help="会话编号，用于恢复之前的对话")
     args = ap.parse_args()
 
-    agent = Agent()
+    agent = Agent(checkpointer=sqlite_checkpointer(config.DB_PATH), thread_id=args.thread)
     if args.input is None:
         repl(agent, args.skill)
         return

@@ -1,42 +1,50 @@
-import json
-from types import SimpleNamespace as NS
+from typing import Any
 
 import pytest
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import tool
+from langgraph.checkpoint.memory import InMemorySaver
 
 from briefly import config
-from briefly.agent import Agent
+from briefly.agent import Agent, build_system_prompt, trim_history
 from briefly.skills import SKILLS
-from briefly.tools import Tool
 
 
-def text_msg(text: str):
-    return NS(content=text, tool_calls=None)
+class FakeModel(GenericFakeChatModel):
+    """按顺序返回预设响应，并记录每次调用时收到的消息。"""
+
+    calls: list = []
+
+    def bind_tools(self, tools: Any, **kwargs: Any) -> "FakeModel":
+        return self
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        self.calls.append(list(messages))
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
 
 
-def tool_msg(name: str, args: dict, id: str = "t1"):
-    call = NS(id=id, function=NS(name=name, arguments=json.dumps(args)))
-    return NS(content=None, tool_calls=[call])
+def fake(*responses: AIMessage) -> FakeModel:
+    return FakeModel(messages=iter(responses), calls=[])
 
 
-class FakeLLM:
-    """按顺序返回预设响应，并记录每次调用时收到的内容。"""
-
-    def __init__(self, *responses):
-        self.responses = list(responses)
-        self.calls = []
-
-    def create(self, messages, tools=None):
-        self.calls.append({"messages": list(messages), "tools": tools})
-        return self.responses.pop(0)
+def text_msg(text: str) -> AIMessage:
+    return AIMessage(text)
 
 
-def date_tool(fail: bool = False) -> Tool:
-    def func(**kw):
+def tool_msg(name: str, args: dict, id: str = "t1") -> AIMessage:
+    return AIMessage("", tool_calls=[{"name": name, "args": args, "id": id}])
+
+
+def date_tool(fail: bool = False):
+    @tool
+    def get_current_date() -> str:
+        """d"""
         if fail:
             raise RuntimeError("boom")
         return "2026-10-08 星期四"
 
-    return Tool("get_current_date", "d", {"type": "object", "properties": {}}, func)
+    return get_current_date
 
 
 def test_prompts_exist_for_all_skills():
@@ -45,7 +53,7 @@ def test_prompts_exist_for_all_skills():
 
 
 def test_system_prompt_contains_base_and_all_skills():
-    prompt = Agent(FakeLLM()).system_prompt()
+    prompt = build_system_prompt()
     assert "# 角色" in prompt
     for skill in SKILLS.values():
         assert f"（{skill.name}）" in prompt
@@ -53,96 +61,135 @@ def test_system_prompt_contains_base_and_all_skills():
 
 
 def test_system_message_comes_first_and_history_excludes_it():
-    llm = FakeLLM(text_msg("ok"))
-    agent = Agent(llm, tools=[])
+    model = fake(text_msg("ok"))
+    agent = Agent(model, tools=[])
     agent.chat("hi")
-    assert llm.calls[0]["messages"][0]["role"] == "system"
-    assert all(m["role"] != "system" for m in agent.history)
+    assert isinstance(model.calls[0][0], SystemMessage)
+    assert not any(isinstance(m, SystemMessage) for m in agent.history)
 
 
 def test_forced_skill_is_added_to_system_prompt():
-    llm = FakeLLM(text_msg("ok"))
-    Agent(llm, tools=[]).chat("hi", skill="todo")
-    system = llm.calls[0]["messages"][0]["content"]
+    model = fake(text_msg("ok"))
+    Agent(model, tools=[]).chat("hi", skill="todo")
+    system = model.calls[0][0].content
     assert "本次任务" in system and "待办事项梳理" in system
+
+
+def test_forced_skill_applies_only_to_that_turn():
+    model = fake(text_msg("a"), text_msg("b"))
+    agent = Agent(model, tools=[])
+    agent.chat("x", skill="todo")
+    agent.chat("y")
+    assert "本次任务" not in model.calls[1][0].content
 
 
 def test_unknown_skill_rejected():
     with pytest.raises(ValueError):
-        Agent(FakeLLM(), tools=[]).chat("hi", skill="nope")
+        Agent(fake(), tools=[]).chat("hi", skill="nope")
 
 
 def test_history_is_kept_across_turns():
-    llm = FakeLLM(text_msg("第一条回复"), text_msg("第二条回复"))
-    agent = Agent(llm, tools=[])
+    model = fake(text_msg("第一条回复"), text_msg("第二条回复"))
+    agent = Agent(model, tools=[])
     agent.chat("总结这个")
     agent.chat("再短一点")
-    msgs = llm.calls[1]["messages"]
-    assert [m["role"] for m in msgs] == ["system", "user", "assistant", "user"]
-    assert msgs[1]["content"] == "总结这个"
+    msgs = model.calls[1]
+    assert [type(m) for m in msgs] == [SystemMessage, HumanMessage, AIMessage, HumanMessage]
+    assert msgs[1].content == "总结这个"
 
 
-def test_reset_clears_history():
-    agent = Agent(FakeLLM(text_msg("a")), tools=[])
+def test_reset_starts_new_thread():
+    agent = Agent(fake(text_msg("a")), tools=[])
+    old = agent.thread_id
     agent.chat("x")
     agent.reset()
+    assert agent.thread_id != old
     assert agent.history == []
 
 
+def test_history_survives_new_agent_with_same_thread():
+    saver = InMemorySaver()
+    Agent(fake(text_msg("a")), tools=[], checkpointer=saver, thread_id="s1").chat("x")
+    model = fake(text_msg("b"))
+    Agent(model, tools=[], checkpointer=saver, thread_id="s1").chat("y")
+    assert [m.content for m in model.calls[0][1:]] == ["x", "a", "y"]
+
+
 def test_tool_loop_runs_tool_and_returns_final_text():
-    llm = FakeLLM(tool_msg("get_current_date", {}), text_msg("下周五是 10-16"))
-    agent = Agent(llm, tools=[date_tool()])
+    model = fake(tool_msg("get_current_date", {}), text_msg("下周五是 10-16"))
+    agent = Agent(model, tools=[date_tool()])
     assert agent.chat("下周五是几号") == "下周五是 10-16"
-    msgs = llm.calls[1]["messages"]
-    assert msgs[-2]["tool_calls"][0]["function"]["name"] == "get_current_date"
-    assert msgs[-1] == {"role": "tool", "tool_call_id": "t1", "content": "2026-10-08 星期四"}
-
-
-def test_tool_spec_uses_openai_function_format():
-    spec = date_tool().spec()
-    assert spec["type"] == "function"
-    assert spec["function"]["name"] == "get_current_date"
+    msgs = model.calls[1]
+    assert msgs[-2].tool_calls[0]["name"] == "get_current_date"
+    assert isinstance(msgs[-1], ToolMessage)
+    assert msgs[-1].tool_call_id == "t1" and msgs[-1].content == "2026-10-08 星期四"
 
 
 def test_tool_error_is_reported_to_model_not_raised():
-    llm = FakeLLM(tool_msg("get_current_date", {}), text_msg("工具出错了"))
-    agent = Agent(llm, tools=[date_tool(fail=True)])
+    model = fake(tool_msg("get_current_date", {}), text_msg("工具出错了"))
+    agent = Agent(model, tools=[date_tool(fail=True)])
     assert agent.chat("x") == "工具出错了"
-    result = llm.calls[1]["messages"][-1]
-    assert "工具执行失败" in result["content"] and "boom" in result["content"]
+    result = model.calls[1][-1]
+    assert "工具执行失败" in result.content and "boom" in result.content
 
 
 def test_unknown_tool_is_reported_as_error():
-    llm = FakeLLM(tool_msg("nope", {}), text_msg("ok"))
-    Agent(llm, tools=[]).chat("x")
-    assert "未知工具" in llm.calls[1]["messages"][-1]["content"]
+    model = fake(tool_msg("nope", {}), text_msg("ok"))
+    Agent(model, tools=[date_tool()]).chat("x")
+    result = model.calls[1][-1]
+    assert isinstance(result, ToolMessage) and "nope" in result.content
 
 
 def test_bad_tool_arguments_are_reported_as_error():
-    call = NS(id="t1", function=NS(name="get_current_date", arguments="{not json"))
-    llm = FakeLLM(NS(content=None, tool_calls=[call]), text_msg("ok"))
-    Agent(llm, tools=[date_tool()]).chat("x")
-    assert "工具执行失败" in llm.calls[1]["messages"][-1]["content"]
+    @tool
+    def add_days(days: int) -> str:
+        """d"""
+        return str(days)
+
+    model = fake(tool_msg("add_days", {"days": "abc"}), text_msg("ok"))
+    Agent(model, tools=[add_days]).chat("x")
+    result = model.calls[1][-1]
+    assert isinstance(result, ToolMessage) and result.status == "error"
 
 
 def test_tool_rounds_are_capped(monkeypatch):
     monkeypatch.setattr(config, "MAX_TOOL_ROUNDS", 2)
-    llm = FakeLLM(*[tool_msg("get_current_date", {}, id=f"t{i}") for i in range(5)])
-    reply = Agent(llm, tools=[date_tool()]).chat("x")
-    assert len(llm.calls) == 2
+    model = fake(*[tool_msg("get_current_date", {}, id=f"t{i}") for i in range(5)])
+    reply = Agent(model, tools=[date_tool()]).chat("x")
+    assert len(model.calls) == 2
     assert "已中止" in reply
 
 
-def test_trim_history_starts_at_user_message(monkeypatch):
-    monkeypatch.setattr(config, "MAX_HISTORY", 4)
-    agent = Agent(FakeLLM(), tools=[])
-    agent.history = [
-        {"role": "user", "content": "u1"},
-        {"role": "assistant", "content": "", "tool_calls": [{"id": "t"}]},
-        {"role": "tool", "tool_call_id": "t", "content": "r"},
-        {"role": "assistant", "content": "a1"},
-        {"role": "user", "content": "u2"},
-        {"role": "assistant", "content": "a2"},
+def test_tool_round_cap_resets_each_turn(monkeypatch):
+    monkeypatch.setattr(config, "MAX_TOOL_ROUNDS", 2)
+    model = fake(tool_msg("get_current_date", {}), text_msg("a"), text_msg("b"))
+    agent = Agent(model, tools=[date_tool()])
+    agent.chat("x")
+    assert agent.chat("y") == "b"
+
+
+def test_trim_history_starts_at_user_message():
+    history = [
+        HumanMessage("u1"),
+        AIMessage("", tool_calls=[{"name": "t", "args": {}, "id": "t"}]),
+        ToolMessage("r", tool_call_id="t"),
+        AIMessage("a1"),
+        HumanMessage("u2"),
+        AIMessage("a2"),
     ]
-    agent._trim_history()
-    assert agent.history[0] == {"role": "user", "content": "u2"}
+    assert trim_history(history, 4) == history[4:]
+
+
+def test_trim_history_keeps_current_turn_when_it_is_long():
+    history = [HumanMessage("u1"), AIMessage("a1"), HumanMessage("u2"), *[AIMessage("x")] * 5]
+    assert trim_history(history, 3)[0].content == "u2"
+
+
+def test_model_receives_trimmed_history(monkeypatch):
+    monkeypatch.setattr(config, "MAX_HISTORY", 3)
+    model = fake(text_msg("a1"), text_msg("a2"), text_msg("a3"))
+    agent = Agent(model, tools=[])
+    for text in ["u1", "u2", "u3"]:
+        agent.chat(text)
+    assert [m.content for m in model.calls[2][1:]] == ["u2", "a2", "u3"]
+    assert len(agent.history) == 6  # checkpointer 中仍是完整历史

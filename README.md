@@ -5,24 +5,27 @@
 ## 架构
 
 ```
-CLI (cli.py) ──► Agent (agent.py) ──► LLM (llm.py)
-   │                 │ 会话历史 + 工具调用循环
-   └─ loaders.py     ├─ prompts/：base.md（角色与规则）+ 五个能力说明
-      txt/md/docx/pdf └─ tools/：模型可调用的工具（飞书等集成放这里）
+CLI (cli.py) ──► Agent (agent.py) ──► LangChain create_agent（LangGraph）
+   │                 │                  ├─ llm.py：OpenAI 兼容模型（ChatOpenAI）
+   │                 │                  ├─ tools/：@tool 工具（飞书等集成放这里）
+   │                 │                  └─ checkpointer：会话记忆存 SQLite
+   └─ loaders.py     └─ prompts/：base.md（角色与规则）+ 五个能力说明
+      txt/md/docx/pdf
 ```
 
 ```
 src/briefly/
 ├── cli.py        命令行入口
-├── agent.py      单智能体：chat() 带会话记忆与工具调用循环
-├── llm.py        Anthropic 客户端封装
+├── agent.py      单智能体：create_agent + 中间件（提示词、历史裁剪、工具轮数上限）
+├── llm.py        模型工厂（唯一创建模型的地方）
 ├── loaders.py    文件 → 文本
 ├── config.py     环境变量配置
 ├── skills/       能力注册表
 ├── tools/        工具注册表（目前只有 get_current_date）
 └── prompts/      base.md + 五个能力说明（summarize/minutes/weekly/todo/polish）
-tests/            用 FakeLLM 测试，不消耗 API
-data/             inputs/ 与 outputs/（内容不入库）```
+tests/            用 LangChain 假聊天模型测试，不消耗 API
+data/             inputs/、outputs/ 与会话记忆库 briefly.db（内容不入库）
+```
 
 新增技能：在 `prompts/` 加 `<name>.md`，并在 `skills/__init__.py` 登记一行。
 
@@ -36,6 +39,7 @@ copy .env.example .env   # 填入 BRIEFLY_API_KEY / BRIEFLY_BASE_URL / BRIEFLY_M
 briefly data/inputs/meeting.txt -s minutes
 briefly data/inputs/notes.md            # 不指定能力则由模型判断
 briefly                                 # 对话模式，支持多轮（/file、/reset、/exit）
+briefly -t <会话编号>                    # 恢复之前的会话（记忆存在 data/briefly.db）
 pytest
 ```
 

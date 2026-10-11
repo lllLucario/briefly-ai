@@ -15,3 +15,5 @@ MAX_TOKENS = int(os.getenv("BRIEFLY_MAX_TOKENS", "0")) or None
 MAX_HISTORY = int(os.getenv("BRIEFLY_MAX_HISTORY", "40"))
 # 单次提问中，模型最多连续调用几轮工具
 MAX_TOOL_ROUNDS = int(os.getenv("BRIEFLY_MAX_TOOL_ROUNDS", "5"))
+# 会话记忆（LangGraph checkpointer）所在的 SQLite 文件
+DB_PATH = os.getenv("BRIEFLY_DB_PATH", "data/briefly.db")
