@@ -48,7 +48,7 @@ copy .env.example .env   # 填入 BRIEFLY_API_KEY / BRIEFLY_BASE_URL / BRIEFLY_M
 
 briefly data/inputs/meeting.txt -s minutes
 briefly data/inputs/notes.md            # 不指定能力则由模型判断
-briefly                                 # 对话模式，支持多轮（/file、/add、/materials、/reset、/exit）
+briefly                                 # 对话模式，支持多轮（/file、/add、/materials、/context、/reset、/exit）
 briefly -t <会话编号>                    # 恢复之前的会话（记忆存在 data/briefly.db）
 briefly-api                             # 启动后端服务（材料管理、周报生成），接口文档：http://127.0.0.1:8000/docs
 pytest

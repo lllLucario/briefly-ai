@@ -12,6 +12,7 @@ from langchain_core.language_models import BaseChatModel
 from sqlalchemy import JSON, Date, DateTime, Integer, String, Text, select, update
 from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
 
+from .context_store import ContextStore
 from .db import Base
 from .llm import create_chat_model
 from .materials import MaterialNotFound, MaterialStore
@@ -80,6 +81,7 @@ class WeeklyService:
         self.store = store
         self._model_factory = model_factory
         self._session = sessionmaker(store.engine, expire_on_commit=False)
+        self.cache = ContextStore(store.engine)  # 逐块提取结果缓存：重新生成、中断后重跑时不重算
         self._fail_interrupted()
 
     def _fail_interrupted(self) -> None:
@@ -148,7 +150,7 @@ class WeeklyService:
             warnings += [f"《{material.title}》：{w}" for w in material.parse_report.get("warnings", [])]
 
         period = f"{report.period_start.isoformat()} 至 {report.period_end.isoformat()}"
-        extraction = extract_items(model, sources, focus=report.brief, period=period)
+        extraction = extract_items(model, sources, focus=report.brief, period=period, cache=self.cache)
         for failed in extraction.failed:
             material_id, chunk = failed["source"].split("-")
             warnings.append(f"材料 {material_id} 第 {chunk} 块处理失败，未纳入：{failed['error'][:80]}")
@@ -183,6 +185,7 @@ class WeeklyService:
         generation = {
             "chunks_total": extraction.total,
             "chunks_processed": extraction.processed,
+            "chunks_cached": extraction.cached,
             "failed": extraction.failed,
             "dropped": extraction.dropped,
             "unverified_numbers": numbers,

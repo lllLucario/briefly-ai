@@ -5,14 +5,41 @@ from pathlib import Path
 from . import config
 from .agent import Agent, sqlite_checkpointer
 from .db import create_db_engine
-from .loaders import load_text
 from .materials import MaterialStore
 from .skills import SKILLS
 
 REPL_HELP = (
-    "命令：/file <路径> [指令]  读取文件  |  /add <路径>  存入材料库  |  /materials  列出材料"
-    "  |  /reset  开始新会话  |  /exit  退出"
+    "命令：/file <路径> [指令]  读取文件并处理  |  /add <路径>  存入材料库  |  /materials  列出材料"
+    "  |  /context  查看上下文用量  |  /reset  开始新会话  |  /exit  退出"
 )
+NO_INSTRUCTION = "（用户只提供了文件，没有说明要做什么）"
+
+
+def add_file(agent: Agent, path: str | Path):
+    """文件存入材料库（按内容去重，同一文件不重复解析入库）。"""
+    path = Path(path)
+    return agent.store.add_file(path.name, path.read_bytes())
+
+
+def show_context(agent: Agent) -> None:
+    """最近一次对话调用的上下文构成、会话记忆版本。"""
+    rows = [r for r in agent.context_store.usage(thread_id=agent.thread_id, limit=20) if r.task_type == "chat"]
+    if not rows:
+        print("（本会话还没有调用记录）")
+    else:
+        r = rows[0]
+        actual = f"，接口实际 {r.input_tokens}" if r.input_tokens else ""
+        print(
+            f"  上次调用：估算 {r.estimated_tokens} tokens{actual}（上限 {r.context_limit}）\n"
+            f"  系统 {r.system_tokens} / 工具定义 {r.tool_schema_tokens} / 记忆 {r.memory_tokens} / "
+            f"历史 {r.history_tokens}（{r.history_turns} 轮） / 当前轮 {r.current_tokens}"
+            f"（其中材料 {r.material_tokens}、工具结果 {r.tool_result_tokens}）"
+        )
+        if r.omitted_turns:
+            print(f"  有 {r.omitted_turns} 轮历史未放进上下文")
+    memory = agent.context_store.latest_memory(agent.thread_id)
+    if memory:
+        print(f"  会话记忆 v{memory.version}：已压缩 {memory.data.get('compacted_turns', 0)} 轮")
 
 
 def repl(agent: Agent, skill: str | None) -> None:
@@ -31,10 +58,12 @@ def repl(agent: Agent, skill: str | None) -> None:
             agent.reset()
             print(f"（已开始新会话 {agent.thread_id}）")
             continue
+        if line == "/context":
+            show_context(agent)
+            continue
         if line.startswith("/add "):
-            path = Path(line[5:].strip())
             try:
-                material, created = agent.store.add_file(path.name, path.read_bytes())
+                material, created = add_file(agent, line[5:].strip())
             except (OSError, ValueError) as e:
                 print(f"导入失败: {e}")
                 continue
@@ -45,14 +74,17 @@ def repl(agent: Agent, skill: str | None) -> None:
             for m in agent.store.list_materials():
                 print(f"  {m.id}. {m.title}（{m.char_count} 字）")
             continue
+        material_ids = None
         if line.startswith("/file "):
+            # 文件存入材料库，按材料处理：短文件全文附进消息，长文件只附清单、由材料工具按需读取
             path, _, instruction = line[6:].strip().partition(" ")
             try:
-                line = f"{instruction}\n\n{load_text(path)}".strip()
+                material, _ = add_file(agent, path)
             except (OSError, ValueError) as e:
                 print(f"读取失败: {e}")
                 continue
-        print(f"助手> {agent.chat(line, skill)}\n")
+            line, material_ids = instruction.strip() or NO_INSTRUCTION, [material.id]
+        print(f"助手> {agent.chat(line, skill, material_ids=material_ids)}\n")
 
 
 def main() -> None:
@@ -73,10 +105,14 @@ def main() -> None:
         repl(agent, args.skill)
         return
 
-    text = sys.stdin.read() if args.input == "-" else load_text(args.input)
-    if args.extra:
-        text = f"{text}\n\n【额外要求】{args.extra}"
-    result = agent.chat(text, args.skill)
+    if args.input == "-":
+        text = sys.stdin.read()
+        if args.extra:
+            text = f"{text}\n\n【额外要求】{args.extra}"
+        result = agent.chat(text, args.skill)  # 过长的输入在 chat 里转存为材料
+    else:
+        material, _ = add_file(agent, args.input)
+        result = agent.chat(args.extra or NO_INSTRUCTION, args.skill, material_ids=[material.id])
 
     if args.output:
         Path(args.output).write_text(result, encoding="utf-8")

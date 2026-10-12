@@ -1,23 +1,23 @@
 """单智能体：一份总提示词 + 五项能力说明，由模型自行判断任务。
 
 基于 LangChain create_agent：工具调用循环由框架负责，会话记忆存在 LangGraph checkpointer 中，
-以 thread_id 区分会话。本模块只补充项目自己的规则：动态提示词、上下文管理（清理旧工具结果、按 token 裁剪、
-超长兜底，都只影响发给模型的内容）、工具轮数上限、工具报错回传。
+以 thread_id 区分会话。本模块只补充项目自己的规则：动态提示词、上下文管理、工具轮数上限、工具报错回传。
+
+上下文管理（详见 files/plan-context.md）：
+- 输入预检（chat）：用户一次输入过长时，正文存为材料，消息里只留开头结尾原文和引用。
+- 会话压缩（chat 前，compaction.py）：未压缩的历史超过阈值时，把较早的对话整理进会话记忆。
+- Context Builder（每次调用模型前，context_builder.py）：系统提示词 + 记忆 + 任务状态 + 最近几轮 + 当前轮，统一预算检查。
+- 工具预算（每次执行工具前后，tool_budget.py）：预留 → 执行 → 结算，并行调用不能绕过单轮总预算。
+以上都只影响发给模型的内容，checkpointer 里保存完整历史。
 """
+import logging
 import sqlite3
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import (
-    ClearToolUsesEdit,
-    ContextEditingMiddleware,
-    ModelRequest,
-    ToolErrorMiddleware,
-    before_model,
-    dynamic_prompt,
-    wrap_model_call,
-)
+from langchain.agents.middleware import ModelRequest, ToolErrorMiddleware, before_model, dynamic_prompt
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langchain_core.tools import BaseTool
@@ -26,19 +26,31 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from . import config
+from .compaction import Compactor
 from .context import Context
+from .context_builder import CONTEXT_OVERFLOW, ContextBuilder
+from .context_store import ContextStore
+from .db import create_db_engine
 from .llm import create_chat_model
 from .materials import MaterialStore, wrap_material
 from .skills import SKILLS, read_prompt
+from .tokens import TokenCounter
+from .tool_budget import ToolBudgetMiddleware, turn_key
 from .tools import DEFAULT_TOOLS
-from .tokens import count_message_tokens, estimate_tokens
+from .tools.context import context_tools
 from .tools.materials import material_tools
 
+__all__ = ["Agent", "CONTEXT_OVERFLOW", "TOOL_ROUNDS_EXCEEDED", "build_system_prompt", "sqlite_checkpointer"]
+
+log = logging.getLogger(__name__)
+
 TOOL_ROUNDS_EXCEEDED = "工具调用次数过多，已中止，请换一种方式描述需求。"
-CONTEXT_OVERFLOW = (
-    "这次对话和材料的内容超出了模型一次能处理的长度。请开启新会话（/reset），"
-    "或让我用 summarize_materials 先把材料提炼成要点，再继续。"
+INPUT_TOO_LONG = (
+    "这段输入约 {tokens} tokens，超出单次可直接处理的长度（{limit}），且当前没有配置材料库，无法转存。"
+    "请把内容存成文件后用 /add 导入，或分段发送。"
 )
+INPUT_HEAD_CHARS = 600  # 长输入转存为材料后，消息里保留的开头、结尾原文（用户的要求通常写在这两处）
+INPUT_TAIL_CHARS = 400
 
 
 def build_system_prompt(skill: str | None = None) -> str:
@@ -48,61 +60,10 @@ def build_system_prompt(skill: str | None = None) -> str:
     return "\n\n".join(parts)
 
 
-def trim_history(messages: list[AnyMessage], budget: int) -> list[AnyMessage]:
-    """从最新往前保留，总量不超过 budget tokens；首条必须是用户消息，避免 tool_calls 与工具结果被拆开。
-
-    当前这一轮（最后一条用户消息起）即使超出预算也完整保留。
-    """
-    sizes = [count_message_tokens([m]) for m in messages]
-    if sum(sizes) <= budget:
-        return messages
-    human = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
-    if not human:
-        return messages
-    start = human[-1]
-    for i in reversed(human[:-1]):
-        if sum(sizes[i:]) > budget:
-            break
-        start = i
-    return messages[start:]
-
-
-def _is_context_overflow(error: Exception) -> bool:
-    text = str(error).lower()
-    return "context" in text and any(k in text for k in ("length", "too long", "maximum", "exceed"))
-
-
 @dynamic_prompt
 def _system_prompt(request: ModelRequest) -> str:
     context = request.runtime.context
     return build_system_prompt(context.skill if context else None)
-
-
-@wrap_model_call
-def _trim_history(request: ModelRequest, handler):
-    # 只裁剪发给模型的消息，checkpointer 里仍保存完整历史
-    return handler(request.override(messages=trim_history(request.messages, config.HISTORY_TOKENS)))
-
-
-@wrap_model_call
-def _context_overflow(request: ModelRequest, handler):
-    """兜底：前面的清理和裁剪之后接口仍报上下文超长时，给用户明确提示，不让程序崩溃。"""
-    try:
-        return handler(request)
-    except Exception as e:
-        if _is_context_overflow(e):
-            return AIMessage(CONTEXT_OVERFLOW)
-        raise
-
-
-def _clear_old_tool_results() -> ContextEditingMiddleware:
-    """发给模型的消息过长时，把较早的工具结果（多为材料原文）换成占位文字；保存的历史不受影响。"""
-    edit = ClearToolUsesEdit(
-        trigger=config.CONTEXT_CLEAR_TOKENS,
-        keep=3,
-        placeholder="[已清理：较早时工具返回的材料内容。需要时请重新调用工具读取]",
-    )
-    return ContextEditingMiddleware(edits=[edit], token_counter=count_message_tokens)
 
 
 @before_model(can_jump_to=["end"])
@@ -134,21 +95,35 @@ class Agent:
         checkpointer: BaseCheckpointSaver | None = None,
         thread_id: str | None = None,
         store: MaterialStore | None = None,
+        context_store: ContextStore | None = None,
     ) -> None:
+        """context_store 存会话记忆、超大工具结果和观测数据；不传时与材料库同库，都没有时用内存库。"""
         self.store = store
         model = model or create_chat_model()
+        self.model_name = getattr(model, "model_name", None) or config.MODEL
+        self.context_store = context_store or ContextStore(store.engine if store else _fallback_engine())
+        self.counter = TokenCounter(self.model_name)
+        scale = self.context_store.token_scale(self.model_name)
+        if scale:  # 用历史调用的实际用量初始化校准比例
+            self.counter.scale = min(max(scale, 1.0), config.TOKEN_SCALE_MAX)
+        self.compactor = Compactor(model, self.context_store, self.counter, self.model_name)
+        self.tool_budget = ToolBudgetMiddleware(self.counter, self.context_store)
+        self.builder = ContextBuilder(
+            self.counter, self.context_store, self.compactor, self.model_name, task_state=self._task_state
+        )
+
         tools = list(DEFAULT_TOOLS if tools is None else tools)
+        tools += context_tools(self.context_store)
         if store is not None:
-            tools += material_tools(store, model)  # 完整提炼工具与智能体用同一个模型
+            tools += material_tools(store, model, self.context_store)  # 完整提炼工具与智能体用同一个模型
         self.graph = create_agent(
             model,
             tools=tools,
-            middleware=[  # 列表中靠前的包在外层：先定提示词，兜底包住后面所有步骤，再清理工具结果、再裁剪
+            middleware=[  # 列表中靠前的包在外层：先定提示词，再由 Context Builder 组装上下文并检查预算
                 _system_prompt,
-                _context_overflow,
-                _clear_old_tool_results(),
-                _trim_history,
+                self.builder,
                 _limit_tool_rounds,
+                self.tool_budget,  # 包在报错回传外层，报错文字也计入预算
                 ToolErrorMiddleware(on_error=_tool_error),
             ],
             context_schema=Context,
@@ -168,24 +143,67 @@ class Agent:
     def chat(self, text: str, skill: str | None = None, material_ids: list[int] | None = None) -> str:
         if skill and skill not in SKILLS:
             raise ValueError(f"未知技能: {skill}，可选: {', '.join(SKILLS)}")
+        run_id = uuid.uuid4().hex[:12]
+        try:
+            text, stored = self._preflight(text)
+        except ValueError as e:
+            return str(e)
         if material_ids:
             text = self._attach_materials(text, material_ids)
+        material_ids = [*(material_ids or []), *stored]  # 转存的长输入只给引用，不再全文附回
+        compacted = self._compact(run_id)
         result = self.graph.invoke(
             {"messages": [HumanMessage(text)]},
             config={"configurable": {"thread_id": self.thread_id}},
-            context=Context(skill=skill, material_ids=material_ids or None),
+            context=Context(
+                skill=skill,
+                material_ids=material_ids or None,
+                thread_id=self.thread_id,
+                run_id=run_id,
+                compacted=compacted,
+            ),
         )
         return result["messages"][-1].text
+
+    def _compact(self, run_id: str) -> bool:
+        """对话前按需压缩。失败不影响本次对话：Context Builder 会降级并提示有未纳入的历史。"""
+        try:
+            return self.compactor.maybe_compact(self.thread_id, self.history, run_id)
+        except Exception as e:
+            log.warning("会话压缩失败: %s", e)
+            return False
+
+    def _preflight(self, text: str) -> tuple[str, list[int]]:
+        """输入预检：一次输入过长时，正文存为材料（按内容去重），消息里保留开头和结尾原文、材料引用，交给材料工具处理。
+
+        返回 (发给模型的消息, 转存的材料编号)。
+        """
+        tokens = self.counter.count_text(text)
+        if tokens <= config.INPUT_INLINE_TOKENS:
+            return text, []
+        if self.store is None:
+            raise ValueError(INPUT_TOO_LONG.format(tokens=tokens, limit=config.INPUT_INLINE_TOKENS))
+        material, _ = self.store.add_text(f"对话输入 {datetime.now():%m-%d %H:%M}", text)
+        head, tail = text[:INPUT_HEAD_CHARS], text[-INPUT_TAIL_CHARS:]
+        text = (
+            f"【用户这次输入较长（约 {tokens} tokens、{len(text)} 字），完整内容已存为材料 {material.id}。"
+            "下面是输入开头和结尾的原文，中间部分未附。用户的要求通常写在开头或结尾，请据此判断任务；"
+            "需要正文时用材料工具读取，需要完整总结时用 summarize_materials】\n"
+            f"【输入开头】\n{head}\n【输入结尾】\n{tail}"
+        )
+        log.info("输入约 %s tokens，已转存为材料 %s", tokens, material.id)
+        return text, [material.id]
 
     def _attach_materials(self, text: str, material_ids: list[int]) -> str:
         """选中材料较短时全文附在消息后；较长时只附清单，由模型用材料工具读取。"""
         if self.store is None:
             raise ValueError("未配置材料库，无法使用材料")
-        materials = [self.store.get(i) for i in material_ids]
-        if sum(estimate_tokens(m.content) for m in materials) <= config.INLINE_MATERIAL_TOKENS:
+        materials = [self.store.get(i) for i in dict.fromkeys(material_ids)]
+        if sum(self.counter.count_text(m.content) for m in materials) <= config.INLINE_MATERIAL_TOKENS:
             blocks = [wrap_material(f"【材料 {m.id}《{m.title}》】", m.content) for m in materials]
             return "\n\n".join([text, *blocks])
-        chunks, sections = self.store.chunk_counts(material_ids), self.store.section_counts(material_ids)
+        ids = [m.id for m in materials]
+        chunks, sections = self.store.chunk_counts(ids), self.store.section_counts(ids)
         listing = "\n".join(
             f"- 材料 {m.id}《{m.title}》：{m.char_count} 字，{chunks[m.id]} 块，{sections.get(m.id, 0)} 个章节"
             for m in materials
@@ -193,6 +211,31 @@ class Agent:
         return (
             f"{text}\n\n【已选材料】内容较长未附全文，请用 get_outline / search_materials / read_material 读取：\n{listing}"
         )
+
+    def _task_state(self, context: Context, state) -> str:
+        """当前任务状态：指定能力、本次所选材料、本轮工具预算余量。"""
+        lines = []
+        if context.material_ids:
+            lines.append(f"本次所选材料编号：{', '.join(map(str, context.material_ids))}")
+        ledger = self.tool_budget.ledger(context.thread_id, turn_key(state))
+        if ledger.calls or ledger.refused:
+            lines.append(
+                f"本轮工具已调用 {ledger.calls} 次，工具结果约 {ledger.used} tokens，"
+                f"单轮预算剩余约 {max(ledger.remaining(), 0)} tokens"
+            )
+        return "# 当前任务状态\n" + "\n".join(lines) if lines else ""
+
+
+_fallback = None
+
+
+def _fallback_engine():
+    """没有材料库时上下文数据存进内存库。进程内共用一个（数据按 thread_id 区分），
+    不为每个 Agent 新建：新建的连接没人关闭，会在被回收时才关掉。"""
+    global _fallback
+    if _fallback is None:
+        _fallback = create_db_engine("sqlite://")
+    return _fallback
 
 
 def _new_thread_id() -> str:

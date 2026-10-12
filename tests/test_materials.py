@@ -408,7 +408,7 @@ def test_summarize_materials_with_nothing_relevant(store):
 
 
 def test_reading_beyond_turn_budget_suggests_summarize(store, monkeypatch):
-    monkeypatch.setattr(config, "READ_BUDGET_TOKENS", 20)
+    monkeypatch.setattr(config, "TURN_TOOL_TOKENS", 350)  # 第一次读完后剩余不足 300，第二次不再执行
     material, _ = store.add_text("长", "第一块的材料原文内容比较长。" * 5)
     model = fake(
         tool_msg("read_material", {"material_id": material.id, "chunk": 1}, id="r1"),
@@ -421,7 +421,7 @@ def test_reading_beyond_turn_budget_suggests_summarize(store, monkeypatch):
     agent.chat("读一下")
     first, second = [m.content for m in agent.history if isinstance(m, ToolMessage)]
     assert "【材料开始】" in first
-    assert "超过单轮读取预算" in second and "summarize_materials" in second
+    assert "达到单轮预算" in second and "summarize_materials" in second
     agent.chat("再读一次")  # 新一轮重新计算
     assert "【材料开始】" in [m.content for m in agent.history if isinstance(m, ToolMessage)][2]
 

@@ -6,6 +6,7 @@
 每个工作项都写进了结果或被明确列出（输出覆盖）。
 """
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -15,7 +16,12 @@ from pydantic import BaseModel, Field
 from . import config
 from .materials import wrap_material
 from .skills import read_prompt
+from .context_builder import input_limit
+from .context_store import ContextStore, content_hash
 from .tokens import estimate_tokens
+
+# 每次调用模型后的回调：(任务类型 map/reduce/synthesize, 估算输入 tokens, 模型返回的消息, 出处如 "1-3")，用于观测
+OnCall = Callable[[str, int, object, str], None]
 
 CATEGORY_NAMES = {"done": "已完成", "in_progress": "进行中", "issue": "问题风险", "plan": "计划", "other": "其他"}
 
@@ -76,6 +82,7 @@ class ExtractionResult:
     failed: list[dict] = field(default_factory=list)  # 重试后仍失败的块：{source, error}
     dropped: list[dict] = field(default_factory=list)  # 被丢弃的条目：{source, point, quote, reason}
     usage: Usage = field(default_factory=Usage)
+    cached: int = 0  # 直接用了缓存结果的块数
 
     @property
     def processed(self) -> int:
@@ -96,37 +103,69 @@ def _extract_messages(source: Source, focus: str, period: str | None) -> list[tu
     return [("system", read_prompt("extract")), ("user", user)]
 
 
+def _cache_key(source: Source, focus: str, period: str | None) -> str:
+    return content_hash("extract-v1", read_prompt("extract"), focus.strip(), period or "", source.content)
+
+
+def _message_tokens(messages: list[tuple[str, str]]) -> int:
+    return sum(estimate_tokens(text) + 4 for _, text in messages)
+
+
 def extract_items(
-    model: BaseChatModel, sources: list[Source], focus: str = "", period: str | None = None
+    model: BaseChatModel,
+    sources: list[Source],
+    focus: str = "",
+    period: str | None = None,
+    cache: ContextStore | None = None,
+    on_call: OnCall | None = None,
 ) -> ExtractionResult:
-    """逐块提取工作项。每块都会处理；失败的块重试 MAP_RETRIES 次，仍失败的记入 failed，不静默丢弃。"""
+    """逐块提取工作项。每块都会处理；失败的块重试 MAP_RETRIES 次，仍失败的记入 failed，不静默丢弃。
+
+    每块是一次独立的调用，只带提取说明和这一块原文，不带其他块和对话历史，单次输入不随块数增长。
+    传了 cache 时，提取结果按（块内容、关注点、周期、提示词）缓存：中途失败后重跑、同一材料再次提炼时不重算。
+    """
     result = ExtractionResult(items=[], total=len(sources))
     extractor = model.with_structured_output(Extraction, method="function_calling", include_raw=True)
-    pending = list(sources)
     errors: dict[Source, str] = {}
     outputs: dict[Source, Extraction] = {}
+    pending = []
+    for source in sources:
+        cached = cache.cached_extraction(_cache_key(source, focus, period)) if cache else None
+        if cached is not None:
+            outputs[source] = Extraction(items=[_Item(**i) for i in cached])
+            result.cached += 1
+            continue
+        tokens = _message_tokens(_extract_messages(source, focus, period))
+        if tokens > input_limit():  # 块大小由分块决定，正常不会发生；发生时不硬发
+            errors[source] = f"这一块约 {tokens} tokens，超出单次输入上限 {input_limit()}"
+            continue
+        pending.append(source)
+    over_budget = [s for s in sources if s in errors]
 
     for _ in range(1 + config.MAP_RETRIES):
         if not pending:
             break
-        responses = extractor.batch(
-            [_extract_messages(s, focus, period) for s in pending],
-            config={"max_concurrency": config.MAP_CONCURRENCY},
-            return_exceptions=True,
-        )
+        requests = [_extract_messages(s, focus, period) for s in pending]
+        responses = extractor.batch(requests, config={"max_concurrency": config.MAP_CONCURRENCY}, return_exceptions=True)
         retry = []
-        for source, response in zip(pending, responses):
+        for source, request, response in zip(pending, requests, responses):
             if isinstance(response, Exception):
                 errors[source] = f"{type(response).__name__}: {response}"
                 retry.append(source)
                 continue
             result.usage.add(response["raw"])
+            if on_call:
+                on_call("map", _message_tokens(request), response["raw"], source.tag)
             if response["parsed"] is None:
                 errors[source] = f"输出格式不对：{response['parsing_error']}"
                 retry.append(source)
             else:
                 outputs[source] = response["parsed"]
+                if cache:
+                    key = _cache_key(source, focus, period)
+                    cache.cache_extraction(key, [i.model_dump() for i in response["parsed"].items])
         pending = retry
+    pending = over_budget + pending
 
     result.failed = [{"source": s.tag, "error": errors[s][:300]} for s in pending]
     seen: set[str] = set()
@@ -207,6 +246,7 @@ def synthesize(
     items: list[WorkItem],
     budget: int | None = None,
     aside_heading: str | None = None,
+    on_call: OnCall | None = None,
 ) -> Synthesis:
     """按调用方给的提示词，把工作项合成最终文本。工作项超出预算时先分批合并（分层摘要），再合成。
 
@@ -221,21 +261,28 @@ def synthesize(
         batches = _split_lines(text, budget // 2)
         if len(batches) < 2:
             break
-        merged = model.batch(
-            [[("system", read_prompt("merge")), ("user", batch)] for batch in batches],
-            config={"max_concurrency": config.MAP_CONCURRENCY},
-        )
-        for message in merged:
+        requests = [[("system", read_prompt("merge")), ("user", batch)] for batch in batches]
+        merged = model.batch(requests, config={"max_concurrency": config.MAP_CONCURRENCY})
+        for request_messages, message in zip(requests, merged):
             usage.add(message)
+            if on_call:
+                on_call("reduce", _message_tokens(request_messages), message, f"第 {levels + 1} 层")
         new_text = "\n".join(m.text.strip() for m in merged)
         if estimate_tokens(new_text) >= estimate_tokens(text):  # 合并没有变短，避免死循环
             break
         text, levels = new_text, levels + 1
 
-    final = model.invoke(
-        [("system", system_prompt), ("user", f"{request}\n\n工作项（每条的 #编号 用于标注出处）：\n{text}")]
-    )
+    final_messages = [("system", system_prompt), ("user", f"{request}\n\n工作项（每条的 #编号 用于标注出处）：\n{text}")]
+    final_tokens = _message_tokens(final_messages)
+    if final_tokens > input_limit():  # 分批合并后仍放不下：明确报错，不截断工作项硬发
+        raise ValueError(
+            f"要点过多，分批合并后仍有约 {final_tokens} tokens，超出单次输入上限 {input_limit()}；"
+            "请缩小材料范围或写明关注点后重试"
+        )
+    final = model.invoke(final_messages)
     usage.add(final)
+    if on_call:
+        on_call("synthesize", final_tokens, final, "")
     output = final.text.strip()
     body, heading, aside = output.partition(aside_heading) if aside_heading else (output, "", "")
     resolved, used, invalid = resolve_refs(body, items)
