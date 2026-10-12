@@ -2,7 +2,7 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from briefly import config
-from briefly.summarize import Source, WorkItem, extract_items, format_items, synthesize
+from briefly.summarize import Source, WorkItem, extract_items, format_items, resolve_refs, synthesize
 from briefly.tokens import estimate_tokens
 from fakes import FunctionModel, structured
 
@@ -129,17 +129,50 @@ ITEMS = [
 ]
 
 
-def test_format_items_shows_category_source_and_quote():
-    assert format_items(ITEMS[:1]) == "- 【已完成】登录联调完成〔1-1〕\n  原文：完成登录联调"
+def test_format_items_numbers_each_item():
+    assert format_items(ITEMS) == "- #1 【已完成】登录联调完成\n  原文：完成登录联调\n- #2 【问题风险】支付回调超时\n  原文：支付回调超时"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected", "used", "invalid"),
+    [
+        ("- 联调〔#1〕", "- 联调〔1-1〕", {1}, []),
+        ("- 合并〔#1、#2〕", "- 合并〔1-1〕〔1-2〕", {1, 2}, []),
+        ("- 合并〔#1〕〔#2〕", "- 合并〔1-1〕〔1-2〕", {1, 2}, []),
+        ("- 上线〔#2、简述〕", "- 上线〔1-2〕〔简述〕", {2}, []),
+        ("- 只来自简述〔简述〕", "- 只来自简述〔简述〕", set(), []),
+        ("- 编的〔#9〕", "- 编的", set(), [9]),
+        ("#2 写的是超时，#1 是联调", "〔1-2〕 写的是超时，〔1-1〕 是联调", {1, 2}, []),  # 没加〔〕的编号
+        ("讨论 #9 号议题", "讨论 #9 号议题", set(), []),  # 超出范围的裸编号可能是正文内容，不动
+    ],
+)
+def test_resolve_refs(text, expected, used, invalid):
+    assert resolve_refs(text, ITEMS) == (expected, used, invalid)
 
 
 def test_synthesize_in_one_call_when_within_budget():
-    model = FunctionModel(respond=lambda messages: AIMessage("【本周完成】\n- 登录联调完成〔1-1〕"))
+    model = FunctionModel(respond=lambda messages: AIMessage("【本周完成】\n- 登录联调完成〔#1〕"))
     result = synthesize(model, "按周报格式输出", "写本周周报", ITEMS)
-    assert result.text.startswith("【本周完成】") and result.merge_levels == 0 and result.usage.calls == 1
+    assert result.text == "【本周完成】\n- 登录联调完成〔1-1〕"  # 编号换回出处
+    assert result.merge_levels == 0 and result.usage.calls == 1
+    assert result.uncovered == [ITEMS[1]] and result.coverage_checked
     system, user = model.calls[0]
     assert system.content == "按周报格式输出"
-    assert user.content.startswith("写本周周报") and "〔1-2〕" in user.content
+    assert user.content.startswith("写本周周报") and "- #2 【问题风险】" in user.content
+
+
+def test_refs_after_aside_heading_are_resolved_but_not_counted_as_covered():
+    text = "- 登录联调完成〔#1〕\n【给用户的提醒】\n- 〔#2〕与简述无关，没有写入"
+    model = FunctionModel(respond=lambda messages: AIMessage(text))
+    result = synthesize(model, "格式", "写", ITEMS, aside_heading="【给用户的提醒】")
+    assert result.text == "- 登录联调完成〔1-1〕\n【给用户的提醒】\n- 〔1-2〕与简述无关，没有写入"
+    assert result.uncovered == [ITEMS[1]]
+
+
+def test_synthesize_without_any_refs_cannot_check_coverage():
+    model = FunctionModel(respond=lambda messages: AIMessage("没有标编号的总结"))
+    result = synthesize(model, "格式", "写", ITEMS)
+    assert not result.coverage_checked and result.uncovered == []
 
 
 def test_synthesize_merges_in_batches_when_over_budget():
@@ -147,7 +180,7 @@ def test_synthesize_merges_in_batches_when_over_budget():
 
     def respond(messages):
         if "合并" in messages[0].content:  # merge.md
-            return AIMessage("- 【已完成】合并后的一条〔1-0〕")
+            return AIMessage("- 【已完成】合并后的一条〔#1、#2〕")
         return AIMessage("最终周报")
 
     model = FunctionModel(respond=respond)

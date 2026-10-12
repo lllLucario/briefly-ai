@@ -165,8 +165,14 @@ class WeeklyService:
             ]
         )
         system_prompt = read_prompt("weekly") + "\n\n" + read_prompt("weekly_report")
-        synthesis = synthesize(model, system_prompt, request, extraction.items)
+        synthesis = synthesize(model, system_prompt, request, extraction.items, aside_heading=REMINDER_HEADING)
         content, reminders = split_reminders(synthesis.text)
+        # 输出覆盖：没写进周报的工作项列给用户，由用户决定要不要补（有简述时，次要工作本来可以不写）
+        reminders += [f"这一项没有写进周报，如需要请补充：{i.point}〔{i.source}〕" for i in synthesis.uncovered]
+        if synthesis.invalid_refs:
+            warnings.append(f"周报引用了不存在的工作项编号 {synthesis.invalid_refs}，相关内容可能没有依据，请核对")
+        if not synthesis.coverage_checked:
+            warnings.append("周报没有按要求标注出处编号，未能核对是否漏写了素材中的内容")
 
         evidence = " ".join([report.brief, period, *(f"{i.point} {i.quote}" for i in extraction.items)])
         numbers = unverified_numbers(content, evidence)
@@ -180,6 +186,8 @@ class WeeklyService:
             "failed": extraction.failed,
             "dropped": extraction.dropped,
             "unverified_numbers": numbers,
+            "uncovered": [asdict(i) for i in synthesis.uncovered],  # 没有写进周报的工作项
+            "coverage_checked": synthesis.coverage_checked,
             "merge_levels": synthesis.merge_levels,
             "calls": usage.calls + synthesis.usage.calls,
             "input_tokens": usage.input_tokens + synthesis.usage.input_tokens,

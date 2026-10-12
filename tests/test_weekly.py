@@ -21,7 +21,12 @@ from briefly.weekly import (
 from fakes import FunctionModel, structured
 
 LOG = "# 周报素材\n## 周三\n定位到支付回调超时的原因。\n## 周四\n支付回调耗时从 1.8 秒降到 200 毫秒。"
-REPORT = "【周报标题】2026-10-12 至 2026-10-18\n【本周完成】\n- 支付回调耗时从 1.8 秒降到 200 毫秒〔1-1〕\n【下周计划】\n1. 支付上线〔简述〕"
+REPORT = "【周报标题】2026-10-12 至 2026-10-18\n【本周完成】\n- 支付回调耗时从 1.8 秒降到 200 毫秒〔#1〕\n【下周计划】\n1. 支付上线〔简述〕"
+
+
+def resolved(material_id: int, text: str = REPORT) -> str:
+    """模型写的编号〔#1〕换回出处后的周报。"""
+    return text.replace("〔#1〕", f"〔{material_id}-1〕")
 
 
 def make_model(report: str = REPORT, extract=None):
@@ -91,7 +96,7 @@ def test_generate_end_to_end(store, material):
     assert report.status == PENDING
     weekly.generate(report.id)
     done = weekly.get(report.id)
-    assert done.status == DONE and done.content == REPORT
+    assert done.status == DONE and done.content == resolved(material.id)
     assert done.items == [
         {"category": "done", "point": "耗时下降", "quote": "支付回调耗时从 1.8 秒降到 200 毫秒。", "source": f"{material.id}-1"}
     ]
@@ -100,7 +105,7 @@ def test_generate_end_to_end(store, material):
     assert g["calls"] == 2 and g["unverified_numbers"] == [] and g["warnings"] == []
     request = model.calls[-1][-1].content
     assert "周期：2026-10-12 至 2026-10-18" in request and "用户简述〔简述〕：主要做支付改造" in request
-    assert f"〔{material.id}-1〕" in request
+    assert "- #1 【已完成】耗时下降" in request
     assert "【周报标题】" in model.calls[-1][0].content  # 用的是 weekly.md 的格式
 
 
@@ -116,12 +121,46 @@ def test_reminders_are_kept_out_of_report_and_export(store, material):
     report = weekly.create([material.id], period_start=date(2026, 10, 12), period_end=date(2026, 10, 18))
     weekly.generate(report.id)
     done = weekly.get(report.id)
-    assert done.content == REPORT
+    assert done.content == resolved(material.id)
     assert done.generation["reminders"] == ["材料提到上线前要补齐压测报告，但没写进度，完成率 99% 也请核对"]
     assert done.generation["unverified_numbers"] == []  # 提醒里的数字不参与核对
     assert "给用户的提醒" not in weekly.export_markdown(report.id)[1]
     system = model.calls[-1][0].content
     assert "不要自己推断风险" in system and "【给用户的提醒】" in system
+
+
+def two_items(messages):
+    return structured(
+        "Extraction",
+        items=[
+            {"category": "done", "point": "定位超时原因", "quote": "定位到支付回调超时的原因。"},
+            {"category": "done", "point": "耗时下降", "quote": "支付回调耗时从 1.8 秒降到 200 毫秒。"},
+        ],
+    )
+
+
+def test_items_left_out_of_report_become_reminders(store, material):
+    weekly, _ = service(store, make_model(report="【本周完成】\n- 耗时下降〔#2〕", extract=two_items))
+    report = weekly.create([material.id])
+    weekly.generate(report.id)
+    g = weekly.get(report.id).generation
+    assert g["coverage_checked"] is True
+    assert [i["point"] for i in g["uncovered"]] == ["定位超时原因"]
+    assert f"这一项没有写进周报，如需要请补充：定位超时原因〔{material.id}-1〕" in g["reminders"]
+
+
+def test_invalid_refs_and_missing_refs_are_warned(store, material):
+    weekly, _ = service(store, make_model(report="- 编的〔#7〕\n- 真的〔#1、#2〕", extract=two_items))
+    report = weekly.create([material.id])
+    weekly.generate(report.id)
+    assert any("不存在的工作项编号 [7]" in w for w in weekly.get(report.id).generation["warnings"])
+
+    weekly, _ = service(store, make_model(report="- 没标编号", extract=two_items))
+    report = weekly.create([material.id])
+    weekly.generate(report.id)
+    g = weekly.get(report.id).generation
+    assert g["coverage_checked"] is False and g["uncovered"] == []
+    assert any("未能核对是否漏写" in w for w in g["warnings"])
 
 
 def test_default_period_is_current_week(store, material):
@@ -228,7 +267,7 @@ def test_weekly_api_flow(client, material):
     report_id = created.json()["id"]
 
     detail = client.get(f"/weekly-reports/{report_id}").json()  # 测试客户端会在返回前跑完后台任务
-    assert detail["status"] == DONE and detail["content"] == REPORT
+    assert detail["status"] == DONE and detail["content"] == resolved(material.id)
     assert detail["items"][0]["source"] == f"{material.id}-1"
     assert detail["generation"]["chunks_processed"] == 1
 

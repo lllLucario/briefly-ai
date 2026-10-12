@@ -331,7 +331,9 @@ def test_get_outline_respects_selected_scope(store):
     assert "不在用户本次选择的范围内" in result
 
 
-def run_summarize(store, args: dict, material_ids=None, extract=None) -> tuple[str, FunctionModel]:
+def run_summarize(
+    store, args: dict, material_ids=None, extract=None, digest: str = "- 支付回调耗时下降〔#1〕"
+) -> tuple[str, FunctionModel]:
     """智能体调用 summarize_materials；工具内部的提取、汇总也由同一个假模型按系统提示词应答。"""
 
     def respond(messages):
@@ -341,7 +343,7 @@ def run_summarize(store, args: dict, material_ids=None, extract=None) -> tuple[s
                 return extract(messages)
             return structured("Extraction", items=[{"category": "done", "point": "耗时下降", "quote": "耗时降到 200 毫秒。"}])
         if "你负责把从材料中逐块提取" in system:
-            return AIMessage("- 支付回调耗时下降〔1-1〕")
+            return AIMessage(digest)
         if isinstance(messages[-1], ToolMessage):
             return AIMessage("整理好的总结")
         return tool_msg("summarize_materials", args)
@@ -381,6 +383,22 @@ def test_summarize_materials_respects_scope_and_reports_failures(store):
 
     result, _ = run_summarize(store, {}, extract=extract)
     assert "已处理 1/2 块" in result and f"第 {b.id}-1 块处理失败" in result
+
+
+def test_summarize_materials_appends_points_the_digest_left_out(store):
+    store.add_text("周报", "定位超时原因。耗时降到 200 毫秒。")
+
+    def extract(messages):
+        return structured(
+            "Extraction",
+            items=[
+                {"category": "done", "point": "定位超时原因", "quote": "定位超时原因。"},
+                {"category": "done", "point": "耗时下降", "quote": "耗时降到 200 毫秒。"},
+            ],
+        )
+
+    result, _ = run_summarize(store, {}, extract=extract, digest="- 耗时下降〔#2〕")
+    assert "汇总时未写入的要点：\n- 定位超时原因〔1-1〕" in result
 
 
 def test_summarize_materials_with_nothing_relevant(store):

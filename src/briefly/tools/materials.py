@@ -166,7 +166,14 @@ def material_tools(store: MaterialStore, model: BaseChatModel | None = None) -> 
             return f"没有提取到{'与“' + focus + '”相关的' if focus else ''}内容（{'；'.join(notes)}）。"
         request = f"关注点：{focus or '无，整理全部要点'}"
         digest = synthesize(llm, read_prompt("digest"), request, extraction.items)
+        body = digest.text
+        if digest.uncovered:  # 汇总时漏写的要点原样附上，保证交给你的内容是完整的
+            body += "\n\n汇总时未写入的要点：\n" + "\n".join(f"- {i.point}〔{i.source}〕" for i in digest.uncovered)
+        if digest.invalid_refs:
+            notes.append(f"汇总引用了不存在的要点编号 {digest.invalid_refs}，相关内容请谨慎使用")
+        if not digest.coverage_checked:
+            notes.append("汇总没有标注要点编号，未能核对是否漏写")
         header = f"【材料提炼结果：程序逐块提取并核对原文，〔材料号-块号〕为出处；{'；'.join(notes)}】"
-        return wrap_material(header, digest.text)
+        return wrap_material(header, body)
 
     return [list_materials, get_outline, read_material, search_materials, summarize_materials]
