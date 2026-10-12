@@ -268,7 +268,7 @@ WEEKLY = "# 周报\n## 周一\n完成登录联调。\n## 周三\n### 支付\n定
 def test_get_outline_lists_sections_with_chunk_ranges(store):
     material, _ = store.add_text("周报", WEEKLY)
     result = run_tool(store, "get_outline", {"material_id": material.id}).content
-    assert "大纲（检索信息，不是材料内容，不要写进回答：6 个章节，共 1 块）" in result
+    assert "【材料 1《周报》的章节大纲】" in result and "个章节" not in result.splitlines()[0]
     assert "1. 周报（第 1 块，" in result
     assert "\n    4. 支付（第 1 块" in result  # 三级标题缩进两层
     assert "【材料开始】" in result  # 标题来自材料，同样当作材料
@@ -362,7 +362,7 @@ def run_summarize(
 def test_summarize_materials_returns_verified_digest(store):
     store.add_text("周报", "# 周三\n支付回调耗时降到 200 毫秒。")
     result, model = run_summarize(store, {"focus": "支付"})
-    assert "已处理 1/1 块" in result and "〔材料号-块号〕为出处" in result
+    assert "材料已全部处理" in result and "〔材料号-块号〕为出处" in result
     assert "【材料开始】\n- 支付回调耗时下降〔1-1〕\n【材料结束】" in result
     extract_call = next(c for c in model.calls if "你负责从一段材料中提取要点" in c[0].content)
     assert "简述：支付" in extract_call[-1].content

@@ -102,7 +102,7 @@ def material_tools(
         for s in sections:
             first, last = _chunk_range(chunks, s.start, s.end)
             lines.append(f"{'  ' * (s.level - top)}{s.index}. {s.title}（{_blocks(first, last)}，{s.end - s.start} 字）")
-        header = f"【{name}大纲（{RETRIEVAL_INFO}：{len(sections)} 个章节，共 {len(chunks)} 块）】"
+        header = f"【{name}的章节大纲】"  # 不写总块数、章节数：实测中模型会把这类数字当成文档内容写进总结
         return "\n".join([wrap_material(header, "\n".join(lines)), *(f"解析提示：{n}" for n in notes)])
 
     @tool
@@ -203,7 +203,8 @@ def material_tools(
         llm = model or create_chat_model()
         on_call = _recorder(context_store, runtime.context, getattr(llm, 'model_name', '') or config.MODEL)
         extraction = extract_items(llm, sources, focus=focus, cache=context_store, on_call=on_call)
-        notes = [f"已处理 {extraction.processed}/{extraction.total} 块"]
+        # 全部成功时不写块数（同上，避免被当成文档内容），有失败时才写明处理了多少
+        notes = ["材料已全部处理" if not extraction.failed else f"已处理 {extraction.processed}/{extraction.total} 块"]
         if extraction.cached:
             notes.append(f"其中 {extraction.cached} 块沿用之前的提取结果")
         notes += [f"第 {f['source']} 块处理失败，未纳入" for f in extraction.failed]

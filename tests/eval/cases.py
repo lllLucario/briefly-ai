@@ -136,6 +136,33 @@ def reminder_has_any(*parts: str) -> Check:
     )
 
 
+def conflict_listed() -> Check:
+    """W3 专用：同一条提醒里同时写出简述的说法（已上线）和材料的说法（10 月 20 日）。"""
+
+    def check(r):
+        return any("上线" in x and "20" in x for x in r.generation.get("reminders", []))
+
+    return Check("提醒同时写出两种说法", check)
+
+
+def conflict_tags_honest() -> Check:
+    """W3 专用：正文写“已上线”的行必须标〔简述〕；写“10 月 20 日”的行必须有材料出处。"""
+
+    def check(r):
+        for line in r.content.splitlines():
+            flat = _flat(line)
+            if ("已上线" in flat or "已经上线" in flat) and "10月20日" in flat:  # 两种说法写进同一条
+                return False
+            if "已上线" in flat or "已经上线" in flat:
+                if "〔简述〕" not in line:
+                    return False
+            if "10月20日" in flat and not re.search(r"〔\d+-\d+〕", line):
+                return False
+        return True
+
+    return Check("矛盾处出处如实标注", check)
+
+
 def no_source_tags() -> Check:
     return Check("没有材料出处（只有简述）", lambda r: not re.search(r"〔\d+-\d+〕", r.content))
 
@@ -162,7 +189,7 @@ class Case:
     requires: tuple[str, ...] = ()  # 需要的本地文件（相对仓库根目录），缺失时跳过
 
 
-def _report() -> str:
+def _report() -> str:  # 报告里的季度写作“第二季度”，模型常写成 Q2，所以数字检查额外允许 2
     return fixture("report.md")
 
 
@@ -191,9 +218,12 @@ CASES: list[Case] = [
         ],
     ),
     Case(
-        "W3", "周报", "简述与材料矛盾：正文用简述，提醒里列出矛盾",
+        "W3", "周报", "简述与材料矛盾：提醒里列出矛盾，出处如实标注",
         weekly={"materials": ["week_log.md"], "brief": "支付改造已经上线了，另外和李经理开了个会", **WEEK},
-        checks=[report_done(), report_has("上线〔简述〕"), reminder_has_any("不一致", "核对", "矛盾"), no_unverified_numbers()],
+        checks=[
+            report_done(), reminder_has_any("不一致", "核对", "矛盾"), conflict_listed(), conflict_tags_honest(),
+            no_unverified_numbers(),
+        ],
     ),
     Case(
         "W4", "周报", "只有简述、没有素材",
@@ -204,7 +234,7 @@ CASES: list[Case] = [
     Case(
         "S1", "五项能力", "文档总结：项目报告",
         turns=[Turn("帮我总结一下这份报告", materials=("report.md",), checks=[
-            SUMMARIZE, has_all("58%", "65%"), no_new_numbers(_report(), extra=("30", "40")),
+            SUMMARIZE, has_all("58%", "65%"), no_new_numbers(_report(), extra=("2", "30", "40")),
         ])],
     ),
     Case(
@@ -252,7 +282,7 @@ CASES: list[Case] = [
     Case(
         "E6", "异常输入", "信息不足",
         turns=[Turn("帮我写周报：这周开了几个会", skill="weekly", checks=[
-            has_any("补充", "未提及", "信息不足", "请提供"),
+            has_any("补充", "未提及", "信息不足", "请提供", "请把", "需要以下"),
         ])],
     ),
     # ---- 多轮对话
@@ -260,7 +290,7 @@ CASES: list[Case] = [
         "M1", "多轮对话", "追问修改：再短一点 → 改成表格",
         turns=[
             Turn("总结这份报告", materials=("report.md",), checks=[SUMMARIZE]),
-            Turn("再短一点", checks=[shorter_than_previous(), no_new_numbers(_report(), extra=("30", "40"))]),
+            Turn("再短一点", checks=[shorter_than_previous(), no_new_numbers(_report(), extra=("2", "30", "40"))]),
             Turn("改成表格", checks=[has_table()]),
         ],
     ),
