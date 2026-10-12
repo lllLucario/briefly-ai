@@ -57,6 +57,34 @@ def test_formula_without_cached_value_is_reported():
     assert "1 个公式单元格没有计算结果" in doc.report["warnings"][0]
 
 
+def test_xlsx_merged_cells_follow_the_same_rule_as_docx():
+    wb = Workbook()
+    ws = wb.active
+    for row in [["工时", None, "任务", "负责人"], ["计划", "实际", None, None], [8, 10, "支付", "李经理"], [4, None, "压测", None], ["备注：按计划", None, None, None]]:
+        ws.append(row)
+    ws.merge_cells("A1:B1")  # 表头横向：每列都填
+    ws.merge_cells("D3:D4")  # 纵向：向下填
+    ws.merge_cells("A5:D5")  # 正文横向：只留第一格
+    buf = BytesIO()
+    wb.save(buf)
+    lines = load_document("t.xlsx", buf.getvalue()).text.splitlines()
+    assert lines[2] == "| 工时 | 工时 | 任务 | 负责人 |"
+    assert lines[6] == "| 4 |  | 压测 | 李经理 |"
+    assert lines[7] == "| 备注：按计划 |  |  |  |"
+
+
+def test_xlsx_percent_is_shown_as_in_excel():
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["指标", "完成率", "增长"])
+    ws.append(["支付", 0.15, 0.1234])
+    ws["B2"].number_format = "0%"
+    ws["C2"].number_format = "0.00%"
+    buf = BytesIO()
+    wb.save(buf)
+    assert "| 支付 | 15% | 12.34% |" in load_document("t.xlsx", buf.getvalue()).text
+
+
 @pytest.mark.parametrize(
     "text",
     ["任务,负责人\n支付改造,李经理\n", "任务;负责人\n支付改造;李经理\n", "任务\t负责人\n支付改造\t李经理\n"],

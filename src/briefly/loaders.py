@@ -50,8 +50,7 @@ def _load(kind: str, data: bytes) -> LoadedDocument:
     if kind == "txt":
         return LoadedDocument(decode_text(data), markdown=False)
     if kind == "docx":
-        report = {"parser": "docling", "structure": "docx_styles"}
-        return LoadedDocument(_docx_to_markdown(data), markdown=True, report=report)
+        return _load_docx(data)
     if kind == "xlsx":
         from .tables import load_xlsx
 
@@ -69,18 +68,80 @@ def load_bytes(filename: str, data: bytes) -> str:
     return load_document(filename, data).text
 
 
-def _docx_to_markdown(data: bytes) -> str:
-    """用 docling 把 docx 转成 Markdown：标题样式 → #，表格 → Markdown 表格，列表保留编号。"""
+def _load_docx(data: bytes) -> LoadedDocument:
+    """用 docling 把 docx 转成 Markdown：标题样式 → #，表格 → Markdown 表格，列表保留编号。
+
+    文本框随正文导出；页眉页脚不导出（属于干扰）；脚注、尾注 docling 不随正文导出，补在文末；
+    批注是审阅意见而不是正文，不纳入，只在报告里注明数量。
+    """
     from docling.datamodel.base_models import DocumentStream
-    from docling_core.types.doc import SectionHeaderItem, TextItem, TitleItem
+    from docling_core.types.doc import (
+        ContentLayer,
+        DocItemLabel,
+        RichTableCell,
+        SectionHeaderItem,
+        TableItem,
+        TextItem,
+        TitleItem,
+    )
 
     doc = _docling_converter().convert(DocumentStream(name="a.docx", stream=BytesIO(data))).document
+    tables = []
     for item, _ in doc.iterate_items():
         if isinstance(item, TextItem) and not isinstance(item, (SectionHeaderItem, TitleItem)):
             item.text = escape_heading_marks(item.text)
+        elif isinstance(item, TableItem):
+            tables.append(item)
+    for table in tables:
+        # 含多段文字的单元格，docling 把内容另存为表格下的子节点；拆格后文字已在单元格里，删掉子节点免得在表格后重复输出
+        rich = [c.ref.resolve(doc) for c in table.data.table_cells if isinstance(c, RichTableCell)]
+        table.data.table_cells = _unmerge(table.data.table_cells)
+        if rich:
+            doc.delete_items(node_items=rich)
     # 关闭转义：默认会把 & 改成 &amp;、_ 改成 \_，改动原文
     text = doc.export_to_markdown(escape_html=False, escape_underscores=False, image_placeholder="", compact_tables=True)
-    return text.replace("&#124;", "\\|")
+    text = text.replace("&#124;", "\\|")
+
+    footnotes = [t.text.strip() for t in doc.texts if t.label == DocItemLabel.FOOTNOTE and t.text.strip()]
+    if footnotes:
+        text += "\n\n脚注：\n" + "\n".join(f"[{i}] {note}" for i, note in enumerate(footnotes, start=1))
+    comments = sum(1 for t in doc.texts if t.content_layer == ContentLayer.NOTES)
+    report = {"parser": "docling", "structure": "docx_styles", "footnotes": len(footnotes)}
+    if comments:
+        report["warnings"] = [f"文档有 {comments} 条批注（审阅意见），未纳入正文"]
+    return LoadedDocument(text, markdown=True, report=report)
+
+
+def _unmerge(cells):
+    """把合并单元格拆成单格，按 tables.merged_value 的规则决定每格显示什么。
+
+    docling 默认把横向合并的值复制到每一列、纵向合并只留在第一行，与我们要的正好相反。
+    """
+    from docling_core.types.doc import TableCell
+
+    from .tables import merged_value
+
+    out = []
+    for cell in cells:
+        text = " ".join(cell.text.split())
+        for r in range(cell.start_row_offset_idx, cell.end_row_offset_idx):
+            for c in range(cell.start_col_offset_idx, cell.end_col_offset_idx):
+                header = cell.column_header or r == 0
+                value = merged_value(text, r, c, cell.start_row_offset_idx, cell.start_col_offset_idx, header)
+                out.append(
+                    TableCell(
+                        text=value or "",
+                        row_span=1,
+                        col_span=1,
+                        start_row_offset_idx=r,
+                        end_row_offset_idx=r + 1,
+                        start_col_offset_idx=c,
+                        end_col_offset_idx=c + 1,
+                        column_header=cell.column_header,
+                        row_header=cell.row_header,
+                    )
+                )
+    return out
 
 
 _converter = None
