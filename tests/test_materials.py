@@ -1,14 +1,14 @@
 from io import BytesIO
 
 import pytest
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from briefly import config
 from briefly.agent import Agent
 from briefly.context import Context
 from briefly.db import create_db_engine
 from briefly.materials import MaterialStore
-from fakes import fake, text_msg, tool_msg
+from fakes import FunctionModel, fake, structured, text_msg, tool_msg
 
 
 @pytest.fixture
@@ -329,6 +329,64 @@ def test_get_outline_respects_selected_scope(store):
     b, _ = store.add_text("b", "# 乙\n内容")
     result = run_tool(store, "get_outline", {"material_id": b.id}, material_ids=[a.id]).content
     assert "不在用户本次选择的范围内" in result
+
+
+def run_summarize(store, args: dict, material_ids=None, extract=None) -> tuple[str, FunctionModel]:
+    """智能体调用 summarize_materials；工具内部的提取、汇总也由同一个假模型按系统提示词应答。"""
+
+    def respond(messages):
+        system = messages[0].content
+        if "你负责从一段材料中提取要点" in system:
+            if extract:
+                return extract(messages)
+            return structured("Extraction", items=[{"category": "done", "point": "耗时下降", "quote": "耗时降到 200 毫秒。"}])
+        if "你负责把从材料中逐块提取" in system:
+            return AIMessage("- 支付回调耗时下降〔1-1〕")
+        if isinstance(messages[-1], ToolMessage):
+            return AIMessage("整理好的总结")
+        return tool_msg("summarize_materials", args)
+
+    model = FunctionModel(respond=respond)
+    agent = Agent(model, tools=[], store=store)
+    agent.graph.invoke(
+        {"messages": [HumanMessage("总结这份材料")]},
+        config={"configurable": {"thread_id": agent.thread_id}},
+        context=Context(material_ids=material_ids),
+    )
+    tool_result = next(m for m in agent.history if isinstance(m, ToolMessage))
+    return tool_result.content, model
+
+
+def test_summarize_materials_returns_verified_digest(store):
+    store.add_text("周报", "# 周三\n支付回调耗时降到 200 毫秒。")
+    result, model = run_summarize(store, {"focus": "支付"})
+    assert "已处理 1/1 块" in result and "〔材料号-块号〕为出处" in result
+    assert "【材料开始】\n- 支付回调耗时下降〔1-1〕\n【材料结束】" in result
+    extract_call = next(c for c in model.calls if "你负责从一段材料中提取要点" in c[0].content)
+    assert "简述：支付" in extract_call[-1].content
+    digest_call = next(c for c in model.calls if "你负责把从材料中逐块提取" in c[0].content)
+    assert digest_call[-1].content.startswith("关注点：支付")
+
+
+def test_summarize_materials_respects_scope_and_reports_failures(store):
+    a, _ = store.add_text("a", "耗时降到 200 毫秒。")
+    b, _ = store.add_text("b", "另一份材料。")
+    denied, _ = run_summarize(store, {"material_ids": [b.id]}, material_ids=[a.id])
+    assert "不在用户本次选择的范围内" in denied
+
+    def extract(messages):
+        if "《b》" in messages[-1].content:
+            raise ConnectionError("网络错误")
+        return structured("Extraction", items=[{"category": "other", "point": "耗时", "quote": "耗时降到 200 毫秒。"}])
+
+    result, _ = run_summarize(store, {}, extract=extract)
+    assert "已处理 1/2 块" in result and f"第 {b.id}-1 块处理失败" in result
+
+
+def test_summarize_materials_with_nothing_relevant(store):
+    store.add_text("a", "整理需求池。")
+    result, _ = run_summarize(store, {"focus": "预算"}, extract=lambda m: structured("Extraction", items=[]))
+    assert result.startswith("没有提取到与“预算”相关的内容")
 
 
 def test_runtime_is_hidden_from_model_schema(store):

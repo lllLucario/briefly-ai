@@ -94,11 +94,12 @@ class Agent:
         store: MaterialStore | None = None,
     ) -> None:
         self.store = store
+        model = model or create_chat_model()
         tools = list(DEFAULT_TOOLS if tools is None else tools)
         if store is not None:
-            tools += material_tools(store)
+            tools += material_tools(store, model)  # 完整提炼工具与智能体用同一个模型
         self.graph = create_agent(
-            model or create_chat_model(),
+            model,
             tools=tools,
             middleware=[
                 _system_prompt,

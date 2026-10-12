@@ -1,13 +1,17 @@
-"""材料工具：列出、看大纲、按块或按章节读取、关键词检索。
+"""材料工具：列出、看大纲、按块或按章节读取、关键词检索、完整提炼（Map-Reduce）。
 
 可访问范围由运行时 Context.material_ids 决定：用户本次选了材料时只能访问这些，否则可访问全部。
 """
 from langchain.tools import ToolRuntime
+from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool, tool
 
 from .. import config
 from ..context import Context
+from ..llm import create_chat_model
 from ..materials import MaterialChunk, MaterialStore, wrap_material
+from ..skills import read_prompt
+from ..summarize import Source, extract_items, synthesize
 
 
 def _scope(runtime: ToolRuntime[Context]) -> list[int] | None:
@@ -29,7 +33,8 @@ def _blocks(first: int, last: int) -> str:
     return f"第 {first} 块" if first == last else f"第 {first}–{last} 块"
 
 
-def material_tools(store: MaterialStore) -> list[BaseTool]:
+def material_tools(store: MaterialStore, model: BaseChatModel | None = None) -> list[BaseTool]:
+    """model 供 summarize_materials 逐块提取和汇总；不传时用时再创建。"""
     @tool
     def list_materials(runtime: ToolRuntime[Context]) -> str:
         """列出当前可用的材料：编号、标题、类型、字数、块数、章节数、导入日期。不知道有哪些材料或材料编号时调用。"""
@@ -131,4 +136,37 @@ def material_tools(store: MaterialStore) -> list[BaseTool]:
             for h in hits
         )
 
-    return [list_materials, get_outline, read_material, search_materials]
+    @tool
+    def summarize_materials(
+        runtime: ToolRuntime[Context], focus: str = "", material_ids: list[int] | None = None
+    ) -> str:
+        """完整提炼材料：由程序逐块读取全部内容、提取要点并核对原文，再汇总成要点清单（每条带出处）。
+        需要总结、梳理一份或多份较长材料的全部内容时使用，比逐块 read_material 省、而且不会漏读。
+        focus 写关注点（如“支付相关的进展”），不写则提炼全部要点；material_ids 不填则处理本次可用的全部材料。
+        返回的是要点清单，请再按用户需要的格式（总结、纪要、待办等）整理输出。"""
+        scope = _scope(runtime)
+        if material_ids is not None:
+            for material_id in material_ids:
+                _check_in_scope(material_id, scope)
+            scope = material_ids
+        sources = [
+            Source(m.id, c.index, m.title, c.content)
+            for m in store.list_materials(scope)
+            for c in store.chunks(m.id)
+        ]
+        if not sources:
+            return "当前没有可用的材料。"
+        llm = model or create_chat_model()
+        extraction = extract_items(llm, sources, focus=focus)
+        notes = [f"已处理 {extraction.processed}/{extraction.total} 块"]
+        notes += [f"第 {f['source']} 块处理失败，未纳入" for f in extraction.failed]
+        if extraction.dropped:
+            notes.append(f"{len(extraction.dropped)} 条提取结果在原文中找不到依据，已丢弃")
+        if not extraction.items:
+            return f"没有提取到{'与“' + focus + '”相关的' if focus else ''}内容（{'；'.join(notes)}）。"
+        request = f"关注点：{focus or '无，整理全部要点'}"
+        digest = synthesize(llm, read_prompt("digest"), request, extraction.items)
+        header = f"【材料提炼结果：程序逐块提取并核对原文，〔材料号-块号〕为出处；{'；'.join(notes)}】"
+        return wrap_material(header, digest.text)
+
+    return [list_materials, get_outline, read_material, search_materials, summarize_materials]
