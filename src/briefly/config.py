@@ -15,8 +15,6 @@ THINKING = {"off": False, "on": True, "provider": None}[os.getenv("BRIEFLY_THINK
 
 # 留空则不传该参数，由服务商决定上限
 MAX_TOKENS = int(os.getenv("BRIEFLY_MAX_TOKENS", "0")) or None
-# 会话历史最多保留的消息条数，超出时从最早的完整轮次开始丢弃
-MAX_HISTORY = int(os.getenv("BRIEFLY_MAX_HISTORY", "40"))
 # 单次提问中，模型最多连续调用几轮工具
 MAX_TOOL_ROUNDS = int(os.getenv("BRIEFLY_MAX_TOOL_ROUNDS", "8"))
 # 会话记忆（LangGraph checkpointer）所在的 SQLite 文件
@@ -29,8 +27,17 @@ CHUNK_SIZE = int(os.getenv("BRIEFLY_CHUNK_SIZE", "1500"))
 CHUNK_OVERLAP = int(os.getenv("BRIEFLY_CHUNK_OVERLAP", "150"))
 # 上传文件大小上限（MB）
 MAX_UPLOAD_MB = int(os.getenv("BRIEFLY_MAX_UPLOAD_MB", "10"))
-# 选中材料合计不超过该字数时，全文直接放进消息；超过则由模型用工具读取
-INLINE_MATERIAL_CHARS = int(os.getenv("BRIEFLY_INLINE_MATERIAL_CHARS", "6000"))
+# 选中材料合计不超过该 token 数（约 6000 个汉字）时，全文直接放进消息；超过则由模型用工具读取
+INLINE_MATERIAL_TOKENS = int(os.getenv("BRIEFLY_INLINE_MATERIAL_TOKENS", "3500"))
+
+# 上下文管理（token 按 tokens.py 的中文实测系数估算）。deepseek-flash 窗口有 100 万 tokens，
+# 这里是自定的工作预算，用来控制成本、速度和效果（上下文过长时模型易漏掉中间内容），不是窗口上限。
+# 发给模型的消息超过该值时，清理较早的工具结果（材料原文等），只留最近 3 次；保存的历史不受影响
+CONTEXT_CLEAR_TOKENS = int(os.getenv("BRIEFLY_CONTEXT_CLEAR_TOKENS", "40000"))
+# 清理后仍超过该值时，从最早的对话开始裁剪（同样只影响发给模型的内容）
+HISTORY_TOKENS = int(os.getenv("BRIEFLY_HISTORY_TOKENS", "60000"))
+# 一轮提问中，材料工具已返回超过该值的原文后，再读原文改为提示改用 summarize_materials 或检索
+READ_BUDGET_TOKENS = int(os.getenv("BRIEFLY_READ_BUDGET_TOKENS", "30000"))
 # 按章节读取时单次最多返回的字数；章节更长时只返回前几块，并提示从哪一块接着读
 SECTION_READ_CHARS = int(os.getenv("BRIEFLY_SECTION_READ_CHARS", "3000"))
 

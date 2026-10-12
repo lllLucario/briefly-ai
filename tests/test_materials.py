@@ -407,6 +407,25 @@ def test_summarize_materials_with_nothing_relevant(store):
     assert result.startswith("没有提取到与“预算”相关的内容")
 
 
+def test_reading_beyond_turn_budget_suggests_summarize(store, monkeypatch):
+    monkeypatch.setattr(config, "READ_BUDGET_TOKENS", 20)
+    material, _ = store.add_text("长", "第一块的材料原文内容比较长。" * 5)
+    model = fake(
+        tool_msg("read_material", {"material_id": material.id, "chunk": 1}, id="r1"),
+        tool_msg("read_material", {"material_id": material.id, "chunk": 1}, id="r2"),
+        text_msg("ok"),
+        tool_msg("read_material", {"material_id": material.id, "chunk": 1}, id="r3"),
+        text_msg("ok"),
+    )
+    agent = Agent(model, tools=[], store=store)
+    agent.chat("读一下")
+    first, second = [m.content for m in agent.history if isinstance(m, ToolMessage)]
+    assert "【材料开始】" in first
+    assert "超过单轮读取预算" in second and "summarize_materials" in second
+    agent.chat("再读一次")  # 新一轮重新计算
+    assert "【材料开始】" in [m.content for m in agent.history if isinstance(m, ToolMessage)][2]
+
+
 def test_runtime_is_hidden_from_model_schema(store):
     from briefly.tools.materials import material_tools
 
@@ -427,7 +446,7 @@ def test_short_materials_are_inlined(store):
 
 
 def test_long_materials_are_listed_not_inlined(store, monkeypatch):
-    monkeypatch.setattr(config, "INLINE_MATERIAL_CHARS", 5)
+    monkeypatch.setattr(config, "INLINE_MATERIAL_TOKENS", 5)
     a, _ = store.add_text("素材A", "完成登录模块和支付模块")
     model = fake(text_msg("ok"))
     Agent(model, tools=[], store=store).chat("写周报", material_ids=[a.id])
@@ -442,7 +461,7 @@ def test_selecting_missing_material_raises(store):
 
 
 def test_search_then_read_then_answer(store, monkeypatch):
-    monkeypatch.setattr(config, "INLINE_MATERIAL_CHARS", 0)
+    monkeypatch.setattr(config, "INLINE_MATERIAL_TOKENS", 0)
     a, _ = store.add_text("周报素材", "周一：接口联调。周三：修复支付缺陷。")
     model = fake(
         tool_msg("search_materials", {"keywords": "支付"}, id="s"),

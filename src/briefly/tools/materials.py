@@ -4,6 +4,7 @@
 """
 from langchain.tools import ToolRuntime
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, tool
 
 from .. import config
@@ -12,6 +13,7 @@ from ..llm import create_chat_model
 from ..materials import MaterialChunk, MaterialStore, wrap_material
 from ..skills import read_prompt
 from ..summarize import Source, extract_items, synthesize
+from ..tokens import count_message_tokens
 
 
 def _scope(runtime: ToolRuntime[Context]) -> list[int] | None:
@@ -21,6 +23,13 @@ def _scope(runtime: ToolRuntime[Context]) -> list[int] | None:
 def _check_in_scope(material_id: int, scope: list[int] | None) -> None:
     if scope is not None and material_id not in scope:
         raise ValueError(f"材料 {material_id} 不在用户本次选择的范围内，可用: {scope}")
+
+
+def _read_this_turn(runtime: ToolRuntime[Context]) -> int:
+    """本轮提问（最后一条用户消息之后）工具已返回内容的 token 数。同一步并行发起的调用彼此看不到，按步计。"""
+    messages = (runtime.state or {}).get("messages", [])
+    last_human = max((i for i, m in enumerate(messages) if isinstance(m, HumanMessage)), default=-1)
+    return count_message_tokens([m for m in messages[last_human + 1 :] if isinstance(m, ToolMessage)])
 
 
 def _chunk_range(chunks: list[MaterialChunk], start: int, end: int) -> tuple[int, int]:
@@ -79,6 +88,12 @@ def material_tools(store: MaterialStore, model: BaseChatModel | None = None) -> 
         if chunk is not None and section is not None:
             raise ValueError("chunk 和 section 只能填一个")
         _check_in_scope(material_id, _scope(runtime))
+        used = _read_this_turn(runtime)
+        if used > config.READ_BUDGET_TOKENS:  # 软限制：不报错，引导换更省的读法
+            return (
+                f"本轮已读取约 {used} tokens 的材料原文，超过单轮读取预算（{config.READ_BUDGET_TOKENS}），本次不再返回原文。"
+                "需要完整内容请改用 summarize_materials；只需要其中某个主题时，用 search_materials 定位后只读相关的块。"
+            )
         material = store.get(material_id)
         chunks = store.chunks(material_id)
         name = f"材料 {material_id}《{material.title}》"
