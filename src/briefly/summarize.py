@@ -168,7 +168,7 @@ def extract_items(
     pending = over_budget + pending
 
     result.failed = [{"source": s.tag, "error": errors[s][:300]} for s in pending]
-    seen: set[str] = set()
+    quoted_in: dict[str, str] = {}  # 引用 → 最先出现在哪一块
     for source in sources:  # 按原文顺序输出
         if source not in outputs:
             continue
@@ -179,10 +179,12 @@ def extract_items(
                 result.dropped.append(
                     {"source": source.tag, "point": item.point, "quote": item.quote, "reason": "引用在原文中找不到"}
                 )
-            elif quote in seen:  # 相邻块有重叠，同一句原文可能被提取两次
+            elif quoted_in.get(quote, source.tag) != source.tag:
+                # 相邻块有重叠，同一句原文会在两块里各提取一次，只留先出现的；
+                # 同一块里同一句拆出的几项（一句话写了几件事）都保留
                 continue
             else:
-                seen.add(quote)
+                quoted_in.setdefault(quote, source.tag)
                 result.items.append(WorkItem(item.category, item.point.strip(), item.quote.strip(), source.tag))
     return result
 

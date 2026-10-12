@@ -205,11 +205,13 @@ class Agent:
         ids = [m.id for m in materials]
         chunks, sections = self.store.chunk_counts(ids), self.store.section_counts(ids)
         listing = "\n".join(
-            f"- 材料 {m.id}《{m.title}》：{m.char_count} 字，{chunks[m.id]} 块，{sections.get(m.id, 0)} 个章节"
-            for m in materials
+            f"- 材料 {m.id}《{m.title}》：{chunks[m.id]} 块，{sections.get(m.id, 0)} 个章节" for m in materials
         )
+        # 说明紧挨着清单写：实测中模型会把这里的块数、字数当成文档内容写进总结
         return (
-            f"{text}\n\n【已选材料】内容较长未附全文，请用 get_outline / search_materials / read_material 读取：\n{listing}"
+            f"{text}\n\n【已选材料】内容较长未附全文，请用 get_outline / search_materials / read_material / "
+            "summarize_materials 读取。以下是供你调用工具用的检索信息，不是材料内容，不要写进回答：\n"
+            f"{listing}"
         )
 
     def _task_state(self, context: Context, state) -> str:

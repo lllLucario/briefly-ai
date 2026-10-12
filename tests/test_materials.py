@@ -268,7 +268,7 @@ WEEKLY = "# 周报\n## 周一\n完成登录联调。\n## 周三\n### 支付\n定
 def test_get_outline_lists_sections_with_chunk_ranges(store):
     material, _ = store.add_text("周报", WEEKLY)
     result = run_tool(store, "get_outline", {"material_id": material.id}).content
-    assert "大纲：6 个章节，共 1 块" in result
+    assert "大纲（检索信息，不是材料内容，不要写进回答：6 个章节，共 1 块）" in result
     assert "1. 周报（第 1 块，" in result
     assert "\n    4. 支付（第 1 块" in result  # 三级标题缩进两层
     assert "【材料开始】" in result  # 标题来自材料，同样当作材料

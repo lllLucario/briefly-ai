@@ -16,6 +16,10 @@ from ..summarize import Source, extract_items, synthesize
 from ..tool_budget import output_limit
 
 
+# 工具返回的块数、章节数、字数是帮模型调用工具的信息。实测中模型会把它们当成文档内容写进总结，所以统一加这个标注
+RETRIEVAL_INFO = "检索信息，不是材料内容，不要写进回答"
+
+
 def _scope(runtime: ToolRuntime[Context]) -> list[int] | None:
     return runtime.context.material_ids if runtime.context else None
 
@@ -74,7 +78,7 @@ def material_tools(
         if not materials:
             return "当前没有可用的材料。"
         chunks, sections = store.chunk_counts(scope), store.section_counts(scope)
-        return "\n".join(
+        return f"{RETRIEVAL_INFO}：\n" + "\n".join(
             f"- 材料 {m.id}《{m.title}》：{m.file_type or '粘贴文本'}，{m.char_count} 字，"
             f"{chunks.get(m.id, 0)} 块，{sections.get(m.id, 0)} 个章节，{m.created_at:%Y-%m-%d}"
             for m in materials
@@ -98,7 +102,7 @@ def material_tools(
         for s in sections:
             first, last = _chunk_range(chunks, s.start, s.end)
             lines.append(f"{'  ' * (s.level - top)}{s.index}. {s.title}（{_blocks(first, last)}，{s.end - s.start} 字）")
-        header = f"【{name}大纲：{len(sections)} 个章节，共 {len(chunks)} 块】"
+        header = f"【{name}大纲（{RETRIEVAL_INFO}：{len(sections)} 个章节，共 {len(chunks)} 块）】"
         return "\n".join([wrap_material(header, "\n".join(lines)), *(f"解析提示：{n}" for n in notes)])
 
     @tool
@@ -216,7 +220,7 @@ def material_tools(
             notes.append(f"汇总引用了不存在的要点编号 {digest.invalid_refs}，相关内容请谨慎使用")
         if not digest.coverage_checked:
             notes.append("汇总没有标注要点编号，未能核对是否漏写")
-        header = f"【材料提炼结果：程序逐块提取并核对原文，〔材料号-块号〕为出处；{'；'.join(notes)}】"
+        header = f"【材料提炼结果：程序逐块提取并核对原文，〔材料号-块号〕为出处（{RETRIEVAL_INFO}：{'；'.join(notes)}）】"
         return wrap_material(header, body)
 
     return [list_materials, get_outline, read_material, search_materials, summarize_materials]

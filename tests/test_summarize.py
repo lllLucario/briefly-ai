@@ -111,6 +111,13 @@ def test_duplicate_quotes_from_overlapping_chunks_are_kept_once():
     assert [i.source for i in result.items] == ["1-1"]
 
 
+def test_one_sentence_split_into_several_items_in_same_chunk_is_kept():
+    sentence = "确认上线时间定为 10 月 20 日，上线前需要补齐压测报告。"
+    two = [item("done", "确认上线时间", sentence), item("plan", "补齐压测报告", sentence)]
+    result = extract_items(FunctionModel(respond=by_chunk({1: two})), [src(1, sentence)])
+    assert [i.point for i in result.items] == ["确认上线时间", "补齐压测报告"]
+
+
 def test_extract_prompt_carries_focus_period_and_wrapped_material():
     model = FunctionModel(respond=by_chunk({1: []}))
     extract_items(model, [SOURCES[0]], focus="支付改造", period="2026-10-12 至 2026-10-18")
