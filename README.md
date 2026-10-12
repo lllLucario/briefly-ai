@@ -18,7 +18,9 @@ src/briefly/
 ├── cli.py        命令行入口
 ├── agent.py      单智能体：create_agent + 中间件（提示词、历史裁剪、工具轮数上限）
 ├── llm.py        模型工厂（唯一创建模型的地方）
-├── loaders.py    文件 → 文本
+├── loaders.py    文件 → 带标题的文本 + 解析报告
+├── pdf.py        PDF 解析：按字号、书签识别标题，识别扫描件
+├── layout_cleaner.py  清理 PDF 的页眉页脚、水印、页码、乱码，合并排版换行
 ├── db.py         业务数据库（SQLAlchemy）
 ├── materials.py  材料管理：导入、去重、检索；章节与块入库
 ├── chunking.py   章节识别与分块

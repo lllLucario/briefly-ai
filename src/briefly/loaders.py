@@ -1,9 +1,18 @@
-"""把各种办公文件读成纯文本。"""
+"""把各种办公文件读成文本，标题统一用 Markdown 表示，并附解析报告。"""
 import re
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 
 SUPPORTED_TYPES = ("txt", "md", "docx", "pdf")
+
+
+@dataclass
+class LoadedDocument:
+    text: str
+    # 标题是否已用 Markdown 的 # 表示：True 只认 #；False 不认 #，按中文编号规则猜；None 按内容自动判断
+    markdown: bool | None
+    report: dict = field(default_factory=dict)  # 解析报告：结构来源、删除了什么、警告等
 
 
 def file_type(filename: str) -> str:
@@ -21,17 +30,29 @@ def decode_text(data: bytes) -> str:
         return data.decode("gb18030")
 
 
-def load_bytes(filename: str, data: bytes) -> str:
+def escape_heading_marks(text: str) -> str:
+    """正文里以 # 开头的行（如提示词示例）转义，避免被当成标题。"""
+    return "\\" + text if text.lstrip().startswith("#") else text
+
+
+def load_document(filename: str, data: bytes) -> LoadedDocument:
     kind = file_type(filename)
-    if kind in {"txt", "md"}:
-        return decode_text(data)
+    if kind == "md":
+        return LoadedDocument(decode_text(data), markdown=True)
+    if kind == "txt":
+        return LoadedDocument(decode_text(data), markdown=False)
     if kind == "docx":
         from docx import Document
 
-        return "\n".join(_docx_line(par) for par in Document(BytesIO(data)).paragraphs)
-    from pypdf import PdfReader
+        text = "\n".join(_docx_line(p) for p in Document(BytesIO(data)).paragraphs)
+        return LoadedDocument(text, markdown=True, report={"parser": "docx", "structure": "docx_styles"})
+    from .pdf import load_pdf
 
-    return "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(data)).pages)
+    return load_pdf(data)
+
+
+def load_bytes(filename: str, data: bytes) -> str:
+    return load_document(filename, data).text
 
 
 _DOCX_HEADING = re.compile(r"^(?:Heading|标题)\s*([1-6])$")
@@ -44,7 +65,7 @@ def _docx_line(paragraph) -> str:
         return f"# {paragraph.text}"
     if (m := _DOCX_HEADING.match(style)) and paragraph.text.strip():
         return f"{'#' * int(m.group(1))} {paragraph.text}"
-    return paragraph.text
+    return escape_heading_marks(paragraph.text)
 
 
 def load_text(path: str | Path) -> str:

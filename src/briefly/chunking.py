@@ -52,38 +52,64 @@ def _lines(text: str):
         pos += len(line)
 
 
-def _guess_level(line: str) -> int | None:
-    """没有 Markdown 标题的文本（txt、pdf、粘贴）按常见的中文标题写法猜。"""
+def _guess_level(line: str) -> tuple[int, str] | None:
+    """没有 Markdown 标题的文本（txt、无字号与书签的 pdf、粘贴）按常见的中文标题写法猜。
+
+    返回 (级别, 编号写法)；编号写法用于区分列表，如“一、”和“1.3”级别相同但不是同一组。
+    """
     s = line.strip()
     if not s or len(s) > MAX_HEADING_LEN or s.endswith(_SENTENCE_END):
         return None
     for pattern, level in _PATTERNS:
         if pattern.match(s):
-            return level
+            return level, pattern.pattern
     if m := _DOTTED.match(s):
-        return m.group(1).count(".") + 1
+        depth = m.group(1).count(".") + 1
+        return depth, f"dotted{depth}"
     return None
 
 
-def find_headings(text: str) -> list[tuple[int, int, str]]:
-    """返回 [(偏移, 级别, 标题)]。文中有 Markdown 标题时只认 Markdown 标题，否则按写法猜。"""
+def uses_markdown(text: str, markdown: bool | None) -> bool:
+    """markdown 由文件格式决定（md、转换后的 docx/pdf 为 True，txt 为 False）；粘贴的文本为 None，按内容判断。"""
+    if markdown is not None:
+        return markdown
+    return any(_MD_HEADING.match(line) for _, line in _lines(text))
+
+
+def find_headings(text: str, markdown: bool | None = None) -> list[tuple[int, int, str]]:
+    """返回 [(偏移, 级别, 标题)]。Markdown 模式只认 # 标题；否则按中文编号写法猜。"""
     lines = list(_lines(text))
-    markdown = any(_MD_HEADING.match(line) for _, line in lines)
-    headings: list[tuple[int, int, str]] = []
-    in_fence = False
-    for offset, line in lines:
-        if markdown:
+    if uses_markdown(text, markdown):
+        headings: list[tuple[int, int, str]] = []
+        in_fence = False
+        for offset, line in lines:
             if _FENCE.match(line):
                 in_fence = not in_fence
             elif not in_fence and (m := _MD_HEADING.match(line)):
                 headings.append((offset, len(m.group(1)), m.group(2).strip()))
-        elif (level := _guess_level(line)) is not None:
-            headings.append((offset, level, line.strip()))
-    return headings
+        return headings
+    return _drop_lists(lines)
 
 
-def parse_sections(text: str) -> list[Section]:
-    headings = find_headings(text)
+def _drop_lists(lines: list[tuple[int, str]]) -> list[tuple[int, int, str]]:
+    """按写法猜标题，并排除列表：同一种编号写法的行紧挨着、中间没有正文的，是列表而不是标题。"""
+    guessed: list[tuple[int, int, str, str] | None] = []  # 与非空行一一对应，不是候选标题时为 None
+    for offset, line in lines:
+        if line.strip():
+            found = _guess_level(line)
+            guessed.append((offset, found[0], line.strip(), found[1]) if found else None)
+    keep = []
+    for i, item in enumerate(guessed):
+        if item is None:
+            continue
+        neighbors = [guessed[j] for j in (i - 1, i + 1) if 0 <= j < len(guessed)]
+        if not any(n is not None and n[3] == item[3] for n in neighbors):
+            keep.append(item[:3])
+    return keep
+
+
+def parse_sections(text: str, markdown: bool | None = None) -> list[Section]:
+    headings = find_headings(text, markdown)
     sections: list[Section] = []
     stack: list[tuple[int, str]] = []
     for i, (start, level, title) in enumerate(headings):

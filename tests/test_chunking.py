@@ -35,6 +35,18 @@ def test_guessed_chinese_headings():
     assert titles(text) == [(1, "第一章 总体情况"), (2, "一、本周进展"), (3, "（一）支付"), (2, "1.1 回调优化"), (3, "1.1.1 细节")]
 
 
+def test_format_decides_whether_hash_lines_are_headings():
+    text = "一、背景\n示例提示词如下：\n# Role\n你是助理"
+    assert [t for _, _, t in find_headings(text, markdown=False)] == ["一、背景"]  # txt / 无结构的 pdf
+    assert [t for _, _, t in find_headings(text, markdown=True)] == ["Role"]  # md
+    assert [t for _, _, t in find_headings(text)] == ["Role"]  # 粘贴：按内容判断
+
+
+def test_consecutive_same_level_numbered_lines_are_a_list_not_headings():
+    text = "一、本周进展\n完成了以下工作：\n1.1 登录联调\n1.2 支付改造\n1.3 订单分页\n二、下周计划\n继续推进。"
+    assert [t for _, _, t in find_headings(text, markdown=False)] == ["一、本周进展", "二、下周计划"]
+
+
 def test_sentences_and_long_lines_are_not_headings():
     text = "一、本周完成了接口联调。\n1.1 版本已发布，\n" + "一、" + "很长" * 30 + "\n1. 普通列表项"
     assert titles(text) == []

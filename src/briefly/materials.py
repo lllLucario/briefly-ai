@@ -3,13 +3,13 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import DateTime, Engine, ForeignKey, Integer, String, Text, func, select
+from sqlalchemy import JSON, DateTime, Engine, ForeignKey, Integer, String, Text, func, select
 from sqlalchemy.orm import Mapped, mapped_column, relationship, sessionmaker
 
 from . import config
-from .chunking import chunk_text, parse_sections
+from .chunking import chunk_text, parse_sections, uses_markdown
 from .db import Base
-from .loaders import file_type, load_bytes
+from .loaders import file_type, load_document
 
 SNIPPET_RADIUS = 100
 MAX_SEARCH_HITS = 10
@@ -25,6 +25,9 @@ class Material(Base):
     content: Mapped[str] = mapped_column(Text)
     char_count: Mapped[int] = mapped_column(Integer)
     content_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    # 解析报告：structure（章节来自 font_size / bookmarks / docx_styles / markdown / rules / none）、
+    # 清理时删除的内容、警告等，便于核查有没有误删
+    parse_report: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -80,9 +83,19 @@ class MaterialStore:
         self._session = sessionmaker(engine, expire_on_commit=False)
 
     def add_text(
-        self, title: str, content: str, *, source: str = "paste", kind: str | None = None
+        self,
+        title: str,
+        content: str,
+        *,
+        source: str = "paste",
+        kind: str | None = None,
+        markdown: bool | None = None,
+        report: dict | None = None,
     ) -> tuple[Material, bool]:
-        """返回 (材料, 是否新建)。内容相同的材料已存在时直接返回已有的那条。"""
+        """返回 (材料, 是否新建)。内容相同的材料已存在时直接返回已有的那条。
+
+        markdown 见 chunking.uses_markdown：粘贴的文本为 None，按内容判断。
+        """
         content = content.replace("\r\n", "\n").replace("\r", "\n").strip()
         if not content:
             raise ValueError("材料内容为空")
@@ -99,7 +112,13 @@ class MaterialStore:
                 char_count=len(content),
                 content_hash=digest,
             )
-            sections = parse_sections(content)
+            sections = parse_sections(content, markdown)
+            report = dict(report or {})
+            if not sections:
+                report["structure"] = "none"
+            elif not report.get("structure"):
+                report["structure"] = "markdown" if uses_markdown(content, markdown) else "rules"
+            material.parse_report = report
             material.sections = [
                 MaterialSection(index=i, level=x.level, title=x.title[:200], path=x.path, start=x.start, end=x.end)
                 for i, x in enumerate(sections, start=1)
@@ -118,11 +137,11 @@ class MaterialStore:
         kind = file_type(filename)
         if len(data) > config.MAX_UPLOAD_MB * 1024 * 1024:
             raise ValueError(f"文件超过 {config.MAX_UPLOAD_MB}MB 上限")
-        text = load_bytes(filename, data)
-        if not text.strip():
+        doc = load_document(filename, data)
+        if not doc.text.strip():
             hint = "，可能是扫描版 PDF" if kind == "pdf" else ""
             raise ValueError(f"未从文件中提取到文字{hint}")
-        return self.add_text(filename, text, source="file", kind=kind)
+        return self.add_text(filename, doc.text, source="file", kind=kind, markdown=doc.markdown, report=doc.report)
 
     def list_materials(self, ids: list[int] | None = None) -> list[Material]:
         query = select(Material).order_by(Material.id)

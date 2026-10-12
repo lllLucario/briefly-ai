@@ -138,6 +138,18 @@ def test_sections_and_chunks_are_stored_on_import(store, monkeypatch):
     assert store.chunk_counts([material.id]) == {material.id: len(chunks)}
 
 
+def test_parse_report_records_structure_source(store):
+    md, _ = store.add_file("a.md", "# 标题\n# Role 是正文吗？在 md 里算标题".encode())
+    txt, _ = store.add_file("b.txt", "一、背景\n# Role\n正文".encode())
+    plain, _ = store.add_file("c.txt", "没有任何标题的一段话".encode())
+    pasted, _ = store.add_text("粘贴", "第一章 总则\n内容")
+    assert md.parse_report["structure"] == "markdown"
+    assert txt.parse_report["structure"] == "rules"
+    assert [s.title for s in store.sections(txt.id)] == ["一、背景"]
+    assert plain.parse_report["structure"] == "none"
+    assert pasted.parse_report["structure"] == "rules"
+
+
 def test_delete_removes_sections_and_chunks(store):
     from sqlalchemy import func, select
 
