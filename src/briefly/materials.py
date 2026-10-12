@@ -84,6 +84,7 @@ def wrap_material(header: str, body: str) -> str:
 
 class MaterialStore:
     def __init__(self, engine: Engine) -> None:
+        self.engine = engine
         self._session = sessionmaker(engine, expire_on_commit=False)
 
     def add_text(

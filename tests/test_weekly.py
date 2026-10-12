@@ -1,0 +1,233 @@
+from datetime import date
+from urllib.parse import unquote
+
+import pytest
+from fastapi.testclient import TestClient
+from langchain_core.messages import AIMessage
+
+from briefly.api import create_app
+from briefly.db import create_db_engine
+from briefly.materials import MaterialNotFound, MaterialStore
+from briefly.weekly import (
+    DONE,
+    FAILED,
+    PENDING,
+    WeeklyService,
+    current_week,
+    strip_source_tags,
+    unverified_numbers,
+)
+from fakes import FunctionModel, structured
+
+LOG = "# 周报素材\n## 周三\n定位到支付回调超时的原因。\n## 周四\n支付回调耗时从 1.8 秒降到 200 毫秒。"
+REPORT = "【周报标题】2026-10-12 至 2026-10-18\n【本周完成】\n- 支付回调耗时从 1.8 秒降到 200 毫秒〔1-1〕\n【下周计划】\n1. 支付上线〔简述〕"
+
+
+def make_model(report: str = REPORT, extract=None):
+    """提取调用返回原文中的一句；撰写周报的调用返回 report。"""
+
+    def respond(messages):
+        system = messages[0].content
+        if "撰写周报" in system:
+            if isinstance(report, Exception):
+                raise report
+            return AIMessage(report)
+        if extract is not None:
+            return extract(messages)
+        return structured("Extraction", items=[{"category": "done", "point": "耗时下降", "quote": "支付回调耗时从 1.8 秒降到 200 毫秒。"}])
+
+    return FunctionModel(respond=respond)
+
+
+@pytest.fixture
+def store():
+    engine = create_db_engine("sqlite://")
+    yield MaterialStore(engine)
+    engine.dispose()
+
+
+@pytest.fixture
+def material(store):
+    m, _ = store.add_text("周报素材", LOG)
+    return m
+
+
+def service(store, model=None) -> tuple[WeeklyService, FunctionModel]:
+    model = model or make_model()
+    return WeeklyService(store, lambda: model), model
+
+
+# ---- 工具函数 ----
+
+
+@pytest.mark.parametrize(
+    ("today", "expected"),
+    [
+        (date(2026, 10, 12), (date(2026, 10, 12), date(2026, 10, 18))),  # 周一
+        (date(2026, 10, 18), (date(2026, 10, 12), date(2026, 10, 18))),  # 周日
+        (date(2026, 10, 15), (date(2026, 10, 12), date(2026, 10, 18))),
+    ],
+)
+def test_current_week_is_monday_to_sunday(today, expected):
+    assert current_week(today) == expected
+
+
+def test_strip_source_tags():
+    assert strip_source_tags("- 完成联调〔1-3〕〔2-5〕\n- 上线〔简述〕") == "- 完成联调\n- 上线"
+
+
+def test_unverified_numbers_ignore_list_ordinals_and_known_numbers():
+    report = "1. 耗时降到 200 毫秒〔1-2〕\n2. 完成率 99%\n3. 周期 2026-10-12"
+    assert unverified_numbers(report, "耗时从 1.8 秒降到 200 毫秒 2026-10-12 至 2026-10-18") == ["99"]
+
+
+# ---- 生成 ----
+
+
+def test_generate_end_to_end(store, material):
+    weekly, model = service(store)
+    report = weekly.create([material.id], brief="主要做支付改造", period_start=date(2026, 10, 12), period_end=date(2026, 10, 18))
+    assert report.status == PENDING
+    weekly.generate(report.id)
+    done = weekly.get(report.id)
+    assert done.status == DONE and done.content == REPORT
+    assert done.items == [
+        {"category": "done", "point": "耗时下降", "quote": "支付回调耗时从 1.8 秒降到 200 毫秒。", "source": f"{material.id}-1"}
+    ]
+    g = done.generation
+    assert g["chunks_total"] == g["chunks_processed"] == 1
+    assert g["calls"] == 2 and g["unverified_numbers"] == [] and g["warnings"] == []
+    request = model.calls[-1][-1].content
+    assert "周期：2026-10-12 至 2026-10-18" in request and "用户简述〔简述〕：主要做支付改造" in request
+    assert f"〔{material.id}-1〕" in request
+    assert "【周报标题】" in model.calls[-1][0].content  # 用的是 weekly.md 的格式
+
+
+def test_default_period_is_current_week(store, material):
+    weekly, _ = service(store)
+    report = weekly.create([material.id])
+    assert (report.period_start, report.period_end) == current_week()
+
+
+def test_unverified_numbers_and_failed_chunks_become_warnings(store, monkeypatch):
+    monkeypatch.setattr("briefly.config.CHUNK_SIZE", 20)
+    monkeypatch.setattr("briefly.config.CHUNK_OVERLAP", 0)
+    m, _ = store.add_text("长", LOG)
+
+    def extract(messages):
+        if "第 1 块" in messages[-1].content:
+            raise ConnectionError("网络错误")
+        return structured("Extraction", items=[])
+
+    weekly, _ = service(store, make_model(report="完成率 99%〔简述〕", extract=extract))
+    report = weekly.create([m.id])
+    weekly.generate(report.id)
+    g = weekly.get(report.id).generation
+    assert any(f"材料 {m.id} 第 1 块处理失败" in w for w in g["warnings"])
+    assert g["unverified_numbers"] == ["99"]
+    assert any("请核对：99" in w for w in g["warnings"])
+
+
+def test_brief_only_report(store):
+    weekly, model = service(store, make_model(report="【本周完成】\n- 修复登录 bug〔简述〕"))
+    report = weekly.create([], brief="修复了登录 bug")
+    weekly.generate(report.id)
+    assert weekly.get(report.id).status == DONE
+    assert "没有提取到相关工作项" in model.calls[-1][-1].content
+
+
+def test_model_error_marks_report_failed(store, material):
+    weekly, _ = service(store, make_model(report=RuntimeError("API 欠费")))
+    report = weekly.create([material.id])
+    weekly.generate(report.id)
+    failed = weekly.get(report.id)
+    assert failed.status == FAILED and "API 欠费" in failed.error
+
+
+def test_material_deleted_before_generation_is_reported(store, material):
+    weekly, _ = service(store)
+    other, _ = store.add_text("另一份", "整理需求池。")
+    report = weekly.create([material.id, other.id])
+    store.delete(other.id)
+    weekly.generate(report.id)
+    assert f"材料 {other.id} 已被删除，未纳入" in weekly.get(report.id).generation["warnings"]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error", "message"),
+    [
+        ({"material_ids": []}, ValueError, "至少选择一份素材"),
+        ({"material_ids": [99]}, MaterialNotFound, "材料 99 不存在"),
+        ({"material_ids": [], "brief": "x", "period_start": date(2026, 10, 18), "period_end": date(2026, 10, 12)}, ValueError, "不能晚于"),
+    ],
+)
+def test_create_validation(store, kwargs, error, message):
+    weekly, _ = service(store)
+    with pytest.raises(error, match=message):
+        weekly.create(**kwargs)
+
+
+def test_interrupted_reports_are_marked_failed_on_restart(store, material):
+    weekly, _ = service(store)
+    report = weekly.create([material.id])
+    restarted, _ = service(store)
+    interrupted = restarted.get(report.id)
+    assert interrupted.status == FAILED and "生成中断" in interrupted.error
+
+
+def test_edit_and_export(store, material):
+    weekly, _ = service(store)
+    report = weekly.create([material.id], period_start=date(2026, 10, 12), period_end=date(2026, 10, 18))
+    with pytest.raises(ValueError, match="还没有生成完成"):
+        weekly.update_content(report.id, "x")
+    weekly.generate(report.id)
+    with pytest.raises(ValueError, match="不能为空"):
+        weekly.update_content(report.id, "  ")
+    weekly.update_content(report.id, "【本周完成】\n- 改过的内容〔1-1〕")
+    filename, text = weekly.export_markdown(report.id)
+    assert filename == "周报_2026-10-12_2026-10-18.md"
+    assert text == "【本周完成】\n- 改过的内容\n"
+
+
+# ---- 接口 ----
+
+
+@pytest.fixture
+def client(store):
+    with TestClient(create_app(store, lambda: make_model())) as c:
+        yield c
+
+
+def test_weekly_api_flow(client, material):
+    created = client.post(
+        "/weekly-reports",
+        json={"material_ids": [material.id], "brief": "支付改造", "period_start": "2026-10-12", "period_end": "2026-10-18"},
+    )
+    assert created.status_code == 202 and created.json()["status"] == PENDING
+    report_id = created.json()["id"]
+
+    detail = client.get(f"/weekly-reports/{report_id}").json()  # 测试客户端会在返回前跑完后台任务
+    assert detail["status"] == DONE and detail["content"] == REPORT
+    assert detail["items"][0]["source"] == f"{material.id}-1"
+    assert detail["generation"]["chunks_processed"] == 1
+
+    assert [r["id"] for r in client.get("/weekly-reports").json()] == [report_id]
+
+    edited = client.put(f"/weekly-reports/{report_id}", json={"content": "- 改过〔1-1〕"})
+    assert edited.status_code == 200 and edited.json()["content"] == "- 改过〔1-1〕"
+
+    exported = client.get(f"/weekly-reports/{report_id}/export.md")
+    assert exported.status_code == 200 and exported.text == "- 改过\n"
+    assert exported.headers["content-type"].startswith("text/markdown")
+    assert unquote(exported.headers["content-disposition"].split("''")[1]) == "周报_2026-10-12_2026-10-18.md"
+
+    assert client.delete(f"/weekly-reports/{report_id}").status_code == 204
+    assert client.get(f"/weekly-reports/{report_id}").status_code == 404
+
+
+def test_weekly_api_errors(client):
+    assert client.post("/weekly-reports", json={}).status_code == 400
+    missing = client.post("/weekly-reports", json={"material_ids": [42]})
+    assert missing.status_code == 404 and missing.json()["detail"] == "材料 42 不存在"
+    assert client.post("/weekly-reports", json={"brief": "x", "period_start": "不是日期"}).status_code == 422
+    assert client.get("/weekly-reports/999").json()["detail"] == "周报 999 不存在"

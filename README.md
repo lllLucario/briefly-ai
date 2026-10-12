@@ -21,6 +21,9 @@ src/briefly/
 ├── loaders.py    文件 → 带标题的文本 + 解析报告
 ├── pdf.py        PDF 解析：按字号、书签识别标题，识别扫描件
 ├── tables.py     xlsx / csv → Markdown 表格（工作表作章节）
+├── summarize.py  Map-Reduce 提炼：逐块提取并核对原文、分批合并
+├── weekly.py     周报：后台生成、出处标记、数字核对、导出
+├── api.py        FastAPI 后端
 ├── layout_cleaner.py  清理 PDF 的页眉页脚、水印、页码、乱码，合并排版换行
 ├── db.py         业务数据库（SQLAlchemy）
 ├── materials.py  材料管理：导入、去重、检索；章节与块入库
@@ -47,7 +50,7 @@ briefly data/inputs/meeting.txt -s minutes
 briefly data/inputs/notes.md            # 不指定能力则由模型判断
 briefly                                 # 对话模式，支持多轮（/file、/add、/materials、/reset、/exit）
 briefly -t <会话编号>                    # 恢复之前的会话（记忆存在 data/briefly.db）
-briefly-api                             # 启动后端服务，接口文档：http://127.0.0.1:8000/docs
+briefly-api                             # 启动后端服务（材料管理、周报生成），接口文档：http://127.0.0.1:8000/docs
 pytest
 ```
 

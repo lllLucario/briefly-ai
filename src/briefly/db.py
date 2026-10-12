@@ -13,7 +13,7 @@ class Base(DeclarativeBase):
 
 def create_db_engine(url: str | None = None) -> Engine:
     """创建引擎并建表。sqlite 内存库用于测试。"""
-    from . import materials  # noqa: F401  注册表结构
+    from . import materials, weekly  # noqa: F401  注册表结构
 
     url = url or config.DATABASE_URL
     kwargs: dict = {}

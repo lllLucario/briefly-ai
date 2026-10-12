@@ -1,0 +1,217 @@
+"""周报：用户选素材、写简述 → 后台生成 → 预览（带出处标记）→ 修改 → 导出 Markdown。
+
+生成流程由代码控制（见 summarize.py）：逐块提取并核对原文 → 按周报格式合成 → 数字核对。
+"""
+import re
+import time
+from collections.abc import Callable
+from dataclasses import asdict
+from datetime import date, datetime, timedelta
+
+from langchain_core.language_models import BaseChatModel
+from sqlalchemy import JSON, Date, DateTime, Integer, String, Text, select, update
+from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
+
+from .db import Base
+from .llm import create_chat_model
+from .materials import MaterialNotFound, MaterialStore
+from .skills import read_prompt
+from .summarize import Source, extract_items, synthesize
+
+PENDING, RUNNING, DONE, FAILED = "pending", "running", "done", "failed"
+_SOURCE_TAG = re.compile(r"〔[^〕]*〕")
+_NUMBER = re.compile(r"\d+(?:[.:：/\-]\d+)*")
+_LIST_ORDINAL = re.compile(r"(?m)^(\s*)\d+[.、)）]\s*")
+
+
+class WeeklyReport(Base):
+    __tablename__ = "weekly_reports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    period_start: Mapped[date] = mapped_column(Date)
+    period_end: Mapped[date] = mapped_column(Date)
+    brief: Mapped[str] = mapped_column(Text, default="")
+    options: Mapped[dict] = mapped_column(JSON, default=dict)  # 读者、姓名
+    material_ids: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(10), default=PENDING)
+    content: Mapped[str] = mapped_column(Text, default="")  # 周报正文，带出处标记；用户修改后覆盖
+    items: Mapped[list] = mapped_column(JSON, default=list)  # 通过核对的工作项（含原文），材料删了也能查来源
+    generation: Mapped[dict] = mapped_column(JSON, default=dict)  # 生成报告
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class ReportNotFound(MaterialNotFound):
+    """周报不存在。复用 MaterialNotFound，接口层统一返回 404。"""
+
+
+def current_week(today: date | None = None) -> tuple[date, date]:
+    """本周一到本周日。由代码计算，不让模型算日期。"""
+    today = today or date.today()
+    monday = today - timedelta(days=today.weekday())
+    return monday, monday + timedelta(days=6)
+
+
+def strip_source_tags(text: str) -> str:
+    """去掉出处标记〔1-3〕〔简述〕，用于导出。"""
+    return re.sub(r"[ \t]+\n", "\n", _SOURCE_TAG.sub("", text)).strip()
+
+
+def unverified_numbers(report: str, evidence: str) -> list[str]:
+    """周报里在素材、简述、周期中都找不到的数字和日期。只用于提醒：换算出的日期、合计等是合法推导。"""
+    text = _LIST_ORDINAL.sub(r"\1", strip_source_tags(report))  # 列表序号不算
+    pool = re.sub(r"\s+", "", evidence)
+    return [n for n in dict.fromkeys(_NUMBER.findall(text)) if n not in pool]
+
+
+class WeeklyService:
+    def __init__(self, store: MaterialStore, model_factory: Callable[[], BaseChatModel] = create_chat_model) -> None:
+        self.store = store
+        self._model_factory = model_factory
+        self._session = sessionmaker(store.engine, expire_on_commit=False)
+        self._fail_interrupted()
+
+    def _fail_interrupted(self) -> None:
+        """服务重启时还在生成中的周报不会再继续，标记为失败，免得一直显示“生成中”。"""
+        with self._session() as s:
+            s.execute(
+                update(WeeklyReport)
+                .where(WeeklyReport.status.in_([PENDING, RUNNING]))
+                .values(status=FAILED, error="服务重启，生成中断，请重新生成")
+            )
+            s.commit()
+
+    def create(
+        self,
+        material_ids: list[int],
+        brief: str = "",
+        period_start: date | None = None,
+        period_end: date | None = None,
+        audience: str | None = None,
+        name: str | None = None,
+    ) -> WeeklyReport:
+        """登记一份待生成的周报；真正的生成由 generate 在后台执行。"""
+        if not material_ids and not brief.strip():
+            raise ValueError("请至少选择一份素材，或写一段简述")
+        for material_id in material_ids:
+            self.store.get(material_id)  # 不存在时报 404
+        default_start, default_end = current_week()
+        start, end = period_start or default_start, period_end or default_end
+        if start > end:
+            raise ValueError("周期的开始日期不能晚于结束日期")
+        report = WeeklyReport(
+            period_start=start,
+            period_end=end,
+            brief=brief.strip(),
+            options={k: v for k, v in {"audience": audience, "name": name}.items() if v},
+            material_ids=list(dict.fromkeys(material_ids)),
+        )
+        with self._session() as s:
+            s.add(report)
+            s.commit()
+        return report
+
+    def generate(self, report_id: int) -> None:
+        """后台执行：出错时记为失败并保存原因，不向外抛出。"""
+        report = self.get(report_id)
+        self._update(report_id, status=RUNNING, error="")
+        try:
+            content, items, generation = self._run(report)
+        except Exception as e:  # 后台任务没有调用方接异常，必须记下来
+            self._update(report_id, status=FAILED, error=f"{type(e).__name__}: {e}"[:1000])
+            return
+        self._update(report_id, status=DONE, content=content, items=items, generation=generation)
+
+    def _run(self, report: WeeklyReport) -> tuple[str, list[dict], dict]:
+        started = time.monotonic()
+        model = self._model_factory()
+        sources, warnings = [], []
+        for material_id in report.material_ids:
+            try:
+                material = self.store.get(material_id)
+            except MaterialNotFound:
+                warnings.append(f"材料 {material_id} 已被删除，未纳入")
+                continue
+            chunks = self.store.chunks(material_id)
+            sources += [Source(material_id, c.index, material.title, c.content) for c in chunks]
+            warnings += [f"《{material.title}》：{w}" for w in material.parse_report.get("warnings", [])]
+
+        period = f"{report.period_start.isoformat()} 至 {report.period_end.isoformat()}"
+        extraction = extract_items(model, sources, focus=report.brief, period=period)
+        for failed in extraction.failed:
+            material_id, chunk = failed["source"].split("-")
+            warnings.append(f"材料 {material_id} 第 {chunk} 块处理失败，未纳入：{failed['error'][:80]}")
+        if extraction.dropped:
+            warnings.append(f"有 {len(extraction.dropped)} 条提取结果在原文中找不到依据，已丢弃")
+
+        request = "\n".join(
+            [
+                f"周期：{period}",
+                f"读者：{report.options.get('audience') or '直属上级'}",
+                f"姓名：{report.options.get('name') or '未提供'}",
+                f"用户简述〔简述〕：{report.brief or '无'}",
+                "请撰写本周周报。",
+            ]
+        )
+        system_prompt = read_prompt("weekly") + "\n\n" + read_prompt("weekly_report")
+        synthesis = synthesize(model, system_prompt, request, extraction.items)
+
+        evidence = " ".join([report.brief, period, *(f"{i.point} {i.quote}" for i in extraction.items)])
+        numbers = unverified_numbers(synthesis.text, evidence)
+        if numbers:
+            warnings.append(f"以下数字未在素材或简述中找到原文，请核对：{'、'.join(numbers)}")
+
+        usage = extraction.usage
+        generation = {
+            "chunks_total": extraction.total,
+            "chunks_processed": extraction.processed,
+            "failed": extraction.failed,
+            "dropped": extraction.dropped,
+            "unverified_numbers": numbers,
+            "merge_levels": synthesis.merge_levels,
+            "calls": usage.calls + synthesis.usage.calls,
+            "input_tokens": usage.input_tokens + synthesis.usage.input_tokens,
+            "output_tokens": usage.output_tokens + synthesis.usage.output_tokens,
+            "seconds": round(time.monotonic() - started, 1),
+            "warnings": warnings,
+        }
+        return synthesis.text, [asdict(i) for i in extraction.items], generation
+
+    def list_reports(self) -> list[WeeklyReport]:
+        with self._session() as s:
+            return list(s.scalars(select(WeeklyReport).order_by(WeeklyReport.id.desc())))
+
+    def get(self, report_id: int) -> WeeklyReport:
+        with self._session() as s:
+            report = s.get(WeeklyReport, report_id)
+        if report is None:
+            raise ReportNotFound(f"周报 {report_id} 不存在")
+        return report
+
+    def update_content(self, report_id: int, content: str) -> WeeklyReport:
+        report = self.get(report_id)
+        if report.status != DONE:
+            raise ValueError("周报还没有生成完成，不能修改")
+        if not content.strip():
+            raise ValueError("周报内容不能为空")
+        self._update(report_id, content=content.strip())
+        return self.get(report_id)
+
+    def delete(self, report_id: int) -> None:
+        report = self.get(report_id)
+        with self._session() as s:
+            s.delete(s.merge(report))
+            s.commit()
+
+    def export_markdown(self, report_id: int) -> tuple[str, str]:
+        """返回 (文件名, 去掉出处标记的正文)。"""
+        report = self.get(report_id)
+        if report.status != DONE:
+            raise ValueError("周报还没有生成完成，不能导出")
+        return f"周报_{report.period_start}_{report.period_end}.md", strip_source_tags(report.content) + "\n"
+
+    def _update(self, report_id: int, **values) -> None:
+        with self._session() as s:
+            s.execute(update(WeeklyReport).where(WeeklyReport.id == report_id).values(**values))
+            s.commit()
