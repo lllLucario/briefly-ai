@@ -9,6 +9,10 @@ API_KEY = os.getenv("BRIEFLY_API_KEY") or os.getenv("OPENAI_API_KEY", "")
 BASE_URL = os.getenv("BRIEFLY_BASE_URL") or os.getenv("OPENAI_BASE_URL") or None
 MODEL = os.getenv("BRIEFLY_MODEL", "")
 
+# 思考模式（DeepSeek 用 extra_body 的 thinking 参数）：off 关闭（默认）、on 开启、
+# provider 不传该参数（换成不认识这个参数的服务商时用）
+THINKING = {"off": False, "on": True, "provider": None}[os.getenv("BRIEFLY_THINKING", "off").lower()]
+
 # 留空则不传该参数，由服务商决定上限
 MAX_TOKENS = int(os.getenv("BRIEFLY_MAX_TOKENS", "0")) or None
 # 会话历史最多保留的消息条数，超出时从最早的完整轮次开始丢弃

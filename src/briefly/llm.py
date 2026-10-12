@@ -13,4 +13,13 @@ def create_chat_model() -> BaseChatModel:
         api_key=config.API_KEY,
         base_url=config.BASE_URL,
         max_tokens=config.MAX_TOKENS,
+        extra_body=_thinking_body(),
     )
+
+
+def _thinking_body() -> dict | None:
+    """DeepSeek 默认开思考模式。开着时带工具的多轮请求必须回传每轮的 reasoning_content，
+    ChatOpenAI 不回传会报 400；思考也让每次调用更慢更贵。所以默认显式关闭。"""
+    if config.THINKING is None:
+        return None
+    return {"thinking": {"type": "enabled" if config.THINKING else "disabled"}}
