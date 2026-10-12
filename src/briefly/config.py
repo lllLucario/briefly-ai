@@ -37,3 +37,8 @@ SECTION_READ_CHARS = int(os.getenv("BRIEFLY_SECTION_READ_CHARS", "3000"))
 # 后端服务监听地址；默认只在本机访问
 HOST = os.getenv("BRIEFLY_HOST", "127.0.0.1")
 PORT = int(os.getenv("BRIEFLY_PORT", "8000"))
+
+# Map-Reduce 提炼：逐块提取的并发数、单块失败后的重试次数、最终合成时工作项的 token 预算（超出则先分批合并）
+MAP_CONCURRENCY = int(os.getenv("BRIEFLY_MAP_CONCURRENCY", "4"))
+MAP_RETRIES = int(os.getenv("BRIEFLY_MAP_RETRIES", "1"))
+REDUCE_BUDGET_TOKENS = int(os.getenv("BRIEFLY_REDUCE_BUDGET_TOKENS", "30000"))
