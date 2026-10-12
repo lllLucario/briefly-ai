@@ -1,12 +1,13 @@
-"""材料工具：列出、分块读取、关键词检索。
+"""材料工具：列出、看大纲、按块或按章节读取、关键词检索。
 
 可访问范围由运行时 Context.material_ids 决定：用户本次选了材料时只能访问这些，否则可访问全部。
 """
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 
+from .. import config
 from ..context import Context
-from ..materials import MaterialStore, wrap_material
+from ..materials import MaterialChunk, MaterialStore, wrap_material
 
 
 def _scope(runtime: ToolRuntime[Context]) -> list[int] | None:
@@ -18,35 +19,100 @@ def _check_in_scope(material_id: int, scope: list[int] | None) -> None:
         raise ValueError(f"材料 {material_id} 不在用户本次选择的范围内，可用: {scope}")
 
 
+def _chunk_range(chunks: list[MaterialChunk], start: int, end: int) -> tuple[int, int]:
+    """与 [start, end) 有重叠的块号范围。"""
+    hit = [c.index for c in chunks if c.start < end and c.end > start]
+    return (hit[0], hit[-1]) if hit else (0, 0)
+
+
+def _blocks(first: int, last: int) -> str:
+    return f"第 {first} 块" if first == last else f"第 {first}–{last} 块"
+
+
 def material_tools(store: MaterialStore) -> list[BaseTool]:
     @tool
     def list_materials(runtime: ToolRuntime[Context]) -> str:
-        """列出当前可用的材料：编号、标题、类型、字数、块数、导入日期。不知道有哪些材料或材料编号时调用。"""
+        """列出当前可用的材料：编号、标题、类型、字数、块数、章节数、导入日期。不知道有哪些材料或材料编号时调用。"""
         scope = _scope(runtime)
         materials = store.list_materials(scope)
         if not materials:
             return "当前没有可用的材料。"
-        counts = store.chunk_counts(scope)
+        chunks, sections = store.chunk_counts(scope), store.section_counts(scope)
         return "\n".join(
             f"- 材料 {m.id}《{m.title}》：{m.file_type or '粘贴文本'}，{m.char_count} 字，"
-            f"{counts.get(m.id, 0)} 块，{m.created_at:%Y-%m-%d}"
+            f"{chunks.get(m.id, 0)} 块，{sections.get(m.id, 0)} 个章节，{m.created_at:%Y-%m-%d}"
             for m in materials
         )
 
     @tool
-    def read_material(material_id: int, runtime: ToolRuntime[Context], chunk: int = 1) -> str:
-        """读取某份材料的第 chunk 块（从 1 开始，每块约 1500 字）。返回内容会注明共几块；需要完整内容时按顺序读完所有块。"""
+    def get_outline(material_id: int, runtime: ToolRuntime[Context]) -> str:
+        """查看某份材料的章节大纲：每章的编号、标题、所在块号和字数。
+        材料较长、需要了解结构或只读其中某几章时先调用，再用 read_material 的 section 参数按章节读取。"""
         _check_in_scope(material_id, _scope(runtime))
         material = store.get(material_id)
         chunks = store.chunks(material_id)
-        if not 1 <= chunk <= len(chunks):
-            raise ValueError(f"块号超出范围，材料 {material_id} 共 {len(chunks)} 块")
-        header = f"【材料 {material_id}《{material.title}》第 {chunk}/{len(chunks)} 块】"
-        return wrap_material(header, chunks[chunk - 1].content)
+        sections = store.sections(material_id)
+        name = f"材料 {material_id}《{material.title}》"
+        notes = material.parse_report.get("warnings", [])
+        if not sections:
+            text = f"{name}没有识别出章节，请用 search_materials 检索，或按块号读取（共 {len(chunks)} 块）。"
+            return "\n".join([text, *(f"解析提示：{n}" for n in notes)])
+        top = min(s.level for s in sections)
+        lines = []
+        for s in sections:
+            first, last = _chunk_range(chunks, s.start, s.end)
+            lines.append(f"{'  ' * (s.level - top)}{s.index}. {s.title}（{_blocks(first, last)}，{s.end - s.start} 字）")
+        header = f"【{name}大纲：{len(sections)} 个章节，共 {len(chunks)} 块】"
+        return "\n".join([wrap_material(header, "\n".join(lines)), *(f"解析提示：{n}" for n in notes)])
+
+    @tool
+    def read_material(
+        material_id: int, runtime: ToolRuntime[Context], chunk: int | None = None, section: int | None = None
+    ) -> str:
+        """读取某份材料。chunk 是块号（从 1 开始，每块约 1500 字）；section 是 get_outline 里的章节编号。两者只填一个，都不填时读第 1 块。
+        返回内容会注明共几块；需要完整内容时按顺序读完所有块。章节过长时只返回前几块，并注明从哪一块接着读。"""
+        if chunk is not None and section is not None:
+            raise ValueError("chunk 和 section 只能填一个")
+        _check_in_scope(material_id, _scope(runtime))
+        material = store.get(material_id)
+        chunks = store.chunks(material_id)
+        name = f"材料 {material_id}《{material.title}》"
+
+        if section is None:
+            chunk = chunk or 1
+            if not 1 <= chunk <= len(chunks):
+                raise ValueError(f"块号超出范围，材料 {material_id} 共 {len(chunks)} 块")
+            current = chunks[chunk - 1]
+            where = f"（{current.section}）" if current.section else ""
+            return wrap_material(f"【{name}第 {chunk}/{len(chunks)} 块{where}】", current.content)
+
+        sections = store.sections(material_id)
+        target = next((s for s in sections if s.index == section), None)
+        if target is None:
+            raise ValueError(f"章节编号超出范围，材料 {material_id} 共 {len(sections)} 个章节，请先调用 get_outline")
+        first, last = _chunk_range(chunks, target.start, target.end)
+        text = material.content[target.start : target.end].strip()
+        if len(text) <= config.SECTION_READ_CHARS:
+            return wrap_material(f"【{name}章节 {section}：{target.path}（{_blocks(first, last)}）】", text)
+
+        # 章节太长：按块返回开头的一部分，并说明从哪里接着读
+        taken, size = [], 0
+        for c in chunks[first - 1 : last]:
+            if taken and size + c.char_count > config.SECTION_READ_CHARS:
+                break
+            taken.append(c)
+            size += c.char_count
+        end = taken[-1].index
+        header = (
+            f"【{name}章节 {section}：{target.path}，共 {len(text)} 字（{_blocks(first, last)}），"
+            f"较长，本次返回{_blocks(first, end)}】"
+        )
+        body = wrap_material(header, "\n".join(c.content for c in taken))
+        return f"{body}\n本章节还未读完，请继续用 read_material(material_id={material_id}, chunk={end + 1}) 读到第 {last} 块。"
 
     @tool
     def search_materials(keywords: str, runtime: ToolRuntime[Context], material_ids: list[int] | None = None) -> str:
-        """在材料中按关键词检索，返回最相关的片段及所在材料编号和块号。keywords 用空格分隔多个词，命中任意一个即算。
+        """在材料中按关键词检索，返回最相关的片段及所在材料编号、块号和章节。keywords 用空格分隔多个词，命中任意一个即算。
         material_ids 可限定在某几份材料中检索，不填则检索全部可用材料。需要定位某个主题在哪份材料、哪一块时调用，再用 read_material 读取完整的块。"""
         scope = _scope(runtime)
         if material_ids is not None:
@@ -57,8 +123,12 @@ def material_tools(store: MaterialStore) -> list[BaseTool]:
         if not hits:
             return f"没有找到包含“{keywords}”的内容。"
         return "\n\n".join(
-            wrap_material(f"【材料 {h.material_id}《{h.title}》第 {h.chunk} 块，命中 {h.hits} 次】", h.snippet)
+            wrap_material(
+                f"【材料 {h.material_id}《{h.title}》第 {h.chunk} 块{f'（{h.section}）' if h.section else ''}，"
+                f"命中 {h.hits} 次】",
+                h.snippet,
+            )
             for h in hits
         )
 
-    return [list_materials, read_material, search_materials]
+    return [list_materials, get_outline, read_material, search_materials]

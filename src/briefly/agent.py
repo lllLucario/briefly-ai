@@ -140,9 +140,14 @@ class Agent:
         if sum(m.char_count for m in materials) <= config.INLINE_MATERIAL_CHARS:
             blocks = [wrap_material(f"【材料 {m.id}《{m.title}》】", m.content) for m in materials]
             return "\n\n".join([text, *blocks])
-        counts = self.store.chunk_counts(material_ids)
-        listing = "\n".join(f"- 材料 {m.id}《{m.title}》：{m.char_count} 字，{counts[m.id]} 块" for m in materials)
-        return f"{text}\n\n【已选材料】内容较长未附全文，请用 search_materials / read_material 读取：\n{listing}"
+        chunks, sections = self.store.chunk_counts(material_ids), self.store.section_counts(material_ids)
+        listing = "\n".join(
+            f"- 材料 {m.id}《{m.title}》：{m.char_count} 字，{chunks[m.id]} 块，{sections.get(m.id, 0)} 个章节"
+            for m in materials
+        )
+        return (
+            f"{text}\n\n【已选材料】内容较长未附全文，请用 get_outline / search_materials / read_material 读取：\n{listing}"
+        )
 
 
 def _new_thread_id() -> str:

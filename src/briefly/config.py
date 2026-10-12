@@ -27,3 +27,5 @@ CHUNK_OVERLAP = int(os.getenv("BRIEFLY_CHUNK_OVERLAP", "150"))
 MAX_UPLOAD_MB = int(os.getenv("BRIEFLY_MAX_UPLOAD_MB", "10"))
 # 选中材料合计不超过该字数时，全文直接放进消息；超过则由模型用工具读取
 INLINE_MATERIAL_CHARS = int(os.getenv("BRIEFLY_INLINE_MATERIAL_CHARS", "6000"))
+# 按章节读取时单次最多返回的字数；章节更长时只返回前几块，并提示从哪一块接着读
+SECTION_READ_CHARS = int(os.getenv("BRIEFLY_SECTION_READ_CHARS", "3000"))

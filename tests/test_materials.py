@@ -262,6 +262,75 @@ def test_tools_respect_selected_scope(store):
     assert "不在用户本次选择的范围内" in denied.content
 
 
+WEEKLY = "# 周报\n## 周一\n完成登录联调。\n## 周三\n### 支付\n定位回调超时。\n### 订单\n评审分页方案。\n## 周五\n确认上线时间。"
+
+
+def test_get_outline_lists_sections_with_chunk_ranges(store):
+    material, _ = store.add_text("周报", WEEKLY)
+    result = run_tool(store, "get_outline", {"material_id": material.id}).content
+    assert "大纲：6 个章节，共 1 块" in result
+    assert "1. 周报（第 1 块，" in result
+    assert "\n    4. 支付（第 1 块" in result  # 三级标题缩进两层
+    assert "【材料开始】" in result  # 标题来自材料，同样当作材料
+
+
+def test_get_outline_without_sections_points_to_search(store):
+    material, _ = store.add_text("t", "没有任何标题的一段话。")
+    result = run_tool(store, "get_outline", {"material_id": material.id}).content
+    assert "没有识别出章节" in result and "search_materials" in result
+
+
+def test_read_material_by_section_returns_only_that_section(store):
+    material, _ = store.add_text("周报", WEEKLY)
+    result = run_tool(store, "read_material", {"material_id": material.id, "section": 3}).content
+    assert "章节 3：周报 > 周三" in result
+    assert "定位回调超时" in result and "评审分页方案" in result  # 含子章节
+    assert "完成登录联调" not in result and "确认上线时间" not in result
+
+
+def test_long_section_returns_first_chunks_and_where_to_continue(store, monkeypatch):
+    monkeypatch.setattr(config, "CHUNK_SIZE", 40)
+    monkeypatch.setattr(config, "CHUNK_OVERLAP", 0)
+    monkeypatch.setattr(config, "SECTION_READ_CHARS", 90)
+    body = "\n".join(f"第{i}条记录的内容比较长一些。" for i in range(20))
+    material, _ = store.add_text("长", f"# 前言\n简介。\n# 正文\n{body}")
+    chunks = store.chunks(material.id)
+    result = run_tool(store, "read_material", {"material_id": material.id, "section": 2}).content
+    assert "较长，本次返回" in result
+    assert f"读到第 {len(chunks)} 块" in result
+    assert "第0条记录" in result and "第19条记录" not in result
+
+
+def test_read_material_rejects_both_chunk_and_section(store):
+    material, _ = store.add_text("周报", WEEKLY)
+    result = run_tool(store, "read_material", {"material_id": material.id, "chunk": 1, "section": 1}).content
+    assert "只能填一个" in result
+
+
+def test_read_material_section_out_of_range(store):
+    material, _ = store.add_text("周报", WEEKLY)
+    result = run_tool(store, "read_material", {"material_id": material.id, "section": 99}).content
+    assert "章节编号超出范围" in result and "get_outline" in result
+
+
+def test_chunk_read_and_search_show_section_path(store, monkeypatch):
+    monkeypatch.setattr(config, "CHUNK_SIZE", 20)
+    monkeypatch.setattr(config, "CHUNK_OVERLAP", 0)
+    material, _ = store.add_text("周报", WEEKLY)
+    searched = run_tool(store, "search_materials", {"keywords": "回调"}).content
+    assert "（周报 > 周三 > 支付），命中 1 次" in searched
+    chunk = next(c for c in store.chunks(material.id) if "回调" in c.content)
+    read = run_tool(store, "read_material", {"material_id": material.id, "chunk": chunk.index}).content
+    assert f"块（{chunk.section}）】" in read
+
+
+def test_get_outline_respects_selected_scope(store):
+    a, _ = store.add_text("a", "# 甲\n内容")
+    b, _ = store.add_text("b", "# 乙\n内容")
+    result = run_tool(store, "get_outline", {"material_id": b.id}, material_ids=[a.id]).content
+    assert "不在用户本次选择的范围内" in result
+
+
 def test_runtime_is_hidden_from_model_schema(store):
     from briefly.tools.materials import material_tools
 

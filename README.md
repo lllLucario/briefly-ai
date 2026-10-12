@@ -28,7 +28,7 @@ src/briefly/
 ├── context.py    单次调用的运行时参数
 ├── config.py     环境变量配置
 ├── skills/       能力注册表
-├── tools/        工具：get_current_date；材料工具（列出、分块读取、关键词检索）
+├── tools/        工具：get_current_date；材料工具（列出、大纲、按块或章节读取、关键词检索）
 └── prompts/      base.md + 五个能力说明（summarize/minutes/weekly/todo/polish）
 tests/            用 LangChain 假聊天模型测试，不消耗 API
 data/             inputs/、outputs/、会话记忆库 briefly.db、业务库 app.db（内容不入库）

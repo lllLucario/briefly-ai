@@ -180,9 +180,15 @@ class MaterialStore:
             return list(s.scalars(query))
 
     def chunk_counts(self, material_ids: list[int] | None = None) -> dict[int, int]:
-        query = select(MaterialChunk.material_id, func.count()).group_by(MaterialChunk.material_id)
+        return self._counts(MaterialChunk, material_ids)
+
+    def section_counts(self, material_ids: list[int] | None = None) -> dict[int, int]:
+        return self._counts(MaterialSection, material_ids)
+
+    def _counts(self, model, material_ids: list[int] | None) -> dict[int, int]:
+        query = select(model.material_id, func.count()).group_by(model.material_id)
         if material_ids is not None:
-            query = query.where(MaterialChunk.material_id.in_(material_ids))
+            query = query.where(model.material_id.in_(material_ids))
         with self._session() as s:
             return dict(s.execute(query).all())
 
