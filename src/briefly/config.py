@@ -29,3 +29,7 @@ MAX_UPLOAD_MB = int(os.getenv("BRIEFLY_MAX_UPLOAD_MB", "10"))
 INLINE_MATERIAL_CHARS = int(os.getenv("BRIEFLY_INLINE_MATERIAL_CHARS", "6000"))
 # 按章节读取时单次最多返回的字数；章节更长时只返回前几块，并提示从哪一块接着读
 SECTION_READ_CHARS = int(os.getenv("BRIEFLY_SECTION_READ_CHARS", "3000"))
+
+# 后端服务监听地址；默认只在本机访问
+HOST = os.getenv("BRIEFLY_HOST", "127.0.0.1")
+PORT = int(os.getenv("BRIEFLY_PORT", "8000"))

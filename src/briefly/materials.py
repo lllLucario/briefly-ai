@@ -15,6 +15,10 @@ SNIPPET_RADIUS = 100
 MAX_SEARCH_HITS = 10
 
 
+class MaterialNotFound(ValueError):
+    """材料不存在。继承 ValueError，工具里仍按普通错误回传给模型。"""
+
+
 class Material(Base):
     __tablename__ = "materials"
 
@@ -154,14 +158,14 @@ class MaterialStore:
         with self._session() as s:
             material = s.get(Material, material_id)
         if material is None:
-            raise ValueError(f"材料 {material_id} 不存在")
+            raise MaterialNotFound(f"材料 {material_id} 不存在")
         return material
 
     def delete(self, material_id: int) -> None:
         with self._session() as s:
             material = s.get(Material, material_id)
             if material is None:
-                raise ValueError(f"材料 {material_id} 不存在")
+                raise MaterialNotFound(f"材料 {material_id} 不存在")
             s.delete(material)
             s.commit()
 

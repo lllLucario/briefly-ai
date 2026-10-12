@@ -14,14 +14,18 @@ dependencies = [
     "python-dotenv>=1.0",
     "docling-slim[format-docx]>=2.137,<3",
     "openpyxl>=3.1,<4",
+    "fastapi>=0.143,<1",
+    "uvicorn>=0.54,<1",
+    "python-multipart>=0.0.32,<1",
     "pypdf>=4.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "httpx>=0.28,<1"]
 
 [project.scripts]
 briefly = "briefly.cli:main"
+briefly-api = "briefly.api:serve"
 
 [build-system]
 requires = ["setuptools>=68"]
