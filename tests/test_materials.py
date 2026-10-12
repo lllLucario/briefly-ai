@@ -7,7 +7,7 @@ from briefly import config
 from briefly.agent import Agent
 from briefly.context import Context
 from briefly.db import create_db_engine
-from briefly.materials import MaterialStore, split_chunks
+from briefly.materials import MaterialStore
 from fakes import fake, text_msg, tool_msg
 
 
@@ -122,25 +122,46 @@ def test_list_materials_filters_by_ids(store):
     assert [m.id for m in store.list_materials([a.id])] == [a.id]
 
 
-def test_long_text_is_split_into_overlapping_chunks(monkeypatch):
-    monkeypatch.setattr(config, "CHUNK_SIZE", 50)
-    monkeypatch.setattr(config, "CHUNK_OVERLAP", 10)
-    text = "".join(f"第{i}句内容比较长一些。" for i in range(30))
-    chunks = split_chunks(text)
-    assert len(chunks) > 1
-    assert all(len(c) <= 50 for c in chunks)
-    assert chunks[0].endswith("。")  # 优先在句号处切分
-
-
-def test_headings_are_not_split_into_tiny_chunks(monkeypatch):
-    monkeypatch.setattr(config, "CHUNK_SIZE", 100)
+def test_sections_and_chunks_are_stored_on_import(store, monkeypatch):
+    monkeypatch.setattr(config, "CHUNK_SIZE", 30)
     monkeypatch.setattr(config, "CHUNK_OVERLAP", 0)
-    day = "\n".join(["这一行是十个字的内容。"] * 13)  # 每天约 140 字，略超一块
-    text = "\n\n".join(f"## 周{d}\n\n{day}" for d in "一二三")
-    chunks = split_chunks(text)
-    assert all(len(c) > 20 for c in chunks)
-    headings = [c for c in chunks if c.startswith("## ")]
-    assert headings and all("这一行" in c for c in headings)  # 标题与正文在同一块
+    material, _ = store.add_text("周报", "# 周报\n## 周一\n完成登录模块联调工作。\n## 周二\n评审订单分页方案。")
+    assert [(s.index, s.level, s.path) for s in store.sections(material.id)] == [
+        (1, 1, "周报"),
+        (2, 2, "周报 > 周一"),
+        (3, 2, "周报 > 周二"),
+    ]
+    chunks = store.chunks(material.id)
+    assert [c.index for c in chunks] == list(range(1, len(chunks) + 1))
+    assert all(material.content[c.start : c.end].strip() == c.content for c in chunks)
+    assert chunks[-1].section == "周报 > 周二"
+    assert store.chunk_counts([material.id]) == {material.id: len(chunks)}
+
+
+def test_delete_removes_sections_and_chunks(store):
+    from sqlalchemy import func, select
+
+    from briefly.materials import MaterialChunk, MaterialSection
+
+    material, _ = store.add_text("t", "# 标题\n内容")
+    store.delete(material.id)
+    with store._session() as s:
+        assert s.scalar(select(func.count()).select_from(MaterialChunk)) == 0
+        assert s.scalar(select(func.count()).select_from(MaterialSection)) == 0
+
+
+def test_docx_heading_styles_become_sections(store):
+    from docx import Document
+
+    doc = Document()
+    doc.add_heading("项目周报", level=1)
+    doc.add_heading("本周完成", level=2)
+    doc.add_paragraph("完成登录模块")
+    buf = BytesIO()
+    doc.save(buf)
+    material, _ = store.add_file("周报.docx", buf.getvalue())
+    assert material.content == "# 项目周报\n## 本周完成\n完成登录模块"
+    assert [s.path for s in store.sections(material.id)] == ["项目周报", "项目周报 > 本周完成"]
 
 
 def test_search_ranks_by_hit_count(store):

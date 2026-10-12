@@ -1,4 +1,5 @@
 """把各种办公文件读成纯文本。"""
+import re
 from io import BytesIO
 from pathlib import Path
 
@@ -27,10 +28,23 @@ def load_bytes(filename: str, data: bytes) -> str:
     if kind == "docx":
         from docx import Document
 
-        return "\n".join(par.text for par in Document(BytesIO(data)).paragraphs)
+        return "\n".join(_docx_line(par) for par in Document(BytesIO(data)).paragraphs)
     from pypdf import PdfReader
 
     return "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(data)).pages)
+
+
+_DOCX_HEADING = re.compile(r"^(?:Heading|标题)\s*([1-6])$")
+
+
+def _docx_line(paragraph) -> str:
+    """标题样式转成 Markdown 标题，供章节识别使用。"""
+    style = paragraph.style.name if paragraph.style is not None else ""
+    if style == "Title" and paragraph.text.strip():
+        return f"# {paragraph.text}"
+    if (m := _DOCX_HEADING.match(style)) and paragraph.text.strip():
+        return f"{'#' * int(m.group(1))} {paragraph.text}"
+    return paragraph.text
 
 
 def load_text(path: str | Path) -> str:

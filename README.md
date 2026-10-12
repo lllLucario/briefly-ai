@@ -20,7 +20,8 @@ src/briefly/
 ├── llm.py        模型工厂（唯一创建模型的地方）
 ├── loaders.py    文件 → 文本
 ├── db.py         业务数据库（SQLAlchemy）
-├── materials.py  材料管理：导入、去重、分块、检索
+├── materials.py  材料管理：导入、去重、检索；章节与块入库
+├── chunking.py   章节识别与分块
 ├── context.py    单次调用的运行时参数
 ├── config.py     环境变量配置
 ├── skills/       能力注册表

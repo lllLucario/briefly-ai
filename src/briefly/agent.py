@@ -25,7 +25,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from . import config
 from .context import Context
 from .llm import create_chat_model
-from .materials import MaterialStore, split_chunks, wrap_material
+from .materials import MaterialStore, wrap_material
 from .skills import SKILLS, read_prompt
 from .tools import DEFAULT_TOOLS
 from .tools.materials import material_tools
@@ -140,9 +140,8 @@ class Agent:
         if sum(m.char_count for m in materials) <= config.INLINE_MATERIAL_CHARS:
             blocks = [wrap_material(f"【材料 {m.id}《{m.title}》】", m.content) for m in materials]
             return "\n\n".join([text, *blocks])
-        listing = "\n".join(
-            f"- 材料 {m.id}《{m.title}》：{m.char_count} 字，{len(split_chunks(m.content))} 块" for m in materials
-        )
+        counts = self.store.chunk_counts(material_ids)
+        listing = "\n".join(f"- 材料 {m.id}《{m.title}》：{m.char_count} 字，{counts[m.id]} 块" for m in materials)
         return f"{text}\n\n【已选材料】内容较长未附全文，请用 search_materials / read_material 读取：\n{listing}"
 
 

@@ -1,13 +1,13 @@
-"""材料管理：粘贴文本或上传文件，存为纯文本；分块与检索在读取时现算。"""
+"""材料管理：粘贴文本或上传文件，存为纯文本；导入时识别章节、分块并入库，检索查入库的块。"""
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from sqlalchemy import DateTime, Engine, Integer, String, Text, select
-from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
+from sqlalchemy import DateTime, Engine, ForeignKey, Integer, String, Text, func, select
+from sqlalchemy.orm import Mapped, mapped_column, relationship, sessionmaker
 
 from . import config
+from .chunking import chunk_text, parse_sections
 from .db import Base
 from .loaders import file_type, load_bytes
 
@@ -28,25 +28,46 @@ class Material(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
+    sections: Mapped[list["MaterialSection"]] = relationship(cascade="all, delete-orphan")
+    chunks: Mapped[list["MaterialChunk"]] = relationship(cascade="all, delete-orphan")
+
+
+class MaterialSection(Base):
+    """章节大纲。start/end 是在材料全文中的偏移。"""
+
+    __tablename__ = "material_sections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    material_id: Mapped[int] = mapped_column(ForeignKey("materials.id", ondelete="CASCADE"), index=True)
+    index: Mapped[int] = mapped_column(Integer)  # 从 1 开始，按出现顺序
+    level: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(String(200))
+    path: Mapped[str] = mapped_column(Text)
+    start: Mapped[int] = mapped_column(Integer)
+    end: Mapped[int] = mapped_column(Integer)
+
+
+class MaterialChunk(Base):
+    __tablename__ = "material_chunks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    material_id: Mapped[int] = mapped_column(ForeignKey("materials.id", ondelete="CASCADE"), index=True)
+    index: Mapped[int] = mapped_column(Integer)  # 从 1 开始
+    section: Mapped[str] = mapped_column(Text)  # 块起点所在章节的路径
+    start: Mapped[int] = mapped_column(Integer)
+    end: Mapped[int] = mapped_column(Integer)
+    content: Mapped[str] = mapped_column(Text)
+    char_count: Mapped[int] = mapped_column(Integer)
+
 
 @dataclass(frozen=True)
 class SearchHit:
     material_id: int
     title: str
     chunk: int  # 从 1 开始
+    section: str
     hits: int
     snippet: str
-
-
-def split_chunks(text: str) -> list[str]:
-    # 不按空行 "\n\n" 切：办公文档里标题后常跟空行，会把标题切成单独的碎块；按行装填到接近 chunk_size
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=config.CHUNK_SIZE,
-        chunk_overlap=config.CHUNK_OVERLAP,
-        separators=["\n", "。", "！", "？", "；", " ", ""],
-        keep_separator="end",
-    )
-    return splitter.split_text(text) or [text]
 
 
 def wrap_material(header: str, body: str) -> str:
@@ -78,6 +99,17 @@ class MaterialStore:
                 char_count=len(content),
                 content_hash=digest,
             )
+            sections = parse_sections(content)
+            material.sections = [
+                MaterialSection(index=i, level=x.level, title=x.title[:200], path=x.path, start=x.start, end=x.end)
+                for i, x in enumerate(sections, start=1)
+            ]
+            material.chunks = [
+                MaterialChunk(
+                    index=i, section=c.section, start=c.start, end=c.end, content=c.content, char_count=len(c.content)
+                )
+                for i, c in enumerate(chunk_text(content, sections), start=1)
+            ]
             s.add(material)
             s.commit()
             return material, True
@@ -114,24 +146,47 @@ class MaterialStore:
             s.delete(material)
             s.commit()
 
-    def chunks(self, material_id: int) -> list[str]:
-        return split_chunks(self.get(material_id).content)
+    def chunks(self, material_id: int) -> list[MaterialChunk]:
+        self.get(material_id)  # 不存在时报错
+        query = select(MaterialChunk).where(MaterialChunk.material_id == material_id).order_by(MaterialChunk.index)
+        with self._session() as s:
+            return list(s.scalars(query))
+
+    def sections(self, material_id: int) -> list[MaterialSection]:
+        self.get(material_id)
+        query = (
+            select(MaterialSection).where(MaterialSection.material_id == material_id).order_by(MaterialSection.index)
+        )
+        with self._session() as s:
+            return list(s.scalars(query))
+
+    def chunk_counts(self, material_ids: list[int] | None = None) -> dict[int, int]:
+        query = select(MaterialChunk.material_id, func.count()).group_by(MaterialChunk.material_id)
+        if material_ids is not None:
+            query = query.where(MaterialChunk.material_id.in_(material_ids))
+        with self._session() as s:
+            return dict(s.execute(query).all())
 
     def search(self, keywords: str, material_ids: list[int] | None = None) -> list[SearchHit]:
         """空格分隔多个关键词，子串匹配（不区分大小写），命中任意一个即算，按命中次数排序。"""
         words = [w.lower() for w in keywords.split() if w]
         if not words:
             raise ValueError("关键词为空")
+        query = select(MaterialChunk, Material.title).join(Material).order_by(Material.id, MaterialChunk.index)
+        if material_ids is not None:
+            query = query.where(Material.id.in_(material_ids))
+        with self._session() as s:
+            rows = s.execute(query).all()
         hits: list[SearchHit] = []
-        for material in self.list_materials(material_ids):
-            for index, chunk in enumerate(split_chunks(material.content), start=1):
-                lower = chunk.lower()
-                count = sum(lower.count(w) for w in words)
-                if not count:
-                    continue
-                first = min(pos for w in words if (pos := lower.find(w)) >= 0)
-                start, end = max(0, first - SNIPPET_RADIUS), first + SNIPPET_RADIUS
-                snippet = ("…" if start else "") + chunk[start:end] + ("…" if end < len(chunk) else "")
-                hits.append(SearchHit(material.id, material.title, index, count, snippet))
+        for chunk, title in rows:
+            lower = chunk.content.lower()
+            count = sum(lower.count(w) for w in words)
+            if not count:
+                continue
+            first = min(pos for w in words if (pos := lower.find(w)) >= 0)
+            start, end = max(0, first - SNIPPET_RADIUS), first + SNIPPET_RADIUS
+            text = chunk.content
+            snippet = ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
+            hits.append(SearchHit(chunk.material_id, title, chunk.index, chunk.section, count, snippet))
         hits.sort(key=lambda h: h.hits, reverse=True)
         return hits[:MAX_SEARCH_HITS]

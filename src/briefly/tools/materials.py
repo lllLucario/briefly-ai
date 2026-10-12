@@ -6,7 +6,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 
 from ..context import Context
-from ..materials import MaterialStore, split_chunks, wrap_material
+from ..materials import MaterialStore, wrap_material
 
 
 def _scope(runtime: ToolRuntime[Context]) -> list[int] | None:
@@ -22,12 +22,14 @@ def material_tools(store: MaterialStore) -> list[BaseTool]:
     @tool
     def list_materials(runtime: ToolRuntime[Context]) -> str:
         """列出当前可用的材料：编号、标题、类型、字数、块数、导入日期。不知道有哪些材料或材料编号时调用。"""
-        materials = store.list_materials(_scope(runtime))
+        scope = _scope(runtime)
+        materials = store.list_materials(scope)
         if not materials:
             return "当前没有可用的材料。"
+        counts = store.chunk_counts(scope)
         return "\n".join(
             f"- 材料 {m.id}《{m.title}》：{m.file_type or '粘贴文本'}，{m.char_count} 字，"
-            f"{len(split_chunks(m.content))} 块，{m.created_at:%Y-%m-%d}"
+            f"{counts.get(m.id, 0)} 块，{m.created_at:%Y-%m-%d}"
             for m in materials
         )
 
@@ -36,11 +38,11 @@ def material_tools(store: MaterialStore) -> list[BaseTool]:
         """读取某份材料的第 chunk 块（从 1 开始，每块约 1500 字）。返回内容会注明共几块；需要完整内容时按顺序读完所有块。"""
         _check_in_scope(material_id, _scope(runtime))
         material = store.get(material_id)
-        chunks = split_chunks(material.content)
+        chunks = store.chunks(material_id)
         if not 1 <= chunk <= len(chunks):
             raise ValueError(f"块号超出范围，材料 {material_id} 共 {len(chunks)} 块")
         header = f"【材料 {material_id}《{material.title}》第 {chunk}/{len(chunks)} 块】"
-        return wrap_material(header, chunks[chunk - 1])
+        return wrap_material(header, chunks[chunk - 1].content)
 
     @tool
     def search_materials(keywords: str, runtime: ToolRuntime[Context], material_ids: list[int] | None = None) -> str:
