@@ -14,6 +14,7 @@ from briefly.weekly import (
     PENDING,
     WeeklyService,
     current_week,
+    split_reminders,
     strip_source_tags,
     unverified_numbers,
 )
@@ -101,6 +102,26 @@ def test_generate_end_to_end(store, material):
     assert "周期：2026-10-12 至 2026-10-18" in request and "用户简述〔简述〕：主要做支付改造" in request
     assert f"〔{material.id}-1〕" in request
     assert "【周报标题】" in model.calls[-1][0].content  # 用的是 weekly.md 的格式
+
+
+def test_split_reminders():
+    text = "【本周完成】\n- 完成联调〔1-1〕\n\n【给用户的提醒】\n- 压测报告没有写进度\n• 简述与材料日期不一致\n"
+    assert split_reminders(text) == ("【本周完成】\n- 完成联调〔1-1〕", ["压测报告没有写进度", "简述与材料日期不一致"])
+    assert split_reminders("只有周报") == ("只有周报", [])
+
+
+def test_reminders_are_kept_out_of_report_and_export(store, material):
+    text = REPORT + "\n\n【给用户的提醒】\n- 材料提到上线前要补齐压测报告，但没写进度，完成率 99% 也请核对"
+    weekly, model = service(store, make_model(report=text))
+    report = weekly.create([material.id], period_start=date(2026, 10, 12), period_end=date(2026, 10, 18))
+    weekly.generate(report.id)
+    done = weekly.get(report.id)
+    assert done.content == REPORT
+    assert done.generation["reminders"] == ["材料提到上线前要补齐压测报告，但没写进度，完成率 99% 也请核对"]
+    assert done.generation["unverified_numbers"] == []  # 提醒里的数字不参与核对
+    assert "给用户的提醒" not in weekly.export_markdown(report.id)[1]
+    system = model.calls[-1][0].content
+    assert "不要自己推断风险" in system and "【给用户的提醒】" in system
 
 
 def test_default_period_is_current_week(store, material):

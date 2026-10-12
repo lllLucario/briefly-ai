@@ -58,6 +58,16 @@ def strip_source_tags(text: str) -> str:
     return re.sub(r"[ \t]+\n", "\n", _SOURCE_TAG.sub("", text)).strip()
 
 
+REMINDER_HEADING = "【给用户的提醒】"
+
+
+def split_reminders(text: str) -> tuple[str, list[str]]:
+    """把模型写在周报之后的【给用户的提醒】拆出来：提醒只给用户看，不进入周报正文和导出。"""
+    report, _, rest = text.partition(REMINDER_HEADING)
+    reminders = [line.strip().lstrip("-•* ").strip() for line in rest.splitlines()]
+    return report.strip(), [r for r in reminders if r]
+
+
 def unverified_numbers(report: str, evidence: str) -> list[str]:
     """周报里在素材、简述、周期中都找不到的数字和日期。只用于提醒：换算出的日期、合计等是合法推导。"""
     text = _LIST_ORDINAL.sub(r"\1", strip_source_tags(report))  # 列表序号不算
@@ -156,9 +166,10 @@ class WeeklyService:
         )
         system_prompt = read_prompt("weekly") + "\n\n" + read_prompt("weekly_report")
         synthesis = synthesize(model, system_prompt, request, extraction.items)
+        content, reminders = split_reminders(synthesis.text)
 
         evidence = " ".join([report.brief, period, *(f"{i.point} {i.quote}" for i in extraction.items)])
-        numbers = unverified_numbers(synthesis.text, evidence)
+        numbers = unverified_numbers(content, evidence)
         if numbers:
             warnings.append(f"以下数字未在素材或简述中找到原文，请核对：{'、'.join(numbers)}")
 
@@ -174,9 +185,10 @@ class WeeklyService:
             "input_tokens": usage.input_tokens + synthesis.usage.input_tokens,
             "output_tokens": usage.output_tokens + synthesis.usage.output_tokens,
             "seconds": round(time.monotonic() - started, 1),
-            "warnings": warnings,
+            "warnings": warnings,  # 系统提示：处理失败、丢弃、未核实数字等
+            "reminders": reminders,  # 模型给用户的提醒：可能想补充或核对的地方，不进入周报
         }
-        return synthesis.text, [asdict(i) for i in extraction.items], generation
+        return content, [asdict(i) for i in extraction.items], generation
 
     def list_reports(self) -> list[WeeklyReport]:
         with self._session() as s:

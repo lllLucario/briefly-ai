@@ -84,7 +84,7 @@ class WeeklyOut(BaseModel):
 class WeeklyDetail(WeeklyOut):
     content: str  # 带出处标记〔1-3〕〔简述〕，导出时去掉
     items: list[dict]  # 工作项及原文，用于查看出处
-    generation: dict  # 生成报告：处理块数、失败、丢弃、未核实数字、调用次数、耗时、警告
+    generation: dict  # 生成报告：处理块数、失败、丢弃、未核实数字、调用次数、耗时、警告（warnings）、给用户的提醒（reminders，不进入周报）
 
 
 def create_app(
