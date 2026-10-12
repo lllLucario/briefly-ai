@@ -144,24 +144,56 @@ def _section_at(sections: list[Section], pos: int) -> str:
     return path
 
 
+def _is_table_line(line: str) -> bool:
+    return line.lstrip().startswith("|")
+
+
+def _split_with_tables(text: str, start: int, end: int) -> list[tuple[int, int, str]]:
+    """含 Markdown 表格的长章节按行装填；表格被切开时，后面的块以表头开头，否则读不懂各列含义。
+
+    返回 [(起, 止, 前缀)]，前缀是补上的表头（不在原文这个位置上）。
+    """
+    pieces: list[tuple[int, int, str]] = []
+    piece_start, prefix = start, ""
+    header, row_no, pos = "", 0, start
+    for line in text[start:end].splitlines(keepends=True):
+        line_start, pos = pos, pos + len(line)
+        if _is_table_line(line):
+            row_no += 1
+            if row_no <= 2:  # 表头行 + 分隔行 |---|
+                header += line if line.endswith("\n") else line + "\n"
+        else:
+            header, row_no = "", 0
+        if line_start > piece_start and pos - piece_start + len(prefix) > config.CHUNK_SIZE:
+            pieces.append((piece_start, line_start, prefix))
+            piece_start = line_start
+            prefix = header if row_no > 2 else ""
+    pieces.append((piece_start, end, prefix))
+    return pieces
+
+
 def chunk_text(text: str, sections: list[Section] | None = None) -> list[Chunk]:
     if sections is None:
         sections = parse_sections(text)
     bounds = sorted({0, len(text), *(s.start for s in sections)})
-    units: list[tuple[int, int]] = []
+    units: list[tuple[int, int, str]] = []
     for a, b in zip(bounds, bounds[1:]):
-        keep_whole = b - a <= config.CHUNK_SIZE * SECTION_STRETCH
-        units.extend([(a, b)] if keep_whole else _split_long(text, a, b))
-
-    spans: list[tuple[int, int]] = []
-    for a, b in units:
-        if spans and b - spans[-1][0] <= config.CHUNK_SIZE:
-            spans[-1] = (spans[-1][0], max(spans[-1][1], b))
+        if b - a <= config.CHUNK_SIZE * SECTION_STRETCH:
+            units.append((a, b, ""))
+        elif any(_is_table_line(line) for line in text[a:b].splitlines()):
+            units.extend(_split_with_tables(text, a, b))
         else:
-            spans.append((a, b))
+            units.extend((x, y, "") for x, y in _split_long(text, a, b))
+
+    spans: list[tuple[int, int, str]] = []
+    for a, b, prefix in units:
+        if spans and not prefix and b - spans[-1][0] + len(spans[-1][2]) <= config.CHUNK_SIZE:
+            spans[-1] = (spans[-1][0], max(spans[-1][1], b), spans[-1][2])
+        else:
+            spans.append((a, b, prefix))
 
     return [
-        Chunk(a, b, content, _section_at(sections, a))
-        for a, b in spans
+        Chunk(a, b, prefix + content, _section_at(sections, a))
+        for a, b, prefix in spans
         if (content := text[a:b].strip())
     ]

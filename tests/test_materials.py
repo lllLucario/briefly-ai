@@ -85,8 +85,31 @@ def test_windows_line_endings_are_normalized(store):
 
 
 def test_add_docx_file(store):
-    material, _ = store.add_file("纪要.docx", docx_bytes("第一段", "第二段"))
-    assert material.content == "第一段\n第二段"
+    material, _ = store.add_file("纪要.docx", docx_bytes("第一段", "第二段", "# Role 正文里的示例"))
+    assert material.content == "第一段\n\n第二段\n\n\\# Role 正文里的示例"
+    assert material.parse_report["parser"] == "docling"
+    assert store.sections(material.id) == []  # 正文里的 # 已转义，不当标题
+
+
+def test_docx_table_and_special_characters_are_kept(store):
+    from docx import Document
+
+    doc = Document()
+    doc.add_paragraph("变量 file_name 和 A&B")
+    table = doc.add_table(rows=2, cols=2)
+    for cell, text in zip(table._cells, ["任务", "负责人", "支付|改造", "李经理"]):
+        cell.text = text
+    buf = BytesIO()
+    doc.save(buf)
+    material, _ = store.add_file("t.docx", buf.getvalue())
+    assert "变量 file_name 和 A&B" in material.content  # 不转义成 file\_name、A&amp;B
+    assert "| 任务 | 负责人 |" in material.content
+    assert "支付\\|改造" in material.content
+
+
+def test_corrupted_file_gives_readable_error(store):
+    with pytest.raises(ValueError, match="文件无法解析"):
+        store.add_file("坏文件.docx", b"not a zip file")
 
 
 def test_pdf_without_text_rejected(store):
@@ -102,7 +125,7 @@ def test_pdf_without_text_rejected(store):
 
 def test_unsupported_and_oversized_files_rejected(store, monkeypatch):
     with pytest.raises(ValueError, match="不支持"):
-        store.add_file("a.xlsx", b"x")
+        store.add_file("a.pptx", b"x")
     monkeypatch.setattr(config, "MAX_UPLOAD_MB", 0)
     with pytest.raises(ValueError, match="上限"):
         store.add_file("a.txt", b"x")
@@ -172,8 +195,8 @@ def test_docx_heading_styles_become_sections(store):
     buf = BytesIO()
     doc.save(buf)
     material, _ = store.add_file("周报.docx", buf.getvalue())
-    assert material.content == "# 项目周报\n## 本周完成\n完成登录模块"
     assert [s.path for s in store.sections(material.id)] == ["项目周报", "项目周报 > 本周完成"]
+    assert material.parse_report["structure"] == "docx_styles"
 
 
 def test_search_ranks_by_hit_count(store):

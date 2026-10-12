@@ -1,10 +1,9 @@
 """把各种办公文件读成文本，标题统一用 Markdown 表示，并附解析报告。"""
-import re
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 
-SUPPORTED_TYPES = ("txt", "md", "docx", "pdf")
+SUPPORTED_TYPES = ("txt", "md", "docx", "pdf", "xlsx", "csv")
 
 
 @dataclass
@@ -37,15 +36,30 @@ def escape_heading_marks(text: str) -> str:
 
 def load_document(filename: str, data: bytes) -> LoadedDocument:
     kind = file_type(filename)
+    try:
+        return _load(kind, data)
+    except ValueError:
+        raise
+    except Exception as e:  # 底层库的报错（如 BadZipFile）对用户没有意义
+        raise ValueError(f"文件无法解析，可能已损坏或与扩展名不符（{type(e).__name__}）") from e
+
+
+def _load(kind: str, data: bytes) -> LoadedDocument:
     if kind == "md":
         return LoadedDocument(decode_text(data), markdown=True)
     if kind == "txt":
         return LoadedDocument(decode_text(data), markdown=False)
     if kind == "docx":
-        from docx import Document
+        report = {"parser": "docling", "structure": "docx_styles"}
+        return LoadedDocument(_docx_to_markdown(data), markdown=True, report=report)
+    if kind == "xlsx":
+        from .tables import load_xlsx
 
-        text = "\n".join(_docx_line(p) for p in Document(BytesIO(data)).paragraphs)
-        return LoadedDocument(text, markdown=True, report={"parser": "docx", "structure": "docx_styles"})
+        return load_xlsx(data)
+    if kind == "csv":
+        from .tables import load_csv
+
+        return load_csv(decode_text(data))
     from .pdf import load_pdf
 
     return load_pdf(data)
@@ -55,17 +69,32 @@ def load_bytes(filename: str, data: bytes) -> str:
     return load_document(filename, data).text
 
 
-_DOCX_HEADING = re.compile(r"^(?:Heading|标题)\s*([1-6])$")
+def _docx_to_markdown(data: bytes) -> str:
+    """用 docling 把 docx 转成 Markdown：标题样式 → #，表格 → Markdown 表格，列表保留编号。"""
+    from docling.datamodel.base_models import DocumentStream
+    from docling_core.types.doc import SectionHeaderItem, TextItem, TitleItem
+
+    doc = _docling_converter().convert(DocumentStream(name="a.docx", stream=BytesIO(data))).document
+    for item, _ in doc.iterate_items():
+        if isinstance(item, TextItem) and not isinstance(item, (SectionHeaderItem, TitleItem)):
+            item.text = escape_heading_marks(item.text)
+    # 关闭转义：默认会把 & 改成 &amp;、_ 改成 \_，改动原文
+    text = doc.export_to_markdown(escape_html=False, escape_underscores=False, image_placeholder="", compact_tables=True)
+    return text.replace("&#124;", "\\|")
 
 
-def _docx_line(paragraph) -> str:
-    """标题样式转成 Markdown 标题，供章节识别使用。"""
-    style = paragraph.style.name if paragraph.style is not None else ""
-    if style == "Title" and paragraph.text.strip():
-        return f"# {paragraph.text}"
-    if (m := _DOCX_HEADING.match(style)) and paragraph.text.strip():
-        return f"{'#' * int(m.group(1))} {paragraph.text}"
-    return escape_heading_marks(paragraph.text)
+_converter = None
+
+
+def _docling_converter():
+    """docling 初始化较慢，进程内只建一次。"""
+    global _converter
+    if _converter is None:
+        from docling.datamodel.base_models import InputFormat
+        from docling.document_converter import DocumentConverter
+
+        _converter = DocumentConverter(allowed_formats=[InputFormat.DOCX])
+    return _converter
 
 
 def load_text(path: str | Path) -> str:

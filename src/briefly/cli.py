@@ -57,7 +57,7 @@ def repl(agent: Agent, skill: str | None) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(prog="briefly", description="办公 AI Agent")
-    ap.add_argument("input", nargs="?", help="文件路径（txt/md/docx/pdf），- 表示标准输入；不填则进入对话模式")
+    ap.add_argument("input", nargs="?", help="文件路径（txt/md/docx/pdf/xlsx/csv），- 表示标准输入；不填则进入对话模式")
     ap.add_argument("-s", "--skill", choices=list(SKILLS), help="指定能力；不指定则由模型判断")
     ap.add_argument("-e", "--extra", default="", help="额外要求，如“控制在200字内”")
     ap.add_argument("-o", "--output", help="结果写入文件，默认打印")

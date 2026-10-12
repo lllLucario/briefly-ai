@@ -10,7 +10,7 @@ CLI (cli.py) ──► Agent (agent.py) ──► LangChain create_agent（LangG
    │                 │                  ├─ tools/：@tool 工具（飞书等集成放这里）
    │                 │                  └─ checkpointer：会话记忆存 SQLite
    └─ loaders.py     └─ prompts/：base.md（角色与规则）+ 五个能力说明
-      txt/md/docx/pdf
+      txt/md/docx/pdf/xlsx/csv
 ```
 
 ```
@@ -20,6 +20,7 @@ src/briefly/
 ├── llm.py        模型工厂（唯一创建模型的地方）
 ├── loaders.py    文件 → 带标题的文本 + 解析报告
 ├── pdf.py        PDF 解析：按字号、书签识别标题，识别扫描件
+├── tables.py     xlsx / csv → Markdown 表格（工作表作章节）
 ├── layout_cleaner.py  清理 PDF 的页眉页脚、水印、页码、乱码，合并排版换行
 ├── db.py         业务数据库（SQLAlchemy）
 ├── materials.py  材料管理：导入、去重、检索；章节与块入库
