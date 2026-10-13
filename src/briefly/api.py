@@ -414,6 +414,10 @@ def create_app(
             response.headers["Cache-Control"] = "no-cache"
         return response
 
+    from .tracking.api import register as register_tracking
+
+    register_tracking(app, model_factory)  # 文件追踪：集合、扫描、定时、周报准备与审核
+
     @app.get("/", include_in_schema=False)
     def index():
         return FileResponse(WEB_DIR / "index.html")
