@@ -98,7 +98,14 @@ def test_generate_end_to_end(store, material):
     done = weekly.get(report.id)
     assert done.status == DONE and done.content == resolved(material.id)
     assert done.items == [
-        {"category": "done", "point": "耗时下降", "quote": "支付回调耗时从 1.8 秒降到 200 毫秒。", "source": f"{material.id}-1"}
+        {
+            "category": "done",
+            "point": "耗时下降",
+            "quote": "支付回调耗时从 1.8 秒降到 200 毫秒。",
+            "source": f"{material.id}-1",
+            "risk_reason": "",
+            "needs_review": False,
+        }
     ]
     g = done.generation
     assert g["chunks_total"] == g["chunks_processed"] == 1

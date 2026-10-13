@@ -32,6 +32,10 @@ class _Item(BaseModel):
     )
     point: str = Field(description="一句话概括这一项，数字、日期、人名与原文一致")
     quote: str = Field(description="支撑这一项的原文，逐字照抄")
+    risk_reason: str = Field(
+        default="",
+        description="仅 issue 填写：原文中写明问题、阻碍、异常、延期或依赖的那部分文字，逐字照抄；其他类别留空",
+    )
 
 
 class Extraction(BaseModel):
@@ -60,6 +64,12 @@ class WorkItem:
     point: str
     quote: str
     source: str  # 出处：材料号-块号，如 "1-3"
+    risk_reason: str = ""  # 问题风险的原文依据（逐字）
+    needs_review: bool = False  # 标为问题风险，但依据缺失或在原文中找不到：不能写进【问题与风险】，请用户确认
+
+    @property
+    def verified_risk(self) -> bool:
+        return self.category == "issue" and not self.needs_review
 
 
 @dataclass
@@ -187,16 +197,42 @@ def extract_items(
                 continue
             else:
                 quoted_in.setdefault(quote, source.tag)
-                result.items.append(WorkItem(item.category, item.point.strip(), item.quote.strip(), source.tag))
+                reason = item.risk_reason.strip()
+                # 问题风险必须有原文依据：依据为空或在原文里找不到的，标为待复核（Pydantic 只能保证字段存在，不能保证语义对）
+                review = item.category == "issue" and not (reason and _norm(reason) in content)
+                result.items.append(
+                    WorkItem(item.category, item.point.strip(), item.quote.strip(), source.tag, reason, review)
+                )
     return result
 
 
+REVIEW_LABEL = "待复核"  # 标为问题风险但没有原文依据
+
+
+def _label(item: WorkItem) -> str:
+    if item.category == "issue" and item.needs_review:
+        return REVIEW_LABEL
+    return CATEGORY_NAMES.get(item.category, "其他")
+
+
 def format_items(items: list[WorkItem]) -> str:
-    """给模型看的工作项：用编号 #n 标识，模型引用编号，代码再换回出处并检查有没有漏写。"""
-    return "\n".join(
-        f"- #{n} 【{CATEGORY_NAMES.get(i.category, '其他')}】{i.point}\n  原文：{i.quote}"
-        for n, i in enumerate(items, start=1)
-    )
+    """给模型看的工作项：用编号 #n 标识，模型引用编号，代码再换回出处并检查有没有漏写。
+
+    问题风险附原文依据；同一句原文拆出的几项（如“下周要做 X，但 Y 可能影响上线”拆成待办和风险）注明关联，分别写进各自栏目。
+    """
+    first_with_quote: dict[str, int] = {}
+    lines = []
+    for n, i in enumerate(items, start=1):
+        line = f"- #{n} 【{_label(i)}】{i.point}\n  原文：{i.quote}"
+        if i.verified_risk and i.risk_reason:
+            line += f"\n  风险依据：{i.risk_reason}"
+        key = _norm(i.quote)
+        if key in first_with_quote:
+            line += f"\n  （与 #{first_with_quote[key]} 出自同一句原文，但是另一项内容，同样要写进周报，按自己的类别放进对应栏目）"
+        else:
+            first_with_quote[key] = n
+        lines.append(line)
+    return "\n".join(lines)
 
 
 _REF = re.compile(r"〔([^〕]*#\d+[^〕]*)〕")
@@ -241,6 +277,8 @@ class Synthesis:
     uncovered: list[WorkItem] = field(default_factory=list)  # 没有写进结果的工作项
     invalid_refs: list[int] = field(default_factory=list)  # 模型引用了不存在的编号
     coverage_checked: bool = True  # 模型完全没按编号标注时为 False，无法判断有没有漏写
+    problems: list[str] = field(default_factory=list)  # 调用方检查（check）重写一次后仍存在的问题
+    rewritten: bool = False  # 是否因检查不通过重写过
 
 
 def synthesize(
@@ -251,11 +289,14 @@ def synthesize(
     budget: int | None = None,
     aside_heading: str | None = None,
     on_call: OnCall | None = None,
+    check: Callable[[str], list[str]] | None = None,
 ) -> Synthesis:
     """按调用方给的提示词，把工作项合成最终文本。工作项超出预算时先分批合并（分层摘要），再合成。
 
     aside_heading：结果中这个标题之后的内容（如周报后的【给用户的提醒】）不算正文，
     其中引用的编号照样换回出处，但不算“已写进结果”。
+    check：对合成结果（编号尚未换回出处）做规则检查，返回问题列表；有问题时带着问题重写一次，
+    仍有的问题记入 Synthesis.problems，由调用方提示用户核对（不额外调用模型审核）。
     """
     budget = budget or config.REDUCE_BUDGET_TOKENS
     usage = Usage()
@@ -288,6 +329,23 @@ def synthesize(
     if on_call:
         on_call("synthesize", final_tokens, final, "")
     output = final.text.strip()
+    problems = check(output) if check else []
+    rewritten = False
+    if problems:
+        keep = f"，{aside_heading}部分也要保留" if aside_heading and aside_heading in output else ""
+        feedback = f"检查发现以下问题，请改正后重新输出完整结果（格式和其他内容不变{keep}）：\n" + "\n".join(f"- {p}" for p in problems)
+        retry_messages = [*final_messages, ("assistant", output), ("user", feedback)]
+        second = model.invoke(retry_messages)
+        usage.add(second)
+        if on_call:
+            on_call("synthesize", _message_tokens(retry_messages), second, "重写")
+        second_output = second.text.strip()
+        if aside_heading and aside_heading in output and aside_heading not in second_output:
+            # 重写时漏掉了正文之后的部分（如给用户的提醒）：接回初稿的，不让提醒因为重写丢失
+            second_output += "\n\n" + aside_heading + output.partition(aside_heading)[2]
+        second_problems = check(second_output)
+        if len(second_problems) <= len(problems):  # 重写没有变好就保留原稿
+            output, problems, rewritten = second_output, second_problems, True
     body, heading, aside = output.partition(aside_heading) if aside_heading else (output, "", "")
     resolved, used, invalid = resolve_refs(body, items)
     if heading:
@@ -295,7 +353,7 @@ def synthesize(
         resolved, invalid = f"{resolved}{heading}{aside_text}", invalid + aside_invalid
     checked = bool(used) or not items
     uncovered = [item for n, item in enumerate(items, start=1) if n not in used] if checked else []
-    return Synthesis(resolved, levels, usage, uncovered, invalid, checked)
+    return Synthesis(resolved, levels, usage, uncovered, invalid, checked, problems, rewritten)
 
 
 def _split_lines(text: str, budget: int) -> list[str]:

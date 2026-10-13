@@ -163,6 +163,10 @@ def conflict_tags_honest() -> Check:
     return Check("矛盾处出处如实标注", check)
 
 
+def section_lacks(head: str, *parts: str) -> Check:
+    return Check(f"{head}不含 {'、'.join(parts)}", lambda r: not any(_flat(p) in _flat(_section(r.content, head)) for p in parts))
+
+
 def no_internal_terms() -> Check:
     """回答里没有块号、程序出处标记、工具名等内部处理信息（Bug 1）。用户输入里的“第 3 块”等原文不在长材料用例中出现。"""
     from briefly.output_check import find_internal_terms
@@ -229,6 +233,17 @@ CASES: list[Case] = [
         weekly={"materials": ["week_log.md"], "brief": "支付改造已经上线了，另外和李经理开了个会", **WEEK},
         checks=[
             report_done(), reminder_has_any("不一致", "核对", "矛盾"), conflict_listed(), conflict_tags_honest(),
+            no_unverified_numbers(),
+        ],
+    ),
+    Case(
+        "W5", "周报", "待办与风险：同一句里的待办和风险拆开，纯待办不进风险",
+        weekly={"materials": ["week_risk.md"], "brief": "", **WEEK},
+        checks=[
+            report_done(),
+            section_has("【问题与风险】", "测试环境"),
+            section_lacks("【问题与风险】", "压测报告", "验收标准"),
+            section_has("【下周计划】", "接口测试"),
             no_unverified_numbers(),
         ],
     ),

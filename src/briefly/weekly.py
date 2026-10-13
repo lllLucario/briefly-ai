@@ -19,7 +19,7 @@ from .llm import create_chat_model
 from .materials import MaterialNotFound, MaterialStore
 from .output_check import find_internal_terms
 from .skills import read_prompt
-from .summarize import Source, WorkItem, extract_items, synthesize
+from .summarize import CATEGORY_NAMES, Source, WorkItem, extract_items, synthesize
 
 PENDING, RUNNING, DONE, FAILED = "pending", "running", "done", "failed"
 _SOURCE_TAG = re.compile(r"〔[^〕]*〕")
@@ -62,6 +62,61 @@ def strip_source_tags(text: str) -> str:
 
 
 REMINDER_HEADING = "【给用户的提醒】"
+RISK_HEADING = "【问题与风险】"
+_REF_TAG = re.compile(r"〔([^〕]*)〕")
+
+
+def section_lines(text: str, heading: str) -> list[str]:
+    """某个栏目下的非空行（到下一个【…】标题为止）。"""
+    _, found, rest = text.partition(heading)
+    if not found:
+        return []
+    lines = []
+    for line in rest.splitlines():
+        if line.strip().startswith("【"):
+            break
+        if line.strip():
+            lines.append(line.strip())
+    return lines
+
+
+def report_check(items: list[WorkItem]) -> Callable[[str], list[str]]:
+    """写完周报后的规则检查（不调用模型）：
+
+    1. 【问题与风险】的每一条，必须引用至少一个已核实的问题风险项（或来自用户简述）；
+    2. 同一句原文拆出的几项，不能只写其中一部分。
+
+    待办、进行中、待复核的问题都不能单独撑起一条风险。分类由提取阶段的结构化输出决定，这里由代码检查，不靠写作时自觉。
+    """
+
+    def check(text: str) -> list[str]:
+        body = text.partition(REMINDER_HEADING)[0]
+        problems = []
+        for line in section_lines(body, RISK_HEADING):
+            refs = [r for tag in _REF_TAG.findall(line) for r in re.findall(r"#(\d+)", tag)]
+            from_brief = any("简述" in tag for tag in _REF_TAG.findall(line))
+            if not refs or from_brief:
+                continue  # “无”、只来自简述的：不检查
+            numbers = [int(r) for r in refs if 1 <= int(r) <= len(items)]
+            if numbers and not any(items[n - 1].verified_risk for n in numbers):
+                labels = "、".join(f"#{n}（{CATEGORY_NAMES.get(items[n - 1].category, '其他') if not items[n - 1].needs_review else '待复核'}）" for n in numbers)
+                problems.append(
+                    f"【问题与风险】中的“{line[:60]}”引用的 {labels} 不是已核实的问题或风险，"
+                    "请移到对应栏目（计划写进【下周计划】或【进行中】，已完成写进【本周完成】），不要写进【问题与风险】"
+                )
+        # 同一句原文拆出的几项（如“确认上线时间”和“上线前补齐压测报告”）只写了一部分：常见的漏写方式
+        used = {int(n) for n in re.findall(r"#(\d+)", body)}
+        groups: dict[str, list[int]] = {}
+        for n, item in enumerate(items, start=1):
+            groups.setdefault(re.sub(r"\s+", "", item.quote), []).append(n)
+        for numbers in groups.values():
+            if len(numbers) > 1 and used & set(numbers):
+                for n in numbers:
+                    if n not in used and not items[n - 1].needs_review:
+                        problems.append(f"#{n}（{items[n - 1].point}）与 #{min(used & set(numbers))} 出自同一句原文，是另一项内容，没有写进周报，请补上")
+        return problems
+
+    return check
 
 
 def split_reminders(text: str) -> tuple[str, list[str]]:
@@ -181,10 +236,17 @@ class WeeklyService:
             ]
         )
         system_prompt = read_prompt("weekly") + "\n\n" + read_prompt("weekly_report")
-        synthesis = synthesize(model, system_prompt, request, extraction.items, aside_heading=REMINDER_HEADING)
+        synthesis = synthesize(
+            model, system_prompt, request, extraction.items, aside_heading=REMINDER_HEADING, check=report_check(extraction.items)
+        )
         content, reminders = split_reminders(synthesis.text)
+        # 标为问题风险但原文没有写明阻碍、异常、延期或依赖的：不写进【问题与风险】，请用户确认
+        review = [i for i in extraction.items if i.needs_review]
+        reminders += [f"这一项可能是问题或风险，但原文没有写明具体的阻碍或影响，没有写进【问题与风险】，请确认：{i.point}〔{i.source}〕" for i in review]
         # 输出覆盖：没写进周报的工作项列给用户，由用户决定要不要补（有简述时，次要工作本来可以不写）
-        reminders += [f"这一项没有写进周报，如需要请补充：{i.point}〔{i.source}〕" for i in synthesis.uncovered]
+        reminders += [f"这一项没有写进周报，如需要请补充：{i.point}〔{i.source}〕" for i in synthesis.uncovered if not i.needs_review]
+        # 重写后仍有的问题：风险栏引用不对的写进系统提示；漏写的已由输出覆盖列进提醒，不重复
+        warnings += [f"{p.split('，请移到')[0]}，请核对" for p in synthesis.problems if "请移到" in p]
         if synthesis.invalid_refs:
             warnings.append(f"周报引用了不存在的工作项编号 {synthesis.invalid_refs}，相关内容可能没有依据，请核对")
         if not synthesis.coverage_checked:
