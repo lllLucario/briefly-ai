@@ -294,6 +294,8 @@ def map_omissions(items: list[WorkItem]) -> list[dict]:
     """
     groups: dict[str, list[WorkItem]] = {}
     for item in items:
+        if not item.fact_id:
+            continue  # 不是从原文提取的（如用户已确认的工作记录）：没有“提取遗漏”可言
         groups.setdefault(_norm(item.quote), []).append(item)
     out = []
     for group in groups.values():

@@ -141,3 +141,14 @@ def test_bad_secondary_field_does_not_drop_chunk():
     bad = {**PAY, "importance": "很重要", "attribute": "time"}
     result = extract(bad)
     assert result.failed == [] and [i.point for i in result.items] == [PAY["point"]]
+
+
+def test_confirmed_evidence_is_not_checked_for_map_omission():
+    evidence = WorkItem("done", "更新进度表：接口联调 100%", "接口联调进度由 50% 更新为 100%（进度.xlsx）", "E4")  # 没有 fact_id
+    assert map_omissions([evidence]) == []
+
+
+def test_hint_text_copied_into_report_is_rewritten():
+    items = items_of(LOGIN_FULL)
+    leaked = "【本周完成】\n- 完成用户登录模块，修复 Token 过期问题，新增 3 个权限校验测试，原文中还写了 xlsx〔#1〕"
+    assert any("给你看的说明文字（原文中还写了）" in p for p in report_check(items)(leaked))

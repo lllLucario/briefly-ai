@@ -84,6 +84,10 @@ def section_lines(text: str, heading: str) -> list[str]:
     return lines
 
 
+# 给写作模型看的说明（format_items 附在工作项后面）：如果出现在周报正文里，说明模型把说明当成了内容
+HINT_PHRASES = ("原文中还写了", "概括里没有", "出自同一句原文", "风险依据", "待复核", "同样要写进周报")
+
+
 def citing_lines(body: str) -> dict[int, list[str]]:
     """每个编号被哪些行引用（编号尚未换回出处）。"""
     out: dict[int, list[str]] = {}
@@ -146,6 +150,9 @@ def report_check(items: list[WorkItem], conflicts: list[FactConflict] | None = N
                 if lost:
                     problems.append(f"#{n}（{items[n - 1].point}）写进周报时缺少 {'、'.join(lost)}，请按要点写全")
         problems += conflict_problems(conflicts or [], lambda n: n in used)
+        leaked = [h for h in HINT_PHRASES if h in body]
+        if leaked:
+            problems.append(f"周报正文里出现了给你看的说明文字（{'、'.join(leaked)}），这些不是工作内容，请删掉，只写工作本身")
         return problems
 
     return check
@@ -380,18 +387,19 @@ class WeeklyService:
             return sorted(rows, key=lambda e: ids.index(e.id))
 
     def _evidence_items(self, ids: list[int], warnings: list[str]) -> list[WorkItem]:
-        """已确认的工作记录 → 工作项：要点是标题和描述（用户改过的以用户为准），原文是描述和来源文件。"""
+        """已确认的工作记录 → 工作项：要点是标题和描述（用户改过的以用户为准），原文是描述。
+
+        不附来源文件名：文件名不是工作内容，附上会被当成要写进周报的信息（出处已由〔E编号〕标注）。
+        """
         rows = self._evidence(ids)
         found = {e.id for e in rows}
         warnings += [f"工作记录 E{i} 已被删除或撤销确认，未纳入" for i in ids if i not in found]
         items = []
         for e in rows:
-            files = "、".join(dict.fromkeys(r["path"].replace("\\", "/").rsplit("/", 1)[-1] for r in e.source_refs if r.get("path")))
             point = f"{e.title}：{e.description}" if e.description else e.title
             quote = e.description or e.title
-            if files:
-                quote += f"（来源文件：{files}）"
-            items.append(WorkItem(e.category, point, quote, f"E{e.id}"))
+            # 用户明确确认过的工作都要写进周报：按高重要度处理，漏写会触发重写
+            items.append(WorkItem(e.category, point, quote, f"E{e.id}", importance="high"))
         return items
 
     def list_reports(self) -> list[WeeklyReport]:

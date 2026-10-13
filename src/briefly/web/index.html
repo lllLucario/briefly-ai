@@ -15,6 +15,7 @@
       <button data-tab="chat" class="active">对话</button>
       <button data-tab="materials">材料</button>
       <button data-tab="weekly">周报</button>
+      <button data-tab="tracking">追踪</button>
     </nav>
     <a class="doclink" href="/docs" target="_blank">接口文档</a>
   </header>
@@ -127,6 +128,79 @@
     </section>
   </main>
 
+  <!-- 追踪 -->
+  <main id="tab-tracking" class="tab">
+    <aside class="sidebar">
+      <ul id="collection-list" class="list"></ul>
+      <form id="collection-form" class="stack">
+        <input id="collection-name" placeholder="新集合名称，如 项目A">
+        <input id="collection-owners" placeholder="你在 Word 修订里的署名（可多个，逗号分隔）">
+        <button class="primary">＋ 新建集合</button>
+      </form>
+    </aside>
+    <section class="panel grow" id="tracking-panel">
+      <div id="tracking-empty" class="empty">选择或新建一个追踪集合。<br>追踪文件和文件夹的变化，生成候选工作记录，你确认后再写进周报。</div>
+      <div id="tracking-body" class="hidden">
+        <div class="chat-head">
+          <h3 id="collection-title"></h3>
+          <div class="row gap wrap">
+            <button id="scan-btn" class="ghost">立即扫描</button>
+            <button id="collection-delete" class="ghost danger">删除集合</button>
+          </div>
+        </div>
+        <div id="tracking-msg" class="notice hidden"></div>
+
+        <h4>本周周报准备</h4>
+        <div class="row gap wrap">
+          <label>开始 <input type="date" id="prep-start"></label>
+          <label>结束 <input type="date" id="prep-end"></label>
+          <button id="prepare-btn" class="primary">准备候选清单</button>
+          <small class="muted">最终扫描后对比本周的版本，生成候选工作记录（会调用模型）</small>
+        </div>
+        <div id="prep-box"></div>
+
+        <details class="meta" id="sources-box" open>
+          <summary>追踪源与文件</summary>
+          <div id="source-rows"></div>
+          <div class="stack" style="margin-top:8px">
+            <textarea id="source-paths" rows="2" placeholder="要追踪的文件或文件夹的完整路径，每行一个，如 D:\项目\方案.docx"></textarea>
+            <div class="row gap"><label class="toggle"><input type="checkbox" id="source-recursive" checked> 文件夹包含子文件夹</label><button id="source-add" class="ghost">添加并采集基线</button></div>
+          </div>
+          <div id="file-rows" class="file-rows"></div>
+        </details>
+
+        <details class="meta" id="schedule-box">
+          <summary>每周定时准备</summary>
+          <div class="row gap wrap" style="margin-top:8px">
+            <select id="schedule-weekday"></select>
+            <input type="time" id="schedule-time" value="16:30">
+            <button id="schedule-save" class="ghost">保存</button>
+            <button id="schedule-off" class="ghost danger">关闭</button>
+            <span id="schedule-text" class="muted"></span>
+          </div>
+          <small class="muted">到点自动最终扫描并生成候选清单，然后在页面顶部提醒你审核（需要 briefly-api 在运行）。</small>
+          <div id="schedule-runs"></div>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <!-- 编辑工作记录 -->
+  <dialog id="evidence-dialog">
+    <h3 id="evidence-dialog-title"></h3>
+    <form id="evidence-form" class="stack">
+      <input id="ev-title" placeholder="标题">
+      <textarea id="ev-desc" rows="4" placeholder="描述"></textarea>
+      <select id="ev-category">
+        <option value="done">已完成</option><option value="in_progress">进行中</option><option value="plan">计划</option>
+        <option value="issue">问题风险</option><option value="other">其他</option>
+      </select>
+      <div id="ev-split-hint" class="muted hidden">拆分：每行一条，“标题｜描述”，至少两行</div>
+      <textarea id="ev-split" rows="4" class="hidden" placeholder="编写灰度方案｜补充灰度发布方案&#10;推进压测｜压测完成 50%"></textarea>
+      <div class="row gap end"><button type="button" class="ghost" onclick="this.closest('dialog').close()">取消</button><button class="primary">保存</button></div>
+    </form>
+  </dialog>
+
   <!-- 选择材料弹窗 -->
   <dialog id="picker">
     <h3>选择对话用的材料</h3>
@@ -143,5 +217,6 @@
 
   <div id="print-area" class="markdown"></div>
   <script src="/web/app.js"></script>
+  <script src="/web/tracking.js"></script>
 </body>
 </html>

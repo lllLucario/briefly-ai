@@ -68,6 +68,7 @@ document.querySelectorAll(".tabs button").forEach((btn) => {
     document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.id === `tab-${btn.dataset.tab}`));
     if (btn.dataset.tab === "materials") loadMaterials();
     if (btn.dataset.tab === "weekly") { loadMaterials(); loadWeeklyList(); }
+    if (btn.dataset.tab === "tracking") loadTracking();
   });
 });
 
@@ -572,11 +573,19 @@ async function loadInbox() {
   box.innerHTML = items.map((n) => `
     <div class="inbox-item">
       <div><b>🔔 ${escapeHtml(n.title)}</b>${escapeHtml(n.body)}</div>
+      ${n.collection_id ? `<button class="primary" data-go="${n.collection_id}" data-read-id="${n.id}">去审核</button>` : ""}
       <button class="ghost" data-read="${n.id}">知道了</button>
     </div>`).join("");
 }
 
 $("#inbox").addEventListener("click", async (e) => {
+  const go = e.target.closest("[data-go]");
+  if (go) {
+    await api("/notifications/read", { method: "POST", json: { ids: [Number(go.dataset.readId)] } });
+    loadInbox();
+    gotoTracking(go.dataset.go);
+    return;
+  }
   const b = e.target.closest("[data-read]");
   if (!b) return;
   await api("/notifications/read", { method: "POST", json: { ids: [Number(b.dataset.read)] } });

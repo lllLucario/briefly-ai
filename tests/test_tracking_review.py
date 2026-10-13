@@ -257,3 +257,26 @@ def test_new_change_after_confirmation_reopens_checklist(setup):
     assert "回滚方案" in new.description and "灰度" not in new.description
     with sessionmaker(env.svc.engine)() as s:
         assert s.get(WorkEvidence, items["方案.md"].id).review_status == CONFIRMED
+
+
+def test_confirmed_evidence_left_out_is_rewritten(setup):
+    env, c, prep, review, items, _ = setup
+    ids = [items["方案.md"].id, items["进度.md"].id]
+    review.confirm(prep.id, ids)
+    review.exclude(prep.id, [items["同事.md"].id])
+    review.confirm_checklist(prep.id)
+    calls = []
+
+    def respond(messages):
+        if "撰写周报" in messages[0].content:
+            calls.append(messages)
+            refs = re.findall(r"#(\d+) ", messages[1].content)  # 工作项清单在第一条用户消息里（重写时最后一条是反馈）
+            if len(calls) == 1:
+                return AIMessage(f"【本周完成】\n- 只写了第一条〔#{refs[0]}〕")
+            return AIMessage("【本周完成】\n" + "\n".join(f"- 工作〔#{n}〕" for n in refs))
+        return structured("Extraction", items=[])
+
+    weekly = WeeklyService(env.store, lambda: FunctionModel(respond=respond, calls=[]))
+    report = generate_report(env.svc, weekly, prep.id)
+    assert len(calls) == 2 and "是重要内容，没有写进周报" in calls[1][-1].content
+    assert set(re.findall(r"〔(E\d+)〕", report.content)) == {f"E{i}" for i in ids}
