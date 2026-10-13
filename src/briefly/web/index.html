@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Briefly AI</title>
+  <link rel="stylesheet" href="/web/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Briefly <span>AI</span></div>
+    <nav class="tabs">
+      <button data-tab="chat" class="active">对话</button>
+      <button data-tab="materials">材料</button>
+      <button data-tab="weekly">周报</button>
+    </nav>
+    <a class="doclink" href="/docs" target="_blank">接口文档</a>
+  </header>
+
+  <!-- 对话 -->
+  <main id="tab-chat" class="tab active">
+    <aside class="sidebar">
+      <button id="new-session" class="primary block">＋ 新会话</button>
+      <ul id="session-list" class="list"></ul>
+    </aside>
+    <section class="chat">
+      <div class="chat-head">
+        <h2 id="session-title">新会话</h2>
+        <div class="row gap">
+          <button id="show-context" class="ghost" disabled>上下文用量</button>
+          <button id="delete-session" class="ghost danger" disabled>删除会话</button>
+        </div>
+      </div>
+      <div id="context-box" class="notice hidden"></div>
+      <div id="messages" class="messages">
+        <div class="empty">可以直接粘贴文字，或在下方选择材料后提问。<br>能力：文档总结、会议纪要拆解、周报生成、待办梳理、文本优化。</div>
+      </div>
+      <form id="composer" class="composer">
+        <div class="row gap wrap">
+          <button type="button" id="pick-materials" class="ghost">📎 选择材料</button>
+          <div id="picked" class="chips"></div>
+          <select id="skill" title="指定能力（不指定则由模型判断）">
+            <option value="">自动判断能力</option>
+          </select>
+        </div>
+        <div class="row gap">
+          <textarea id="input" rows="3" placeholder="输入问题或粘贴文字，Ctrl+Enter 发送"></textarea>
+          <button id="send" class="primary">发送</button>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <!-- 材料 -->
+  <main id="tab-materials" class="tab">
+    <section class="panel narrow">
+      <h3>添加材料</h3>
+      <label class="drop" id="drop">
+        <input type="file" id="file" multiple accept=".txt,.md,.docx,.pdf,.xlsx,.csv">
+        <span>点击或拖入文件<br><small>txt / md / docx / pdf / xlsx / csv，单个不超过 10MB</small></span>
+      </label>
+      <form id="paste-form" class="stack">
+        <input id="paste-title" placeholder="标题（可不填）">
+        <textarea id="paste-content" rows="8" placeholder="粘贴文字内容"></textarea>
+        <button class="primary">保存为材料</button>
+      </form>
+      <div id="material-msg" class="notice hidden"></div>
+    </section>
+    <section class="panel grow">
+      <h3>材料库</h3>
+      <div class="table-wrap">
+        <table class="table">
+          <thead><tr><th>编号</th><th>标题</th><th>类型</th><th>字数</th><th>块 / 章节</th><th>结构来源</th><th>添加时间</th><th></th></tr></thead>
+          <tbody id="material-rows"></tbody>
+        </table>
+      </div>
+      <div id="material-detail" class="detail hidden"></div>
+    </section>
+  </main>
+
+  <!-- 周报 -->
+  <main id="tab-weekly" class="tab">
+    <aside class="sidebar">
+      <button id="new-weekly" class="primary block">＋ 新周报</button>
+      <ul id="weekly-list" class="list"></ul>
+    </aside>
+    <section class="panel grow" id="weekly-form-panel">
+      <h3>生成周报</h3>
+      <form id="weekly-form" class="stack">
+        <label>素材（勾选材料）</label>
+        <div id="weekly-materials" class="checklist"></div>
+        <label for="brief">这周大概做了什么（既用来筛选材料，也作为来源）</label>
+        <textarea id="brief" rows="4" placeholder="例如：完成登录模块联调；排查支付回调超时；参加评审会"></textarea>
+        <div class="row gap wrap">
+          <label>开始 <input type="date" id="period-start"></label>
+          <label>结束 <input type="date" id="period-end"></label>
+          <label>读者 <input id="audience" placeholder="默认直属上级"></label>
+          <label>姓名 <input id="name" placeholder="可不填"></label>
+        </div>
+        <small class="muted">日期不填则为本周一到本周日。素材与简述至少提供一项。</small>
+        <button class="primary">提交生成</button>
+      </form>
+    </section>
+    <section class="panel grow hidden" id="weekly-detail-panel">
+      <div class="chat-head">
+        <h3 id="weekly-title"></h3>
+        <div class="row gap wrap" id="weekly-actions">
+          <label class="toggle"><input type="checkbox" id="show-tags" checked> 显示出处</label>
+          <button id="edit-weekly" class="ghost">修改</button>
+          <a id="export-md" class="button ghost">导出 Markdown</a>
+          <button id="print-weekly" class="ghost">打印为 PDF</button>
+          <button id="delete-weekly" class="ghost danger">删除</button>
+        </div>
+      </div>
+      <div id="weekly-status" class="notice hidden"></div>
+      <div id="weekly-reminders" class="notice warn hidden"></div>
+      <div id="weekly-warnings" class="notice hidden"></div>
+      <article id="weekly-preview" class="markdown report"></article>
+      <div id="weekly-editor" class="stack hidden">
+        <textarea id="weekly-text" rows="22"></textarea>
+        <div class="row gap"><button id="save-weekly" class="primary">保存</button><button id="cancel-edit" class="ghost">取消</button></div>
+      </div>
+      <details id="weekly-meta" class="meta"><summary>生成信息</summary><div id="weekly-meta-body"></div></details>
+    </section>
+  </main>
+
+  <!-- 选择材料弹窗 -->
+  <dialog id="picker">
+    <h3>选择对话用的材料</h3>
+    <div id="picker-list" class="checklist"></div>
+    <div class="row gap end"><button id="picker-done" class="primary">确定</button></div>
+  </dialog>
+
+  <!-- 出处弹窗 -->
+  <dialog id="source-dialog">
+    <h3 id="source-title"></h3>
+    <div id="source-body"></div>
+    <div class="row end"><button class="primary" onclick="this.closest('dialog').close()">关闭</button></div>
+  </dialog>
+
+  <div id="print-area" class="markdown"></div>
+  <script src="/web/app.js"></script>
+</body>
+</html>

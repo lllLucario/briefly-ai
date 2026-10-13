@@ -40,7 +40,14 @@ from .tools import DEFAULT_TOOLS
 from .tools.context import context_tools
 from .tools.materials import material_tools
 
-__all__ = ["Agent", "CONTEXT_OVERFLOW", "TOOL_ROUNDS_EXCEEDED", "build_system_prompt", "sqlite_checkpointer"]
+__all__ = [
+    "Agent",
+    "CONTEXT_OVERFLOW",
+    "TOOL_ROUNDS_EXCEEDED",
+    "build_system_prompt",
+    "new_thread_id",
+    "sqlite_checkpointer",
+]
 
 log = logging.getLogger(__name__)
 
@@ -129,18 +136,33 @@ class Agent:
             context_schema=Context,
             checkpointer=checkpointer or InMemorySaver(),
         )
-        self.thread_id = thread_id or _new_thread_id()
+        self.thread_id = thread_id or new_thread_id()
 
     def reset(self) -> None:
         """开始新会话；旧会话仍保存在 checkpointer 中。"""
-        self.thread_id = _new_thread_id()
+        self.thread_id = new_thread_id()
 
     @property
     def history(self) -> list[AnyMessage]:
-        state = self.graph.get_state({"configurable": {"thread_id": self.thread_id}})
+        return self.history_of(self.thread_id)
+
+    def history_of(self, thread_id: str) -> list[AnyMessage]:
+        state = self.graph.get_state({"configurable": {"thread_id": thread_id}})
         return state.values.get("messages", [])
 
-    def chat(self, text: str, skill: str | None = None, material_ids: list[int] | None = None) -> str:
+    def chat(
+        self,
+        text: str,
+        skill: str | None = None,
+        material_ids: list[int] | None = None,
+        thread_id: str | None = None,
+    ) -> str:
+        """thread_id 不传时用当前会话（CLI）；网页后端多个会话共用一个 Agent，每次调用传入会话编号。
+
+        用户的原始输入记在消息的 additional_kwargs["display"] 里，供网页显示历史（发给模型的是附了材料的全文）。
+        """
+        thread_id = thread_id or self.thread_id
+        display = text
         if skill and skill not in SKILLS:
             raise ValueError(f"未知技能: {skill}，可选: {', '.join(SKILLS)}")
         run_id = uuid.uuid4().hex[:12]
@@ -151,24 +173,26 @@ class Agent:
         if material_ids:
             text = self._attach_materials(text, material_ids)
         material_ids = [*(material_ids or []), *stored]  # 转存的长输入只给引用，不再全文附回
-        compacted = self._compact(run_id)
+        compacted = self._compact(thread_id, run_id)
+        meta = {"display": display, "material_ids": material_ids, "skill": skill}
+        message = HumanMessage(text, additional_kwargs=meta)
         result = self.graph.invoke(
-            {"messages": [HumanMessage(text)]},
-            config={"configurable": {"thread_id": self.thread_id}},
+            {"messages": [message]},
+            config={"configurable": {"thread_id": thread_id}},
             context=Context(
                 skill=skill,
                 material_ids=material_ids or None,
-                thread_id=self.thread_id,
+                thread_id=thread_id,
                 run_id=run_id,
                 compacted=compacted,
             ),
         )
         return result["messages"][-1].text
 
-    def _compact(self, run_id: str) -> bool:
+    def _compact(self, thread_id: str, run_id: str) -> bool:
         """对话前按需压缩。失败不影响本次对话：Context Builder 会降级并提示有未纳入的历史。"""
         try:
-            return self.compactor.maybe_compact(self.thread_id, self.history, run_id)
+            return self.compactor.maybe_compact(thread_id, self.history_of(thread_id), run_id)
         except Exception as e:
             log.warning("会话压缩失败: %s", e)
             return False
@@ -240,5 +264,5 @@ def _fallback_engine():
     return _fallback
 
 
-def _new_thread_id() -> str:
+def new_thread_id() -> str:
     return uuid.uuid4().hex[:12]

@@ -28,7 +28,7 @@ copy .env.example .env          # 填入 BRIEFLY_API_KEY / BRIEFLY_BASE_URL / BR
 briefly                                   # 对话模式：/file /add /materials /context /reset /exit
 briefly 会议记录.txt -s minutes           # 单次处理文件；不加 -s 由模型判断任务
 briefly -t <会话编号>                     # 恢复之前的会话
-briefly-api                               # 启动后端，接口文档：http://127.0.0.1:8000/docs
+briefly-api                               # 启动后端和网页：http://127.0.0.1:8000 ，接口文档：/docs
 ```
 
 运行数据（会话记忆、材料库）默认存在 `data/` 下的 SQLite 文件中，不进 Git；`DATABASE_URL` 可换成 Postgres。
