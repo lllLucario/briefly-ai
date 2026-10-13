@@ -13,6 +13,7 @@ from langchain_core.language_models import BaseChatModel
 from sqlalchemy import JSON, Date, DateTime, Integer, String, Text, select, update
 from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
 
+from .conflicts import ATTRIBUTES, UNRESOLVED, FactConflict, classify, conflict_problems, detect_conflicts, describe
 from .context_store import ContextStore
 from .db import Base
 from .llm import create_chat_model
@@ -98,13 +99,14 @@ def partial_terms(item: WorkItem, lines: list[str]) -> list[str]:
     return missing_terms(hard_terms(item.point), text)
 
 
-def report_check(items: list[WorkItem]) -> Callable[[str], list[str]]:
+def report_check(items: list[WorkItem], conflicts: list[FactConflict] | None = None) -> Callable[[str], list[str]]:
     """写完周报后的规则检查（不调用模型）：
 
     1. 【问题与风险】的每一条，必须引用至少一个已核实的问题风险项（或来自用户简述）；
     2. 同一句原文拆出的几项，不能只写其中一部分；
     3. 候选重要度为 high 的事实必须写进周报；
-    4. 引用了某个事实的行，要写全它的数字、日期等硬信息（合并时只写了一部分）。
+    4. 引用了某个事实的行，要写全它的数字、日期等硬信息（合并时只写了一部分）；
+    5. 材料之间说法不一致（未解决、场景不同）的，不能只写其中一种说法。
 
     待办、进行中、待复核的问题都不能单独撑起一条风险。分类由提取阶段的结构化输出决定，这里由代码检查，不靠写作时自觉。
     """
@@ -143,6 +145,7 @@ def report_check(items: list[WorkItem]) -> Callable[[str], list[str]]:
                 lost = partial_terms(items[n - 1], lines)
                 if lost:
                     problems.append(f"#{n}（{items[n - 1].point}）写进周报时缺少 {'、'.join(lost)}，请按要点写全")
+        problems += conflict_problems(conflicts or [], lambda n: n in used)
         return problems
 
     return check
@@ -292,9 +295,19 @@ class WeeklyService:
                 "请撰写本周周报。",
             ]
         )
+        # 多来源冲突：在任何合并之前由代码检测（分批合并可能丢掉其中一种说法），有冲突时调用一次模型归类
+        conflicts = detect_conflicts(extraction.items)
+        conflict_calls = classify(model, conflicts, extraction.items)
+        if conflicts:
+            request += "\n\n" + describe(conflicts, extraction.items)
         system_prompt = read_prompt("weekly") + "\n\n" + read_prompt("weekly_report")
         synthesis = synthesize(
-            model, system_prompt, request, extraction.items, aside_heading=REMINDER_HEADING, check=report_check(extraction.items)
+            model,
+            system_prompt,
+            request,
+            extraction.items,
+            aside_heading=REMINDER_HEADING,
+            check=report_check(extraction.items, conflicts),
         )
         content, reminders = split_reminders(synthesis.text)
         # 标为问题风险但原文没有写明阻碍、异常、延期或依赖的：不写进【问题与风险】，请用户确认
@@ -302,6 +315,11 @@ class WeeklyService:
         reminders += [f"这一项可能是问题或风险，但原文没有写明具体的阻碍或影响，没有写进【问题与风险】，请确认：{i.point}〔{i.source}〕" for i in review]
         # 输出覆盖：没写进周报的工作项列给用户，由用户决定要不要补（有简述时，次要工作本来可以不写）
         reminders += [f"这一项没有写进周报，如需要请补充：{i.point}〔{i.source}〕" for i in synthesis.uncovered if not i.needs_review]
+        # 看不出哪个为准的冲突：由代码列进提醒（不依赖写作时自觉），每种说法带出处
+        for c in conflicts:
+            if c.resolution == UNRESOLVED:
+                sides = " / ".join(f"{v}〔{extraction.items[n - 1].source}〕" for n, v in zip(c.numbers, c.values))
+                reminders.append(f"材料之间说法不一致：{c.subject} 的{ATTRIBUTES[c.attribute]}为 {sides}，未说明哪个为准，请核对")
         facts, partial = fact_trace(extraction.items, synthesis.raw)
         # 合并遗漏：引用了，但只写了一部分
         reminders += [f"这一项只写了一部分，缺少 {'、'.join(lost)}（合成周报时遗漏），请补充：{i.point}〔{i.source}〕" for i, lost in partial]
@@ -339,12 +357,13 @@ class WeeklyService:
             "uncovered": [asdict(i) for i in synthesis.uncovered],  # 没有写进周报的工作项
             "coverage_checked": synthesis.coverage_checked,
             "merge_levels": synthesis.merge_levels,
-            "calls": usage.calls + synthesis.usage.calls,
+            "calls": usage.calls + synthesis.usage.calls + conflict_calls,
             "input_tokens": usage.input_tokens + synthesis.usage.input_tokens,
             "output_tokens": usage.output_tokens + synthesis.usage.output_tokens,
             "seconds": round(time.monotonic() - started, 1),
             "facts": facts,  # 每个事实（fact_id）写进了哪几行、和哪些事实合并、是否只写了一部分，用于定位遗漏发生在哪一步
             "map_omissions": extraction.incomplete,
+            "conflicts": [c.to_dict() for c in conflicts],  # 多来源冲突及归类（unresolved / superseded / context_difference）
             "warnings": warnings,  # 系统提示：处理失败、丢弃、未核实数字等
             "reminders": reminders,  # 模型给用户的提醒：可能想补充或核对的地方，不进入周报
         }

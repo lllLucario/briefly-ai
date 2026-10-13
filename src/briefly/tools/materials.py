@@ -10,6 +10,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool, tool
 
 from .. import config
+from ..conflicts import ATTRIBUTES, UNRESOLVED, classify, conflict_problems, detect_conflicts, describe
 from ..context import Context
 from ..context_store import ContextStore
 from ..llm import create_chat_model
@@ -228,8 +229,26 @@ def material_tools(
         if not extraction.items:
             return f"没有提取到{'与“' + focus + '”相关的' if focus else ''}内容（{'；'.join(notes)}）。", artifact
         request = f"关注点：{focus or '无，整理全部要点'}"
-        digest = synthesize(llm, read_prompt("digest"), request, extraction.items, on_call=on_call)
+        # 多份材料的不同说法：合并之前由代码检测，避免汇总时被当成重复内容“统一”掉
+        conflicts = detect_conflicts(extraction.items)
+        classify(llm, conflicts, extraction.items)
+        if conflicts:
+            request += "\n\n" + describe(conflicts, extraction.items)
+
+        def check(text: str) -> list[str]:
+            used = {int(n) for n in re.findall(r"#(\d+)", text)}
+            return conflict_problems(conflicts, lambda n: n in used)
+
+        digest = synthesize(llm, read_prompt("digest"), request, extraction.items, on_call=on_call, check=check)
         body = _readable_sources(digest.text, labels)
+        unresolved = [c for c in conflicts if c.resolution == UNRESOLVED]
+        if unresolved:  # 看不出哪个为准的不同说法：原样列出，回答里要保留，不要替用户选定
+            body += "\n\n不同材料说法不一致（看不出哪个为准，回答中请同时写出并说明不一致）：\n" + "\n".join(
+                f"- {c.subject} 的{ATTRIBUTES[c.attribute]}："
+                + " / ".join(f"{v}〔{labels.get(extraction.items[n - 1].source, '')}〕" for n, v in zip(c.numbers, c.values))
+                for c in unresolved
+            )
+        artifact["conflicts"] = [c.to_dict() for c in conflicts]
         if digest.uncovered:  # 汇总时漏写的要点原样附上，保证交给你的内容是完整的
             body += "\n\n汇总时未写入的要点：\n" + "\n".join(f"- {i.point}〔{labels.get(i.source, '')}〕" for i in digest.uncovered)
         if digest.invalid_refs:

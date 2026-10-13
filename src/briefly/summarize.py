@@ -36,6 +36,11 @@ class _Item(BaseModel):
         default="",
         description="仅 issue 填写：原文中写明问题、阻碍、异常、延期或依赖的那部分文字，逐字照抄；其他类别留空",
     )
+    subject: str = Field(default="", description="仅当这一项写的是某个对象的日期、金额、数量、状态、负责人或进度时填写：对象的最短名称（如项目名、任务名）")
+    attribute: Literal["", "date", "amount", "quantity", "status", "owner", "progress"] = Field(
+        default="", description="对应的属性：date 日期 / amount 金额 / quantity 数量 / status 状态 / owner 负责人 / progress 进度；不属于这几类留空"
+    )
+    value: str = Field(default="", description="属性的值，从原文逐字照抄（如“10 月 20 日”“8000 元”“60%”）")
     importance: Literal["high", "medium", "low"] = Field(
         default="medium",
         description="按“用途”判断的候选重要度：high 读者必须知道（结果、决定、关键数据、问题）/ medium 一般工作 / low 日常琐事",
@@ -74,6 +79,9 @@ class WorkItem:
     fact_id: str = ""  # 稳定的事实编号：材料号-块号.序号（#n 只是一次合成里的临时编号）
     span_start: int = -1  # 原文摘录在材料全文中的起始位置；-1 表示只能按忽略空白匹配到，位置不精确
     importance: str = "medium"  # 模型给的候选重要度，不是客观事实；标准随用途（周报、完整总结）不同
+    subject: str = ""  # 关键字段（日期、金额、数量、状态、负责人、进度）的主体、属性和值，用于发现多来源冲突
+    attribute: str = ""
+    value: str = ""
 
     @property
     def verified_risk(self) -> bool:
@@ -228,6 +236,9 @@ def extract_items(
                         f"{source.tag}.{k}",
                         source.offset + at if at >= 0 else -1,
                         item.importance,
+                        item.subject.strip(),
+                        item.attribute,
+                        item.value.strip(),
                     )
                 )
     result.incomplete = map_omissions(result.items)

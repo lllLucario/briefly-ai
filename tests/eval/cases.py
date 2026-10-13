@@ -248,6 +248,17 @@ CASES: list[Case] = [
         ],
     ),
     Case(
+        "W6", "周报", "两份材料交付日期不同：正文保留两种说法，提醒列出",
+        weekly={"materials": ["proj_a.md", "proj_b.md"], "brief": "", **WEEK},
+        checks=[
+            report_done(),
+            report_has("10 月 20 日", "10 月 25 日"),
+            reminder_has_any("不一致", "核对"),
+            Check("记录了冲突", lambda r: bool(r.generation.get("conflicts"))),
+            no_unverified_numbers(),
+        ],
+    ),
+    Case(
         "W4", "周报", "只有简述、没有素材",
         weekly={"materials": [], "brief": "这周修复了登录页的两个 bug，和设计对了新版首页的交互稿", **WEEK},
         checks=[report_done(), report_has("登录", "首页"), no_source_tags(), risks_none()],
