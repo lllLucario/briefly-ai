@@ -36,6 +36,10 @@ class _Item(BaseModel):
         default="",
         description="仅 issue 填写：原文中写明问题、阻碍、异常、延期或依赖的那部分文字，逐字照抄；其他类别留空",
     )
+    importance: Literal["high", "medium", "low"] = Field(
+        default="medium",
+        description="按“用途”判断的候选重要度：high 读者必须知道（结果、决定、关键数据、问题）/ medium 一般工作 / low 日常琐事",
+    )
 
 
 class Extraction(BaseModel):
@@ -52,6 +56,7 @@ class Source:
     chunk: int  # 块号，从 1 开始
     title: str
     content: str
+    offset: int = 0  # 这一块在材料全文中的起始位置，用于记录事实的原文位置
 
     @property
     def tag(self) -> str:
@@ -66,6 +71,9 @@ class WorkItem:
     source: str  # 出处：材料号-块号，如 "1-3"
     risk_reason: str = ""  # 问题风险的原文依据（逐字）
     needs_review: bool = False  # 标为问题风险，但依据缺失或在原文中找不到：不能写进【问题与风险】，请用户确认
+    fact_id: str = ""  # 稳定的事实编号：材料号-块号.序号（#n 只是一次合成里的临时编号）
+    span_start: int = -1  # 原文摘录在材料全文中的起始位置；-1 表示只能按忽略空白匹配到，位置不精确
+    importance: str = "medium"  # 模型给的候选重要度，不是客观事实；标准随用途（周报、完整总结）不同
 
     @property
     def verified_risk(self) -> bool:
@@ -93,6 +101,7 @@ class ExtractionResult:
     dropped: list[dict] = field(default_factory=list)  # 被丢弃的条目：{source, point, quote, reason}
     usage: Usage = field(default_factory=Usage)
     cached: int = 0  # 直接用了缓存结果的块数
+    incomplete: list[dict] = field(default_factory=list)  # 提取遗漏：原文摘录里有、要点里都没写的数字等，{fact_ids, quote, missing}
 
     @property
     def processed(self) -> int:
@@ -104,18 +113,23 @@ def _norm(text: str) -> str:
     return re.sub(r"[\s\\]+", "", text)
 
 
-def _extract_messages(source: Source, focus: str, period: str | None, prompt: str = "extract") -> list[tuple[str, str]]:
+def _extract_messages(
+    source: Source, focus: str, period: str | None, prompt: str = "extract", purpose: str = ""
+) -> list[tuple[str, str]]:
     user = (
         f"简述：{focus.strip() or '（无，提取全部工作内容）'}\n"
-        f"周期：{period or '未指定'}\n\n"
+        f"周期：{period or '未指定'}\n"
+        + (f"用途：{purpose}\n" if purpose else "")
+        + "\n"
         + wrap_material(f"【材料 {source.material_id}《{source.title}》第 {source.chunk} 块】", source.content)
     )
     return [("system", read_prompt(prompt)), ("user", user)]
 
 
-def _cache_key(source: Source, focus: str, period: str | None, prompt: str = "extract") -> str:
-    version = "extract-v1" if prompt == "extract" else f"{prompt}-v1"  # 默认提示词的键不变，已有缓存继续有效
-    return content_hash(version, read_prompt(prompt), focus.strip(), period or "", source.content)
+def _cache_key(source: Source, focus: str, period: str | None, prompt: str = "extract", purpose: str = "") -> str:
+    version = "extract-v1" if prompt == "extract" else f"{prompt}-v1"
+    parts = [version, read_prompt(prompt), focus.strip(), period or "", source.content]
+    return content_hash(*parts, purpose) if purpose else content_hash(*parts)
 
 
 def _message_tokens(messages: list[tuple[str, str]]) -> int:
@@ -130,6 +144,7 @@ def extract_items(
     cache: ContextStore | None = None,
     on_call: OnCall | None = None,
     prompt: str = "extract",
+    purpose: str = "",
 ) -> ExtractionResult:
     """逐块提取工作项（prompt 为提取说明的提示词名，文件追踪用 evidence_extract）。每块都会处理；失败的块重试 MAP_RETRIES 次，仍失败的记入 failed，不静默丢弃。
 
@@ -142,12 +157,12 @@ def extract_items(
     outputs: dict[Source, Extraction] = {}
     pending = []
     for source in sources:
-        cached = cache.cached_extraction(_cache_key(source, focus, period, prompt)) if cache else None
+        cached = cache.cached_extraction(_cache_key(source, focus, period, prompt, purpose)) if cache else None
         if cached is not None:
             outputs[source] = Extraction(items=[_Item(**i) for i in cached])
             result.cached += 1
             continue
-        tokens = _message_tokens(_extract_messages(source, focus, period, prompt))
+        tokens = _message_tokens(_extract_messages(source, focus, period, prompt, purpose))
         if tokens > input_limit():  # 块大小由分块决定，正常不会发生；发生时不硬发
             errors[source] = f"这一块约 {tokens} tokens，超出单次输入上限 {input_limit()}"
             continue
@@ -157,7 +172,7 @@ def extract_items(
     for _ in range(1 + config.MAP_RETRIES):
         if not pending:
             break
-        requests = [_extract_messages(s, focus, period, prompt) for s in pending]
+        requests = [_extract_messages(s, focus, period, prompt, purpose) for s in pending]
         responses = extractor.batch(requests, config={"max_concurrency": config.MAP_CONCURRENCY}, return_exceptions=True)
         retry = []
         for source, request, response in zip(pending, requests, responses):
@@ -174,7 +189,7 @@ def extract_items(
             else:
                 outputs[source] = response["parsed"]
                 if cache:
-                    key = _cache_key(source, focus, period, prompt)
+                    key = _cache_key(source, focus, period, prompt, purpose)
                     cache.cache_extraction(key, [i.model_dump() for i in response["parsed"].items])
         pending = retry
     pending = over_budget + pending
@@ -200,10 +215,52 @@ def extract_items(
                 reason = item.risk_reason.strip()
                 # 问题风险必须有原文依据：依据为空或在原文里找不到的，标为待复核（Pydantic 只能保证字段存在，不能保证语义对）
                 review = item.category == "issue" and not (reason and _norm(reason) in content)
+                k = sum(1 for i in result.items if i.source == source.tag) + 1
+                at = source.content.find(item.quote.strip())
                 result.items.append(
-                    WorkItem(item.category, item.point.strip(), item.quote.strip(), source.tag, reason, review)
+                    WorkItem(
+                        item.category,
+                        item.point.strip(),
+                        item.quote.strip(),
+                        source.tag,
+                        reason,
+                        review,
+                        f"{source.tag}.{k}",
+                        source.offset + at if at >= 0 else -1,
+                        item.importance,
+                    )
                 )
+    result.incomplete = map_omissions(result.items)
     return result
+
+
+# 硬信息：数字、日期、百分比、英文标识、书名号。用来判断“写全了没有”——只比较这些，不比较措辞，误报少
+_HARD = re.compile(r"\d+(?:[.:：/\-]\d+)*\s*%?|[A-Za-z][A-Za-z0-9_\-]{1,}|《[^》]+》")
+
+
+def hard_terms(text: str) -> list[str]:
+    return list(dict.fromkeys(re.sub(r"\s+", "", t) for t in _HARD.findall(text)))
+
+
+def missing_terms(terms: list[str], text: str) -> list[str]:
+    flat = re.sub(r"\s+", "", text)
+    return [t for t in terms if t not in flat]
+
+
+def map_omissions(items: list[WorkItem]) -> list[dict]:
+    """提取遗漏：同一段原文摘录里的硬信息，在由它提取出的所有要点里都没有出现。
+
+    例：原文“完成登录模块，修复 Token 过期问题，新增 3 个权限校验测试”只提取成“完成登录模块”，Token、3 就是遗漏。
+    """
+    groups: dict[str, list[WorkItem]] = {}
+    for item in items:
+        groups.setdefault(_norm(item.quote), []).append(item)
+    out = []
+    for group in groups.values():
+        lost = missing_terms(hard_terms(group[0].quote), " ".join(i.point for i in group))
+        if lost:
+            out.append({"fact_ids": [i.fact_id for i in group], "quote": group[0].quote, "missing": lost})
+    return out
 
 
 REVIEW_LABEL = "待复核"  # 标为问题风险但没有原文依据
@@ -221,9 +278,12 @@ def format_items(items: list[WorkItem]) -> str:
     问题风险附原文依据；同一句原文拆出的几项（如“下周要做 X，但 Y 可能影响上线”拆成待办和风险）注明关联，分别写进各自栏目。
     """
     first_with_quote: dict[str, int] = {}
+    lost = {o["fact_ids"][0]: o["missing"] for o in map_omissions(items)}
     lines = []
     for n, i in enumerate(items, start=1):
         line = f"- #{n} 【{_label(i)}】{i.point}\n  原文：{i.quote}"
+        if i.fact_id in lost:  # 提取时可能遗漏：让写作时回到原文写全
+            line += f"\n  （原文中还写了 {'、'.join(lost[i.fact_id])}，概括里没有，写的时候请按原文写全）"
         if i.verified_risk and i.risk_reason:
             line += f"\n  风险依据：{i.risk_reason}"
         key = _norm(i.quote)
@@ -279,6 +339,7 @@ class Synthesis:
     coverage_checked: bool = True  # 模型完全没按编号标注时为 False，无法判断有没有漏写
     problems: list[str] = field(default_factory=list)  # 调用方检查（check）重写一次后仍存在的问题
     rewritten: bool = False  # 是否因检查不通过重写过
+    raw: str = ""  # 换回出处之前的结果（保留 #编号），用于逐行核对每个事实写在哪里
 
 
 def synthesize(
@@ -353,7 +414,7 @@ def synthesize(
         resolved, invalid = f"{resolved}{heading}{aside_text}", invalid + aside_invalid
     checked = bool(used) or not items
     uncovered = [item for n, item in enumerate(items, start=1) if n not in used] if checked else []
-    return Synthesis(resolved, levels, usage, uncovered, invalid, checked, problems, rewritten)
+    return Synthesis(resolved, levels, usage, uncovered, invalid, checked, problems, rewritten, output)
 
 
 def _split_lines(text: str, budget: int) -> list[str]:

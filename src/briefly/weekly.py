@@ -19,7 +19,10 @@ from .llm import create_chat_model
 from .materials import MaterialNotFound, MaterialStore
 from .output_check import find_internal_terms
 from .skills import read_prompt
-from .summarize import CATEGORY_NAMES, Source, WorkItem, extract_items, synthesize
+from .summarize import CATEGORY_NAMES, Source, WorkItem, extract_items, hard_terms, missing_terms, synthesize
+
+# 提取时告诉模型这次的用途：重要度（high / medium / low）按周报的读者判断，与“完整总结”的标准不同
+WEEKLY_PURPOSE = "周报，读者是直属上级：结果、里程碑、决定、关键数据、问题风险算 high；一般工作算 medium；例会、回复消息等日常琐事算 low"
 
 PENDING, RUNNING, DONE, FAILED = "pending", "running", "done", "failed"
 _SOURCE_TAG = re.compile(r"〔[^〕]*〕")
@@ -80,11 +83,28 @@ def section_lines(text: str, heading: str) -> list[str]:
     return lines
 
 
+def citing_lines(body: str) -> dict[int, list[str]]:
+    """每个编号被哪些行引用（编号尚未换回出处）。"""
+    out: dict[int, list[str]] = {}
+    for line in body.splitlines():
+        for n in dict.fromkeys(int(x) for x in re.findall(r"#(\d+)", line)):
+            out.setdefault(n, []).append(line)
+    return out
+
+
+def partial_terms(item: WorkItem, lines: list[str]) -> list[str]:
+    """合并遗漏：引用了这个事实的行里，缺了它的哪些硬信息（数字、日期、英文标识等）。"""
+    text = " ".join(re.sub(r"〔[^〕]*〕", "", line) for line in lines)
+    return missing_terms(hard_terms(item.point), text)
+
+
 def report_check(items: list[WorkItem]) -> Callable[[str], list[str]]:
     """写完周报后的规则检查（不调用模型）：
 
     1. 【问题与风险】的每一条，必须引用至少一个已核实的问题风险项（或来自用户简述）；
-    2. 同一句原文拆出的几项，不能只写其中一部分。
+    2. 同一句原文拆出的几项，不能只写其中一部分；
+    3. 候选重要度为 high 的事实必须写进周报；
+    4. 引用了某个事实的行，要写全它的数字、日期等硬信息（合并时只写了一部分）。
 
     待办、进行中、待复核的问题都不能单独撑起一条风险。分类由提取阶段的结构化输出决定，这里由代码检查，不靠写作时自觉。
     """
@@ -114,6 +134,15 @@ def report_check(items: list[WorkItem]) -> Callable[[str], list[str]]:
                 for n in numbers:
                     if n not in used and not items[n - 1].needs_review:
                         problems.append(f"#{n}（{items[n - 1].point}）与 #{min(used & set(numbers))} 出自同一句原文，是另一项内容，没有写进周报，请补上")
+        reported = {p.split("（", 1)[0] for p in problems}
+        for n, item in enumerate(items, start=1):
+            if n not in used and item.importance == "high" and not item.needs_review and f"#{n}" not in reported:
+                problems.append(f"#{n}（{item.point}）是重要内容，没有写进周报，请补上")
+        for n, lines in citing_lines(body).items():
+            if 1 <= n <= len(items):
+                lost = partial_terms(items[n - 1], lines)
+                if lost:
+                    problems.append(f"#{n}（{items[n - 1].point}）写进周报时缺少 {'、'.join(lost)}，请按要点写全")
         return problems
 
     return check
@@ -131,6 +160,34 @@ def unverified_numbers(report: str, evidence: str) -> list[str]:
     text = _LIST_ORDINAL.sub(r"\1", strip_source_tags(report))  # 列表序号不算
     pool = re.sub(r"\s+", "", evidence)
     return [n for n in dict.fromkeys(_NUMBER.findall(text)) if n not in pool]
+
+
+def fact_trace(items: list[WorkItem], raw: str) -> tuple[list[dict], list[tuple[WorkItem, list[str]]]]:
+    """逐个事实记录去向：written（单独写成一行）/ merged（和别的事实写在同一行）/ uncovered（合成时整条遗漏）。
+
+    返回 (追踪记录, 只写了一部分的事实及缺少的硬信息)。
+    """
+    body = raw.partition(REMINDER_HEADING)[0]
+    cited = citing_lines(body)
+    trace, partial = [], []
+    for n, item in enumerate(items, start=1):
+        lines = cited.get(n, [])
+        lost = partial_terms(item, lines) if lines else []
+        together = sorted({int(x) for line in lines for x in re.findall(r"#(\d+)", line)} - {n})
+        status = "uncovered" if not lines else ("merged" if together else "written")
+        trace.append(
+            {
+                "fact_id": item.fact_id,
+                "n": n,
+                "importance": item.importance,
+                "status": status,
+                "merged_with": [items[m - 1].fact_id for m in together if 1 <= m <= len(items)],
+                "missing": lost,
+            }
+        )
+        if lost:
+            partial.append((item, lost))
+    return trace, partial
 
 
 class WeeklyService:
@@ -213,12 +270,12 @@ class WeeklyService:
                 warnings.append(f"材料 {material_id} 已被删除，未纳入")
                 continue
             chunks = self.store.chunks(material_id)
-            sources += [Source(material_id, c.index, material.title, c.content) for c in chunks]
+            sources += [Source(material_id, c.index, material.title, c.content, c.start) for c in chunks]
             warnings += [f"《{material.title}》：{w}" for w in material.parse_report.get("warnings", [])]
 
         period = f"{report.period_start.isoformat()} 至 {report.period_end.isoformat()}"
         evidence_items = self._evidence_items(report.options.get("evidence_ids", []), warnings)
-        extraction = extract_items(model, sources, focus=report.brief, period=period, cache=self.cache)
+        extraction = extract_items(model, sources, focus=report.brief, period=period, cache=self.cache, purpose=WEEKLY_PURPOSE)
         extraction.items[:0] = evidence_items  # 已确认的工作记录排在前面，与提取的工作项一起合成
         for failed in extraction.failed:
             material_id, chunk = failed["source"].split("-")
@@ -245,6 +302,15 @@ class WeeklyService:
         reminders += [f"这一项可能是问题或风险，但原文没有写明具体的阻碍或影响，没有写进【问题与风险】，请确认：{i.point}〔{i.source}〕" for i in review]
         # 输出覆盖：没写进周报的工作项列给用户，由用户决定要不要补（有简述时，次要工作本来可以不写）
         reminders += [f"这一项没有写进周报，如需要请补充：{i.point}〔{i.source}〕" for i in synthesis.uncovered if not i.needs_review]
+        facts, partial = fact_trace(extraction.items, synthesis.raw)
+        # 合并遗漏：引用了，但只写了一部分
+        reminders += [f"这一项只写了一部分，缺少 {'、'.join(lost)}（合成周报时遗漏），请补充：{i.point}〔{i.source}〕" for i, lost in partial]
+        # 提取遗漏：原文写了，但提取出的要点里没有，周报里也没有
+        for o in extraction.incomplete:
+            lost = missing_terms(o["missing"], strip_source_tags(content))
+            if lost:
+                source = o["fact_ids"][0].rsplit(".", 1)[0]
+                reminders.append(f"原文中的 {'、'.join(lost)} 没有写进周报（提取要点时遗漏），请核对：{o['quote'][:80]}〔{source}〕")
         # 重写后仍有的问题：风险栏引用不对的写进系统提示；漏写的已由输出覆盖列进提醒，不重复
         warnings += [f"{p.split('，请移到')[0]}，请核对" for p in synthesis.problems if "请移到" in p]
         if synthesis.invalid_refs:
@@ -277,6 +343,8 @@ class WeeklyService:
             "input_tokens": usage.input_tokens + synthesis.usage.input_tokens,
             "output_tokens": usage.output_tokens + synthesis.usage.output_tokens,
             "seconds": round(time.monotonic() - started, 1),
+            "facts": facts,  # 每个事实（fact_id）写进了哪几行、和哪些事实合并、是否只写了一部分，用于定位遗漏发生在哪一步
+            "map_omissions": extraction.incomplete,
             "warnings": warnings,  # 系统提示：处理失败、丢弃、未核实数字等
             "reminders": reminders,  # 模型给用户的提醒：可能想补充或核对的地方，不进入周报
         }

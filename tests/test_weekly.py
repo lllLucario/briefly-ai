@@ -97,16 +97,16 @@ def test_generate_end_to_end(store, material):
     weekly.generate(report.id)
     done = weekly.get(report.id)
     assert done.status == DONE and done.content == resolved(material.id)
-    assert done.items == [
-        {
-            "category": "done",
-            "point": "耗时下降",
-            "quote": "支付回调耗时从 1.8 秒降到 200 毫秒。",
-            "source": f"{material.id}-1",
-            "risk_reason": "",
-            "needs_review": False,
-        }
-    ]
+    [item] = done.items
+    assert {k: item[k] for k in ("category", "point", "quote", "source", "needs_review")} == {
+        "category": "done",
+        "point": "耗时下降",
+        "quote": "支付回调耗时从 1.8 秒降到 200 毫秒。",
+        "source": f"{material.id}-1",
+        "needs_review": False,
+    }
+    assert item["fact_id"] == f"{material.id}-1.1"  # 稳定的事实编号：材料-块.序号
+    assert material.content[item["span_start"] :].startswith(item["quote"])  # 原文位置可回查
     g = done.generation
     assert g["chunks_total"] == g["chunks_processed"] == 1
     assert g["calls"] == 2 and g["unverified_numbers"] == [] and g["warnings"] == []
