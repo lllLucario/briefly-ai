@@ -123,3 +123,21 @@ def test_map_omission_missing_from_report_is_reminded_with_stage(store):
 def test_map_omission_fixed_by_writer_is_not_reminded(store):
     done, calls, _ = weekly_with(store, [FULL], [LOGIN, PAY])  # 写作时按原文写全了
     assert not any("提取要点时遗漏" in r for r in done.generation["reminders"])
+
+
+def test_secondary_fields_are_parsed_leniently():
+    from pydantic import ValidationError
+
+    from briefly.summarize import Extraction
+
+    raw = {"category": "done", "point": "完成联调", "quote": "完成联调", "importance": "中", "attribute": "deadline", "subject": None, "value": 20}
+    [item] = Extraction.model_validate({"items": [raw]}).items
+    assert (item.importance, item.attribute, item.subject, item.value) == ("medium", "", "", "20")  # 次要字段不合法不影响整条
+    with pytest.raises(ValidationError):
+        Extraction.model_validate({"items": [{**raw, "category": "完成"}]})  # 核心字段仍严格校验
+
+
+def test_bad_secondary_field_does_not_drop_chunk():
+    bad = {**PAY, "importance": "很重要", "attribute": "time"}
+    result = extract(bad)
+    assert result.failed == [] and [i.point for i in result.items] == [PAY["point"]]

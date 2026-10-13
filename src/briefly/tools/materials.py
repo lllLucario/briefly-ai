@@ -240,17 +240,19 @@ def material_tools(
             return conflict_problems(conflicts, lambda n: n in used)
 
         digest = synthesize(llm, read_prompt("digest"), request, extraction.items, on_call=on_call, check=check)
-        body = _readable_sources(digest.text, labels)
+        # 必须保留的信息放在最前面：结果超出工具预算被截断时，截掉的是末尾
+        front = []
         unresolved = [c for c in conflicts if c.resolution == UNRESOLVED]
         if unresolved:  # 看不出哪个为准的不同说法：原样列出，回答里要保留，不要替用户选定
-            body += "\n\n不同材料说法不一致（看不出哪个为准，回答中请同时写出并说明不一致）：\n" + "\n".join(
+            front.append("不同材料说法不一致（看不出哪个为准，回答中请同时写出并说明不一致）：\n" + "\n".join(
                 f"- {c.subject} 的{ATTRIBUTES[c.attribute]}："
                 + " / ".join(f"{v}〔{labels.get(extraction.items[n - 1].source, '')}〕" for n, v in zip(c.numbers, c.values))
                 for c in unresolved
-            )
+            ))
         artifact["conflicts"] = [c.to_dict() for c in conflicts]
         if digest.uncovered:  # 汇总时漏写的要点原样附上，保证交给你的内容是完整的
-            body += "\n\n汇总时未写入的要点：\n" + "\n".join(f"- {i.point}〔{labels.get(i.source, '')}〕" for i in digest.uncovered)
+            front.append("汇总时未写入的要点：\n" + "\n".join(f"- {i.point}〔{labels.get(i.source, '')}〕" for i in digest.uncovered))
+        body = "\n\n".join([*front, ("要点清单：\n" if front else "") + _readable_sources(digest.text, labels)])
         if digest.invalid_refs:
             notes.append(f"汇总引用了不存在的要点编号 {digest.invalid_refs}，相关内容请谨慎使用")
         if not digest.coverage_checked:

@@ -5,13 +5,14 @@
 原则：能用代码保证的不交给模型自觉——每块都被处理（输入覆盖），每条都能在原文找到（引用校验），
 每个工作项都写进了结果或被明确列出（输出覆盖）。
 """
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
 from langchain_core.language_models import BaseChatModel
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from . import config
 from .materials import wrap_material
@@ -22,6 +23,8 @@ from .tokens import estimate_tokens
 
 # 每次调用模型后的回调：(任务类型 map/reduce/synthesize, 估算输入 tokens, 模型返回的消息, 出处如 "1-3")，用于观测
 OnCall = Callable[[str, int, object, str], None]
+
+log = logging.getLogger(__name__)
 
 CATEGORY_NAMES = {"done": "已完成", "in_progress": "进行中", "issue": "问题风险", "plan": "计划", "other": "其他"}
 
@@ -45,6 +48,32 @@ class _Item(BaseModel):
         default="medium",
         description="按“用途”判断的候选重要度：high 读者必须知道（结果、决定、关键数据、问题）/ medium 一般工作 / low 日常琐事",
     )
+
+
+    # 次要字段宽松解析：取值不合法时置空或用默认值，不让一个次要字段拖垮整块的提取（核心字段 category / point / quote 仍严格校验）
+    # 枚举仍保留在 schema 里给模型看；DeepSeek 等 OpenAI 兼容接口不支持严格 JSON Schema，取值偶尔会越界
+    @field_validator("attribute", mode="before")
+    @classmethod
+    def _lenient_attribute(cls, value):
+        if value in ("date", "amount", "quantity", "status", "owner", "progress", ""):
+            return value
+        log.info("提取结果的 attribute 取值不合法（%r），已置空", value)
+        return ""
+
+    @field_validator("importance", mode="before")
+    @classmethod
+    def _lenient_importance(cls, value):
+        mapping = {"高": "high", "中": "medium", "低": "low", "重要": "high", "一般": "medium", "次要": "low"}
+        value = mapping.get(str(value).strip(), str(value).strip().lower()) if value is not None else "medium"
+        if value not in ("high", "medium", "low"):
+            log.info("提取结果的 importance 取值不合法（%r），按 medium 处理", value)
+            return "medium"
+        return value
+
+    @field_validator("risk_reason", "subject", "value", mode="before")
+    @classmethod
+    def _lenient_text(cls, value):
+        return "" if value is None else str(value)
 
 
 class Extraction(BaseModel):

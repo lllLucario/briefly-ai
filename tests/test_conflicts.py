@@ -145,3 +145,31 @@ def test_summarize_materials_lists_unresolved_conflicts(store):
     tool = next(m for m in agent.history if isinstance(m, ToolMessage))
     assert "不同材料说法不一致" in tool.content and "〔《文件A》〕" in tool.content and "〔《文件B》〕" in tool.content
     assert tool.artifact["conflicts"][0]["resolution"] == "unresolved"
+    # 必须保留的信息放在要点清单前面：结果过长被截断时截掉的是末尾
+    assert tool.content.index("不同材料说法不一致") < tool.content.index("要点清单")
+
+
+def test_agent_answer_that_unifies_conflict_is_retried(store):
+    store.add_text("文件A", A)
+    store.add_text("文件B", B)
+    answers = ["项目A 预计 10 月 25 日交付。", "项目A 交付时间两份材料不一致：10 月 20 日 / 10 月 25 日。"]
+    finals = []
+
+    def respond(messages):
+        system, user = messages[0].content, messages[-1].content
+        if "提取要点" in system:
+            value, quote = ("10 月 20 日", A) if "20 日" in user else ("10 月 25 日", B)
+            return structured("Extraction", items=[{"category": "other", "point": f"项目A 交付时间为 {value}", "quote": quote, "subject": "项目A", "attribute": "date", "value": value}])
+        if "说法" in system and "superseded" in system:
+            return structured("_Judgments", judgments=[{"index": 1, "resolution": "unresolved", "explanation": "不一致"}])
+        if "整理成一份完整的要点清单" in system:
+            return AIMessage("- 项目A 交付时间：10 月 20 日〔#1〕/ 10 月 25 日〔#2〕")
+        if any(isinstance(m, ToolMessage) for m in messages):
+            finals.append(messages[-1].content)
+            return AIMessage(answers.pop(0))
+        return AIMessage("", tool_calls=[{"name": "summarize_materials", "args": {}, "id": "t1"}])
+
+    agent = Agent(FunctionModel(respond=respond, calls=[]), store=store)
+    assert agent.chat("总结这两份材料") == "项目A 交付时间两份材料不一致：10 月 20 日 / 10 月 25 日。"
+    assert len(finals) == 2 and "回答里缺少：项目A 的日期“10 月 20 日”" in finals[1]
+    assert sum(1 for m in agent.history if isinstance(m, AIMessage) and not m.tool_calls) == 1  # 重试过程不进会话历史

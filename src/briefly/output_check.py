@@ -7,7 +7,7 @@ import logging
 import re
 
 from langchain.agents.middleware import AgentMiddleware, ModelResponse
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +28,37 @@ RETRY_HINT = (
 )
 
 
+CONFLICT_HINT = (
+    "【系统检查】工具结果列出了不同材料之间看不出哪个为准的说法，回答里缺少：{missing}。"
+    "请重写回答：同时写出各个说法并说明材料之间不一致，不要只写其中一个；其他内容不变。直接输出重写后的完整回答。"
+)
+_ATTR = {"date": "日期", "amount": "金额", "quantity": "数量", "status": "状态", "owner": "负责人", "progress": "进度"}
+
+
+def turn_conflicts(messages) -> list[dict]:
+    """本轮（最后一条用户消息之后）工具结果里记录的、看不出哪个为准的冲突（来自 summarize_materials 的 artifact）。"""
+    start = max((i for i, m in enumerate(messages) if isinstance(m, HumanMessage) and not m.additional_kwargs.get("internal")), default=-1)
+    out = []
+    for m in messages[start + 1 :]:
+        if isinstance(m, ToolMessage) and isinstance(m.artifact, dict):
+            out += [c for c in m.artifact.get("conflicts", []) if c.get("resolution") == "unresolved"]
+    return out
+
+
+def missing_conflict_values(answer: str, conflicts: list[dict]) -> list[str]:
+    """回答里缺少的冲突说法。日期、金额等按数字比较（“10 月 20 日”与“10月20日”算同一个）。"""
+    flat = _squash(answer)
+    numbers = set(re.findall(r"\d+(?:\.\d+)?", answer))
+    missing = []
+    for c in conflicts:
+        for value in c.get("values", []):
+            digits = re.findall(r"\d+(?:\.\d+)?", value)
+            if _squash(value) in flat or (digits and all(d in numbers for d in digits)):
+                continue
+            missing.append(f"{c.get('subject', '')} 的{_ATTR.get(c.get('attribute'), '')}“{value}”")
+    return missing
+
+
 def _squash(text: str) -> str:
     return re.sub(r"\s+", "", text)
 
@@ -46,7 +77,11 @@ def find_internal_terms(text: str, sources: list[str] | None = None) -> list[str
 
 
 class InternalTermCheck(AgentMiddleware):
-    """最终回答（不再调用工具的那次）含内部处理信息时，带着提示重试一次；仍有则保留回答并记日志，供人工排查。
+    """最终回答（不再调用工具的那次）的检查，有问题时带着提示重试一次；仍有则保留回答并记日志，供人工排查。
+
+    - 含内部处理信息（块号等，Bug 1）；
+    - 本轮工具结果里有看不出哪个为准的冲突，回答却只写了其中一种说法（Agent 改写工具结果时把矛盾“统一”了，Bug 4）。
+    两类问题合并成一次重试。
 
     sources(request) 返回判断依据的原文（本轮用户输入、可访问材料的正文）。放在 ContextBuilder 外层：重试也经过预算检查。
     """
@@ -60,19 +95,27 @@ class InternalTermCheck(AgentMiddleware):
         answer = _final_answer(response)
         if answer is None:
             return response
+        conflicts = turn_conflicts(request.messages)
         terms = find_internal_terms(answer.text, self._sources(request))
-        if not terms:
+        missing = missing_conflict_values(answer.text, conflicts)
+        if not terms and not missing:
             return response
-        log.warning("回答中出现内部处理信息 %s，重试一次", terms)
-        hint = HumanMessage(RETRY_HINT.format(terms="、".join(terms)), additional_kwargs={"internal": True})
+        log.warning("回答检查未通过（内部信息 %s，缺少的冲突说法 %s），重试一次", terms, missing)
+        hints = []
+        if terms:
+            hints.append(RETRY_HINT.format(terms="、".join(terms)))
+        if missing:
+            hints.append(CONFLICT_HINT.format(missing="、".join(missing)))
+        hint = HumanMessage("\n".join(hints), additional_kwargs={"internal": True})
         retry = handler(request.override(messages=[*request.messages, answer, hint]))
         second = _final_answer(retry)
         if second is None:
             return response
         left = find_internal_terms(second.text, self._sources(request))
-        if left:
-            log.warning("重试后回答中仍有内部处理信息 %s，需要人工排查", left)
-            second.response_metadata = {**second.response_metadata, "internal_terms": left}
+        left_conflicts = missing_conflict_values(second.text, conflicts)
+        if left or left_conflicts:
+            log.warning("重试后回答仍未通过检查（内部信息 %s，缺少的冲突说法 %s），需要人工排查", left, left_conflicts)
+            second.response_metadata = {**second.response_metadata, "internal_terms": left, "missing_conflicts": left_conflicts}
         return retry
 
     def _sources(self, request) -> list[str]:
