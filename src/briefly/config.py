@@ -79,3 +79,27 @@ PORT = int(os.getenv("BRIEFLY_PORT", "8000"))
 MAP_CONCURRENCY = int(os.getenv("BRIEFLY_MAP_CONCURRENCY", "4"))
 MAP_RETRIES = int(os.getenv("BRIEFLY_MAP_RETRIES", "1"))
 REDUCE_BUDGET_TOKENS = int(os.getenv("BRIEFLY_REDUCE_BUDGET_TOKENS", "30000"))
+
+# ---- 文件追踪（File Tracking）
+# 原始文件版本的存放目录（按 SHA-256 内容寻址）
+TRACKING_DIR = os.getenv("BRIEFLY_TRACKING_DIR", "data/tracking")
+# 单个文件超过该大小不采集快照（MB）；版本库总量超过上限时不再保存新版本（MB）
+TRACKING_MAX_FILE_MB = float(os.getenv("BRIEFLY_TRACKING_MAX_FILE_MB", "50"))
+TRACKING_MAX_STORE_MB = float(os.getenv("BRIEFLY_TRACKING_MAX_STORE_MB", "2048"))
+# mtime 距现在不足该秒数时视为可能正在写入，本次跳过
+TRACKING_SETTLE_SECONDS = float(os.getenv("BRIEFLY_TRACKING_SETTLE_SECONDS", "2"))
+# 扫描锁的租约时长（秒）：持有者崩溃后超过该时长，其他进程可接手
+TRACKING_LOCK_SECONDS = int(os.getenv("BRIEFLY_TRACKING_LOCK_SECONDS", "900"))
+# 每日扫描：时间（HH:MM）、时区（留空用系统时区）、只在工作日（周一至周五）
+TRACKING_DAILY_TIME = os.getenv("BRIEFLY_TRACKING_DAILY_TIME", "18:00")
+TRACKING_TIMEZONE = os.getenv("BRIEFLY_TRACKING_TIMEZONE", "")
+TRACKING_WORKDAYS_ONLY = os.getenv("BRIEFLY_TRACKING_WORKDAYS_ONLY", "1") != "0"
+# 每日扫描失败后的重试次数、重试间隔（分钟）
+TRACKING_SCAN_RETRIES = int(os.getenv("BRIEFLY_TRACKING_SCAN_RETRIES", "2"))
+TRACKING_RETRY_MINUTES = int(os.getenv("BRIEFLY_TRACKING_RETRY_MINUTES", "10"))
+# API 进程内是否启动每日扫描线程
+TRACKING_SCHEDULER = os.getenv("BRIEFLY_TRACKING_SCHEDULER", "1") != "0"
+# 生成候选证据时，每批交给模型的 Diff 上限（tokens）
+TRACKING_DIFF_BATCH_TOKENS = int(os.getenv("BRIEFLY_TRACKING_DIFF_BATCH_TOKENS", "3000"))
+# 单个文件一次 Diff 最多保留的变化段数，超出部分只计数（避免超大 Diff 撑爆存储和上下文）
+TRACKING_MAX_HUNKS = int(os.getenv("BRIEFLY_TRACKING_MAX_HUNKS", "400"))

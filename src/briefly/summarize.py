@@ -94,17 +94,18 @@ def _norm(text: str) -> str:
     return re.sub(r"[\s\\]+", "", text)
 
 
-def _extract_messages(source: Source, focus: str, period: str | None) -> list[tuple[str, str]]:
+def _extract_messages(source: Source, focus: str, period: str | None, prompt: str = "extract") -> list[tuple[str, str]]:
     user = (
         f"简述：{focus.strip() or '（无，提取全部工作内容）'}\n"
         f"周期：{period or '未指定'}\n\n"
         + wrap_material(f"【材料 {source.material_id}《{source.title}》第 {source.chunk} 块】", source.content)
     )
-    return [("system", read_prompt("extract")), ("user", user)]
+    return [("system", read_prompt(prompt)), ("user", user)]
 
 
-def _cache_key(source: Source, focus: str, period: str | None) -> str:
-    return content_hash("extract-v1", read_prompt("extract"), focus.strip(), period or "", source.content)
+def _cache_key(source: Source, focus: str, period: str | None, prompt: str = "extract") -> str:
+    version = "extract-v1" if prompt == "extract" else f"{prompt}-v1"  # 默认提示词的键不变，已有缓存继续有效
+    return content_hash(version, read_prompt(prompt), focus.strip(), period or "", source.content)
 
 
 def _message_tokens(messages: list[tuple[str, str]]) -> int:
@@ -118,8 +119,9 @@ def extract_items(
     period: str | None = None,
     cache: ContextStore | None = None,
     on_call: OnCall | None = None,
+    prompt: str = "extract",
 ) -> ExtractionResult:
-    """逐块提取工作项。每块都会处理；失败的块重试 MAP_RETRIES 次，仍失败的记入 failed，不静默丢弃。
+    """逐块提取工作项（prompt 为提取说明的提示词名，文件追踪用 evidence_extract）。每块都会处理；失败的块重试 MAP_RETRIES 次，仍失败的记入 failed，不静默丢弃。
 
     每块是一次独立的调用，只带提取说明和这一块原文，不带其他块和对话历史，单次输入不随块数增长。
     传了 cache 时，提取结果按（块内容、关注点、周期、提示词）缓存：中途失败后重跑、同一材料再次提炼时不重算。
@@ -130,12 +132,12 @@ def extract_items(
     outputs: dict[Source, Extraction] = {}
     pending = []
     for source in sources:
-        cached = cache.cached_extraction(_cache_key(source, focus, period)) if cache else None
+        cached = cache.cached_extraction(_cache_key(source, focus, period, prompt)) if cache else None
         if cached is not None:
             outputs[source] = Extraction(items=[_Item(**i) for i in cached])
             result.cached += 1
             continue
-        tokens = _message_tokens(_extract_messages(source, focus, period))
+        tokens = _message_tokens(_extract_messages(source, focus, period, prompt))
         if tokens > input_limit():  # 块大小由分块决定，正常不会发生；发生时不硬发
             errors[source] = f"这一块约 {tokens} tokens，超出单次输入上限 {input_limit()}"
             continue
@@ -145,7 +147,7 @@ def extract_items(
     for _ in range(1 + config.MAP_RETRIES):
         if not pending:
             break
-        requests = [_extract_messages(s, focus, period) for s in pending]
+        requests = [_extract_messages(s, focus, period, prompt) for s in pending]
         responses = extractor.batch(requests, config={"max_concurrency": config.MAP_CONCURRENCY}, return_exceptions=True)
         retry = []
         for source, request, response in zip(pending, requests, responses):
@@ -162,7 +164,7 @@ def extract_items(
             else:
                 outputs[source] = response["parsed"]
                 if cache:
-                    key = _cache_key(source, focus, period)
+                    key = _cache_key(source, focus, period, prompt)
                     cache.cache_extraction(key, [i.model_dump() for i in response["parsed"].items])
         pending = retry
     pending = over_budget + pending

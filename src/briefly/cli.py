@@ -88,7 +88,11 @@ def repl(agent: Agent, skill: str | None) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(prog="briefly", description="办公 AI Agent")
+    if sys.argv[1:2] == ["track"]:  # 文件追踪子命令；与“briefly 文件路径”的用法分开解析
+        from .tracking.cli import main as track_main
+
+        sys.exit(track_main(sys.argv[2:]))
+    ap = argparse.ArgumentParser(prog="briefly", description="办公 AI Agent（文件追踪见 briefly track -h）")
     ap.add_argument("input", nargs="?", help="文件路径（txt/md/docx/pdf/xlsx/csv），- 表示标准输入；不填则进入对话模式")
     ap.add_argument("-s", "--skill", choices=list(SKILLS), help="指定能力；不指定则由模型判断")
     ap.add_argument("-e", "--extra", default="", help="额外要求，如“控制在200字内”")

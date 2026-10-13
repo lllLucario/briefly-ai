@@ -480,8 +480,10 @@ async function refreshWeekly() {
 
 function renderWeeklyMeta(r) {
   const g = r.generation || {};
+  const evidence = r.options?.evidence_ids || [];
   const rows = [
-    ["素材", r.material_ids.length ? r.material_ids.map(materialTitle).join("、") : "无（只用简述）"],
+    ["素材", r.material_ids.length ? r.material_ids.map(materialTitle).join("、") : evidence.length ? "无" : "无（只用简述）"],
+    ...(evidence.length ? [["工作记录", `${evidence.length} 条已确认（${evidence.map((i) => `E${i}`).join("、")}，来自文件追踪）`]] : []),
     ["简述", r.brief || "无"],
     ["读者 / 姓名", `${r.options?.audience || "直属上级"} / ${r.options?.name || "-"}`],
   ];
@@ -509,8 +511,12 @@ $("#weekly-detail-panel").addEventListener("click", (e) => {
       continue;
     }
     const items = r.items.filter((i) => i.source === src);
-    const [mid, chunk] = src.split("-");
-    html += `<p><b>${escapeHtml(materialTitle(Number(mid)))} 第 ${escapeHtml(chunk || "?")} 块</b></p>`;
+    if (/^E\d+$/.test(src)) {
+      html += `<p><b>已确认的工作记录 ${escapeHtml(src)}</b>（来自文件追踪）</p>`;
+    } else {
+      const [mid, chunk] = src.split("-");
+      html += `<p><b>${escapeHtml(materialTitle(Number(mid)))} 第 ${escapeHtml(chunk || "?")} 块</b></p>`;
+    }
     html += items.length
       ? items.map((i) => `<div>${escapeHtml(i.point)}</div><div class="quote">${escapeHtml(i.quote)}</div>`).join("")
       : `<p class="muted">没有找到这一出处的工作项。</p>`;
@@ -553,10 +559,35 @@ $("#print-weekly").addEventListener("click", () => {
   window.print();
 });
 
+// ---------- 提醒（文件追踪：周报已准备好等）----------
+async function loadInbox() {
+  let items = [];
+  try {
+    items = await api("/notifications");
+  } catch (_) {
+    return; // 提醒加载失败不影响页面
+  }
+  const box = $("#inbox");
+  box.classList.toggle("hidden", !items.length);
+  box.innerHTML = items.map((n) => `
+    <div class="inbox-item">
+      <div><b>🔔 ${escapeHtml(n.title)}</b>${escapeHtml(n.body)}</div>
+      <button class="ghost" data-read="${n.id}">知道了</button>
+    </div>`).join("");
+}
+
+$("#inbox").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-read]");
+  if (!b) return;
+  await api("/notifications/read", { method: "POST", json: { ids: [Number(b.dataset.read)] } });
+  loadInbox();
+});
+
 // ---------- 启动 ----------
 (async function init() {
   try {
-    await Promise.all([loadSkills(), loadMaterials(), loadSessions()]);
+    await Promise.all([loadSkills(), loadMaterials(), loadSessions(), loadInbox()]);
+    setInterval(loadInbox, 60000);
   } catch (err) {
     showNotice($("#context-box"), `连接后端失败：${escapeHtml(err.message)}`, "error");
   }

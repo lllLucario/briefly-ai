@@ -226,7 +226,8 @@ def test_search_snippet_is_trimmed(store):
 def test_list_materials_tool(store):
     store.add_text("周报素材", "内容")
     result = run_tool(store, "list_materials", {})
-    assert "材料 1《周报素材》" in result.content and "1 块" in result.content
+    assert "材料 1《周报素材》" in result.content and "没有识别出章节" in result.content
+    assert "块" not in result.content and "字" not in result.content.split("》", 1)[1]  # 块数、字数会被当成文档内容
 
 
 def test_read_material_tool_wraps_content(store):
@@ -265,12 +266,12 @@ def test_tools_respect_selected_scope(store):
 WEEKLY = "# 周报\n## 周一\n完成登录联调。\n## 周三\n### 支付\n定位回调超时。\n### 订单\n评审分页方案。\n## 周五\n确认上线时间。"
 
 
-def test_get_outline_lists_sections_with_chunk_ranges(store):
+def test_get_outline_lists_sections_without_internal_numbers(store):
     material, _ = store.add_text("周报", WEEKLY)
     result = run_tool(store, "get_outline", {"material_id": material.id}).content
-    assert "【材料 1《周报》的章节大纲】" in result and "个章节" not in result.splitlines()[0]
-    assert "1. 周报（第 1 块，" in result
-    assert "\n    4. 支付（第 1 块" in result  # 三级标题缩进两层
+    assert result.startswith("【材料 1《周报》的章节大纲") and "个章节" not in result.splitlines()[0]
+    assert "\n1. 周报\n" in result and "块" not in result and "字）" not in result  # 不写块号、字数
+    assert "\n    4. 支付\n" in result  # 三级标题缩进两层
     assert "【材料开始】" in result  # 标题来自材料，同样当作材料
 
 
@@ -362,8 +363,8 @@ def run_summarize(
 def test_summarize_materials_returns_verified_digest(store):
     store.add_text("周报", "# 周三\n支付回调耗时降到 200 毫秒。")
     result, model = run_summarize(store, {"focus": "支付"})
-    assert "材料已全部处理" in result and "〔材料号-块号〕为出处" in result
-    assert "【材料开始】\n- 支付回调耗时下降〔1-1〕\n【材料结束】" in result
+    assert "材料已全部处理" in result and "〔〕内为出处" in result
+    assert "【材料开始】\n- 支付回调耗时下降〔《周报》周三〕\n【材料结束】" in result  # 出处用标题和章节，不用块号
     extract_call = next(c for c in model.calls if "你负责从一段材料中提取要点" in c[0].content)
     assert "简述：支付" in extract_call[-1].content
     digest_call = next(c for c in model.calls if "你负责把从材料中逐块提取" in c[0].content)
@@ -382,7 +383,7 @@ def test_summarize_materials_respects_scope_and_reports_failures(store):
         return structured("Extraction", items=[{"category": "other", "point": "耗时", "quote": "耗时降到 200 毫秒。"}])
 
     result, _ = run_summarize(store, {}, extract=extract)
-    assert "已处理 1/2 块" in result and f"第 {b.id}-1 块处理失败" in result
+    assert "《b》有部分内容处理失败，未纳入" in result and "块" not in result
 
 
 def test_summarize_materials_appends_points_the_digest_left_out(store):
@@ -398,7 +399,7 @@ def test_summarize_materials_appends_points_the_digest_left_out(store):
         )
 
     result, _ = run_summarize(store, {}, extract=extract, digest="- 耗时下降〔#2〕")
-    assert "汇总时未写入的要点：\n- 定位超时原因〔1-1〕" in result
+    assert "汇总时未写入的要点：\n- 定位超时原因〔《周报》〕" in result
 
 
 def test_summarize_materials_with_nothing_relevant(store):

@@ -31,7 +31,25 @@ briefly -t <会话编号>                     # 恢复之前的会话
 briefly-api                               # 启动后端和网页：http://127.0.0.1:8000 ，接口文档：/docs
 ```
 
-运行数据（会话记忆、材料库）默认存在 `data/` 下的 SQLite 文件中，不进 Git；`DATABASE_URL` 可换成 Postgres。
+### 文件追踪：从文件变化准备周报
+
+追踪文件和文件夹的版本变化，生成候选工作记录，由你确认后再交给周报生成器。
+
+```bash
+briefly track create 项目A --owner 张三      # 创建集合；--owner 是你在 Word 修订里的署名，用于归属判断
+briefly track add 项目A D:\项目 方案.docx 进度.xlsx   # 混合添加文件和文件夹，立即保存基线
+briefly track scan 项目A                     # 手动扫描（briefly-api 运行时每个工作日自动扫描）
+briefly track diff <文件编号>                # 查看两个版本的差异
+briefly track prepare 项目A                  # 周报前：最终扫描 + 生成候选工作记录
+briefly track review 项目A                   # 审核：确认、排除、修改、补充、合并、拆分，最后 done 确认清单
+briefly track report 项目A -o 周报.md        # 只用已确认的记录生成周报草稿
+briefly track schedule 项目A --weekday 周五 --time 16:30   # 每周到点自动准备候选清单并提醒你审核
+briefly track inbox                          # 查看提醒（网页顶部也会显示）
+```
+
+没有常驻 `briefly-api` 时，可以用系统计划任务定时运行 `briefly track run-due`；`briefly track prune` 清理旧版本（被工作记录引用的版本不会删除）。
+
+运行数据（会话记忆、材料库、文件版本）默认存在 `data/` 下的 SQLite 文件和 `data/tracking/` 目录中，不进 Git；`DATABASE_URL` 可换成 Postgres。
 
 ## 测试
 
@@ -61,7 +79,8 @@ src/briefly/
 ├── materials.py        材料库：导入、去重、检索
 ├── summarize.py        Map-Reduce：逐块提取并核对原文、分批合并、漏写核对
 ├── weekly.py           周报：后台生成、出处、数字核对、提醒、导出
-├── api.py              FastAPI 后端
+├── tracking/           文件追踪：快照、Diff、归属、候选工作记录、审核、每日扫描
+├── api.py              FastAPI 后端（并提供 web/ 下的网页）
 ├── cli.py              命令行入口
 ├── config.py           环境变量配置
 ├── tools/              工具：日期、材料（列出、大纲、读取、检索、完整提炼）、会话（查原话、读回工具结果）

@@ -2,6 +2,9 @@
 
 可访问范围由运行时 Context.material_ids 决定：用户本次选了材料时只能访问这些，否则可访问全部。
 """
+import re
+from dataclasses import asdict
+
 from langchain.tools import ToolRuntime
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool, tool
@@ -16,8 +19,11 @@ from ..summarize import Source, extract_items, synthesize
 from ..tool_budget import output_limit
 
 
-# 工具返回的块数、章节数、字数是帮模型调用工具的信息。实测中模型会把它们当成文档内容写进总结，所以统一加这个标注
+# 实测中模型会把工具返回的块号、块数、字数当成文档内容写进总结。所以给模型看的文字里尽量不出现这些处理信息：
+# 出处用“《标题》章节”表示，块号等机器可读的信息放在工具结果的 artifact 里（不发给模型，供程序和排查使用）。
+# 只有翻页读取（read_material 的块号）这类调用工具必需的信息才保留，并标注为检索信息。
 RETRIEVAL_INFO = "检索信息，不是材料内容，不要写进回答"
+_TAG = re.compile(r"〔([^〕]*)〕")
 
 
 def _scope(runtime: ToolRuntime[Context]) -> list[int] | None:
@@ -72,21 +78,21 @@ def material_tools(
     """context_store 用于缓存逐块提取结果、记录调用观测数据。model 供 summarize_materials 逐块提取和汇总；不传时用时再创建。"""
     @tool
     def list_materials(runtime: ToolRuntime[Context]) -> str:
-        """列出当前可用的材料：编号、标题、类型、字数、块数、章节数、导入日期。不知道有哪些材料或材料编号时调用。"""
+        """列出当前可用的材料：编号、标题、类型、有没有章节大纲、导入日期。不知道有哪些材料或材料编号时调用。"""
         scope = _scope(runtime)
         materials = store.list_materials(scope)
         if not materials:
             return "当前没有可用的材料。"
-        chunks, sections = store.chunk_counts(scope), store.section_counts(scope)
+        sections = store.section_counts(scope)
         return f"{RETRIEVAL_INFO}：\n" + "\n".join(
-            f"- 材料 {m.id}《{m.title}》：{m.file_type or '粘贴文本'}，{m.char_count} 字，"
-            f"{chunks.get(m.id, 0)} 块，{sections.get(m.id, 0)} 个章节，{m.created_at:%Y-%m-%d}"
+            f"- 材料 {m.id}《{m.title}》：{m.file_type or '粘贴文本'}，"
+            f"{'有章节大纲' if sections.get(m.id) else '没有识别出章节'}，{m.created_at:%Y-%m-%d}"
             for m in materials
         )
 
     @tool
     def get_outline(material_id: int, runtime: ToolRuntime[Context]) -> str:
-        """查看某份材料的章节大纲：每章的编号、标题、所在块号和字数。
+        """查看某份材料的章节大纲：每章的编号和标题，较长的章节会注明需要分次读取。
         材料较长、需要了解结构或只读其中某几章时先调用，再用 read_material 的 section 参数按章节读取。"""
         _check_in_scope(material_id, _scope(runtime))
         material = store.get(material_id)
@@ -95,14 +101,15 @@ def material_tools(
         name = f"材料 {material_id}《{material.title}》"
         notes = material.parse_report.get("warnings", [])
         if not sections:
-            text = f"{name}没有识别出章节，请用 search_materials 检索，或按块号读取（共 {len(chunks)} 块）。"
+            text = f"{name}没有识别出章节，请用 search_materials 检索，或用 read_material 从 chunk=1 开始按顺序读取（{RETRIEVAL_INFO}）。"
             return "\n".join([text, *(f"解析提示：{n}" for n in notes)])
         top = min(s.level for s in sections)
-        lines = []
-        for s in sections:
-            first, last = _chunk_range(chunks, s.start, s.end)
-            lines.append(f"{'  ' * (s.level - top)}{s.index}. {s.title}（{_blocks(first, last)}，{s.end - s.start} 字）")
-        header = f"【{name}的章节大纲】"  # 不写总块数、章节数：实测中模型会把这类数字当成文档内容写进总结
+        limit = _section_chars()
+        lines = [
+            f"{'  ' * (s.level - top)}{s.index}. {s.title}" + ("（较长，需分次读取）" if s.end - s.start > limit else "")
+            for s in sections
+        ]
+        header = f"【{name}的章节大纲（编号用于 read_material 的 section 参数）】"  # 不写块号、字数：会被当成文档内容
         return "\n".join([wrap_material(header, "\n".join(lines)), *(f"解析提示：{n}" for n in notes)])
 
     @tool
@@ -180,10 +187,10 @@ def material_tools(
             size += len(part)
         return "\n\n".join(parts)
 
-    @tool
+    @tool(response_format="content_and_artifact")
     def summarize_materials(
         runtime: ToolRuntime[Context], focus: str = "", material_ids: list[int] | None = None
-    ) -> str:
+    ) -> tuple[str, dict]:
         """完整提炼材料：由程序逐块读取全部内容、提取要点并核对原文，再汇总成要点清单（每条带出处）。
         需要总结、梳理一份或多份较长材料的全部内容时使用，比逐块 read_material 省、而且不会漏读。
         focus 写关注点（如“支付相关的进展”），不写则提炼全部要点；material_ids 不填则处理本次可用的全部材料。
@@ -193,35 +200,56 @@ def material_tools(
             for material_id in material_ids:
                 _check_in_scope(material_id, scope)
             scope = material_ids
-        sources = [
-            Source(m.id, c.index, m.title, c.content)
-            for m in store.list_materials(scope)
-            for c in store.chunks(m.id)
-        ]
+        sources, labels = [], {}
+        for m in store.list_materials(scope):
+            for c in store.chunks(m.id):
+                sources.append(Source(m.id, c.index, m.title, c.content))
+                section = c.section.rsplit(" > ", 1)[-1] if c.section else ""  # 块起点所在的章节（出处粒度到块）
+                labels[f"{m.id}-{c.index}"] = f"《{m.title}》" + (section if section != m.title else "")
         if not sources:
-            return "当前没有可用的材料。"
+            return "当前没有可用的材料。", {}
         llm = model or create_chat_model()
         on_call = _recorder(context_store, runtime.context, getattr(llm, 'model_name', '') or config.MODEL)
         extraction = extract_items(llm, sources, focus=focus, cache=context_store, on_call=on_call)
-        # 全部成功时不写块数（同上，避免被当成文档内容），有失败时才写明处理了多少
-        notes = ["材料已全部处理" if not extraction.failed else f"已处理 {extraction.processed}/{extraction.total} 块"]
-        if extraction.cached:
-            notes.append(f"其中 {extraction.cached} 块沿用之前的提取结果")
-        notes += [f"第 {f['source']} 块处理失败，未纳入" for f in extraction.failed]
+        # 给模型看的说明不写块号、块数；失败的部分按“《标题》章节”说明
+        notes = ["材料已全部处理"] if not extraction.failed else []
+        failed = list(dict.fromkeys(labels.get(f["source"], "部分内容") for f in extraction.failed))
+        notes += [f"{label}有部分内容处理失败，未纳入" for label in failed]
         if extraction.dropped:
             notes.append(f"{len(extraction.dropped)} 条提取结果在原文中找不到依据，已丢弃")
+        artifact = {
+            "processed": extraction.processed,
+            "total": extraction.total,
+            "cached": extraction.cached,
+            "failed": extraction.failed,
+            "dropped": extraction.dropped,
+            "items": [asdict(i) for i in extraction.items],  # 机器可读的出处：source 为“材料号-块号”
+        }
         if not extraction.items:
-            return f"没有提取到{'与“' + focus + '”相关的' if focus else ''}内容（{'；'.join(notes)}）。"
+            return f"没有提取到{'与“' + focus + '”相关的' if focus else ''}内容（{'；'.join(notes)}）。", artifact
         request = f"关注点：{focus or '无，整理全部要点'}"
         digest = synthesize(llm, read_prompt("digest"), request, extraction.items, on_call=on_call)
-        body = digest.text
+        body = _readable_sources(digest.text, labels)
         if digest.uncovered:  # 汇总时漏写的要点原样附上，保证交给你的内容是完整的
-            body += "\n\n汇总时未写入的要点：\n" + "\n".join(f"- {i.point}〔{i.source}〕" for i in digest.uncovered)
+            body += "\n\n汇总时未写入的要点：\n" + "\n".join(f"- {i.point}〔{labels.get(i.source, '')}〕" for i in digest.uncovered)
         if digest.invalid_refs:
             notes.append(f"汇总引用了不存在的要点编号 {digest.invalid_refs}，相关内容请谨慎使用")
         if not digest.coverage_checked:
             notes.append("汇总没有标注要点编号，未能核对是否漏写")
-        header = f"【材料提炼结果：程序逐块提取并核对原文，〔材料号-块号〕为出处（{RETRIEVAL_INFO}：{'；'.join(notes)}）】"
-        return wrap_material(header, body)
+        header = f"【材料提炼结果：程序已读完全部内容并核对原文，〔〕内为出处（{RETRIEVAL_INFO}：{'；'.join(notes)}）】"
+        artifact["uncovered"] = [asdict(i) for i in digest.uncovered]
+        return wrap_material(header, body), artifact
 
     return [list_materials, get_outline, read_material, search_materials, summarize_materials]
+
+
+def _readable_sources(text: str, labels: dict[str, str]) -> str:
+    """〔材料号-块号〕出处换成〔《标题》章节〕：块号是内部编号，模型会把它当成内容写进回答。"""
+
+    def replace(m: re.Match) -> str:
+        parts = [p.strip() for p in re.split(r"[、,，]", m.group(1))]
+        if not all(p in labels for p in parts):
+            return m.group(0)
+        return f"〔{'；'.join(dict.fromkeys(labels[p] for p in parts))}〕"
+
+    return _TAG.sub(replace, text)

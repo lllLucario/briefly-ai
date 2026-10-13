@@ -78,6 +78,11 @@ button:disabled { opacity: .5; cursor: default; }
 .tabs button.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .doclink { margin-left: auto; color: var(--muted); text-decoration: none; white-space: nowrap; }
 
+.inbox { padding: 8px 20px; background: var(--warn-bg); border-bottom: 1px solid var(--warn-line); font-size: 13px; }
+.inbox-item { display: flex; gap: 12px; align-items: flex-start; padding: 4px 0; }
+.inbox-item div { flex: 1; white-space: pre-wrap; }
+.inbox-item b { display: block; }
+.inbox-item button { padding: 2px 10px; }
 .tab { display: none; flex: 1; min-height: 0; gap: 16px; padding: 16px; }
 .tab.active { display: flex; }
 .sidebar {

@@ -12,6 +12,7 @@ from .db import Base
 from .loaders import file_type, load_document
 
 SNIPPET_RADIUS = 100
+TRACKED = "tracked"  # 文件追踪保存的版本：只供追踪模块使用，默认不出现在材料列表和检索中
 MAX_SEARCH_HITS = 10
 
 
@@ -24,7 +25,7 @@ class Material(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     title: Mapped[str] = mapped_column(String(200))
-    source: Mapped[str] = mapped_column(String(20))  # paste / file
+    source: Mapped[str] = mapped_column(String(20))  # paste / file / tracked
     file_type: Mapped[str | None] = mapped_column(String(10))
     content: Mapped[str] = mapped_column(Text)
     char_count: Mapped[int] = mapped_column(Integer)
@@ -107,6 +108,11 @@ class MaterialStore:
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
         with self._session() as s:
             existing = s.scalar(select(Material).where(Material.content_hash == digest))
+            if existing and existing.source == TRACKED and source != TRACKED:
+                # 用户添加的内容恰好与某个追踪版本相同：转为用户材料（追踪版本仍引用同一条），算作新建
+                existing.source, existing.title = source, (title.strip() or existing.title)[:200]
+                s.commit()
+                return existing, True
             if existing:
                 return existing, False
             material = Material(
@@ -149,9 +155,12 @@ class MaterialStore:
         return self.add_text(filename, doc.text, source="file", kind=kind, markdown=doc.markdown, report=doc.report)
 
     def list_materials(self, ids: list[int] | None = None) -> list[Material]:
+        """不指定 ids 时只列用户自己添加的材料（不含文件追踪的版本）。"""
         query = select(Material).order_by(Material.id)
         if ids is not None:
             query = query.where(Material.id.in_(ids))
+        else:
+            query = query.where(Material.source != TRACKED)
         with self._session() as s:
             return list(s.scalars(query))
 
@@ -205,6 +214,8 @@ class MaterialStore:
         query = select(MaterialChunk, Material.title).join(Material).order_by(Material.id, MaterialChunk.index)
         if material_ids is not None:
             query = query.where(Material.id.in_(material_ids))
+        else:
+            query = query.where(Material.source != TRACKED)
         with self._session() as s:
             rows = s.execute(query).all()
         hits: list[SearchHit] = []

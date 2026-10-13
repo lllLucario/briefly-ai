@@ -1,6 +1,7 @@
 """周报：用户选素材、写简述 → 后台生成 → 预览（带出处标记）→ 修改 → 导出 Markdown。
 
 生成流程由代码控制（见 summarize.py）：逐块提取并核对原文 → 按周报格式合成 → 数字核对。
+另一种输入是文件追踪中用户已确认的工作记录（evidence_ids）：直接作为工作项，出处标为〔E编号〕，不再提取。
 """
 import re
 import time
@@ -16,8 +17,9 @@ from .context_store import ContextStore
 from .db import Base
 from .llm import create_chat_model
 from .materials import MaterialNotFound, MaterialStore
+from .output_check import find_internal_terms
 from .skills import read_prompt
-from .summarize import Source, extract_items, synthesize
+from .summarize import Source, WorkItem, extract_items, synthesize
 
 PENDING, RUNNING, DONE, FAILED = "pending", "running", "done", "failed"
 _SOURCE_TAG = re.compile(r"〔[^〕]*〕")
@@ -102,12 +104,22 @@ class WeeklyService:
         period_end: date | None = None,
         audience: str | None = None,
         name: str | None = None,
+        evidence_ids: list[int] | None = None,
     ) -> WeeklyReport:
-        """登记一份待生成的周报；真正的生成由 generate 在后台执行。"""
-        if not material_ids and not brief.strip():
+        """登记一份待生成的周报；真正的生成由 generate 在后台执行。
+
+        evidence_ids：文件追踪中用户已确认的工作记录，存在 options 里（不改表结构）。
+        """
+        evidence_ids = list(dict.fromkeys(evidence_ids or []))
+        if not material_ids and not brief.strip() and not evidence_ids:
             raise ValueError("请至少选择一份素材，或写一段简述")
         for material_id in material_ids:
             self.store.get(material_id)  # 不存在时报 404
+        if evidence_ids:
+            confirmed = {e.id for e in self._evidence(evidence_ids)}
+            missing = [i for i in evidence_ids if i not in confirmed]
+            if missing:
+                raise ValueError(f"工作记录 {', '.join(f'E{i}' for i in missing)} 不存在或未经确认，不能用于周报")
         default_start, default_end = current_week()
         start, end = period_start or default_start, period_end or default_end
         if start > end:
@@ -116,7 +128,7 @@ class WeeklyService:
             period_start=start,
             period_end=end,
             brief=brief.strip(),
-            options={k: v for k, v in {"audience": audience, "name": name}.items() if v},
+            options={k: v for k, v in {"audience": audience, "name": name, "evidence_ids": evidence_ids}.items() if v},
             material_ids=list(dict.fromkeys(material_ids)),
         )
         with self._session() as s:
@@ -150,7 +162,9 @@ class WeeklyService:
             warnings += [f"《{material.title}》：{w}" for w in material.parse_report.get("warnings", [])]
 
         period = f"{report.period_start.isoformat()} 至 {report.period_end.isoformat()}"
+        evidence_items = self._evidence_items(report.options.get("evidence_ids", []), warnings)
         extraction = extract_items(model, sources, focus=report.brief, period=period, cache=self.cache)
+        extraction.items[:0] = evidence_items  # 已确认的工作记录排在前面，与提取的工作项一起合成
         for failed in extraction.failed:
             material_id, chunk = failed["source"].split("-")
             warnings.append(f"材料 {material_id} 第 {chunk} 块处理失败，未纳入：{failed['error'][:80]}")
@@ -180,6 +194,11 @@ class WeeklyService:
         numbers = unverified_numbers(content, evidence)
         if numbers:
             warnings.append(f"以下数字未在素材或简述中找到原文，请核对：{'、'.join(numbers)}")
+        # 内部处理信息（块号等）混进正文：只提示人工核对，不删除（原文可能真有这样的话），不另调模型审核
+        originals = [report.brief, *(s.content for s in sources), *(f"{i.point} {i.quote}" for i in extraction.items)]
+        terms = find_internal_terms(strip_source_tags(content), originals)
+        if terms:
+            warnings.append(f"周报正文中出现了程序内部的处理信息：{'、'.join(terms)}，请核对后删除")
 
         usage = extraction.usage
         generation = {
@@ -200,6 +219,31 @@ class WeeklyService:
             "reminders": reminders,  # 模型给用户的提醒：可能想补充或核对的地方，不进入周报
         }
         return content, [asdict(i) for i in extraction.items], generation
+
+    def _evidence(self, ids: list[int]):
+        """已确认的工作记录（文件追踪）。"""
+        from .tracking.models import CONFIRMED, WorkEvidence
+
+        if not ids:
+            return []
+        with self._session() as s:
+            rows = s.scalars(select(WorkEvidence).where(WorkEvidence.id.in_(ids), WorkEvidence.review_status == CONFIRMED))
+            return sorted(rows, key=lambda e: ids.index(e.id))
+
+    def _evidence_items(self, ids: list[int], warnings: list[str]) -> list[WorkItem]:
+        """已确认的工作记录 → 工作项：要点是标题和描述（用户改过的以用户为准），原文是描述和来源文件。"""
+        rows = self._evidence(ids)
+        found = {e.id for e in rows}
+        warnings += [f"工作记录 E{i} 已被删除或撤销确认，未纳入" for i in ids if i not in found]
+        items = []
+        for e in rows:
+            files = "、".join(dict.fromkeys(r["path"].replace("\\", "/").rsplit("/", 1)[-1] for r in e.source_refs if r.get("path")))
+            point = f"{e.title}：{e.description}" if e.description else e.title
+            quote = e.description or e.title
+            if files:
+                quote += f"（来源文件：{files}）"
+            items.append(WorkItem(e.category, point, quote, f"E{e.id}"))
+        return items
 
     def list_reports(self) -> list[WeeklyReport]:
         with self._session() as s:

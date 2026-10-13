@@ -6,6 +6,7 @@ import logging
 import threading
 from collections import defaultdict
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated
@@ -156,6 +157,21 @@ class ContextOut(BaseModel):
     compacted_turns: int
 
 
+class NotificationOut(BaseModel):
+    id: int
+    kind: str
+    title: str
+    body: str
+    collection_id: int | None
+    prep_id: int | None
+    created_at: datetime
+    read_at: datetime | None
+
+
+class ReadIn(BaseModel):
+    ids: list[int] = []
+
+
 def default_agent(store: MaterialStore) -> Agent:
     return Agent(checkpointer=sqlite_checkpointer(config.DB_PATH), store=store)
 
@@ -189,9 +205,28 @@ def create_app(
     store: MaterialStore | None = None,
     model_factory: Callable[[], BaseChatModel] = create_chat_model,
     agent_factory: Callable[[MaterialStore], Agent] = default_agent,
+    tracking_scheduler: bool = False,
 ) -> FastAPI:
-    """store、model_factory、agent_factory 可注入，便于测试用内存库和假模型。智能体在第一次用到时才创建。"""
-    app = FastAPI(title="Briefly AI", description="办公 AI Agent 后端")
+    """store、model_factory、agent_factory 可注入，便于测试用内存库和假模型。智能体在第一次用到时才创建。
+
+    tracking_scheduler：是否在本进程内启动文件追踪的每日扫描线程（briefly-api 按配置开启，测试默认关闭）。
+    """
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        scheduler = None
+        if tracking_scheduler:
+            from .tracking.collection import TrackingService
+            from .tracking.scheduler import DailyScheduler
+
+            scheduler = DailyScheduler(TrackingService(app.state.store.engine, app.state.store))
+            scheduler.start()
+        app.state.scheduler = scheduler
+        yield
+        if scheduler is not None:
+            scheduler.stop()
+
+    app = FastAPI(title="Briefly AI", description="办公 AI Agent 后端", lifespan=lifespan)
     app.state.store = store or MaterialStore(create_db_engine())
     app.state.weekly = WeeklyService(app.state.store, model_factory)
     app.state.sessions = SessionStore(app.state.store.engine)
@@ -359,6 +394,18 @@ def create_app(
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
         )
 
+    @app.get("/notifications", response_model=list[NotificationOut], summary="提醒（文件追踪：周报已准备好、准备失败等）")
+    def list_notifications(unread_only: bool = True):
+        from .tracking.weekly_schedule import notifications
+
+        return [NotificationOut.model_validate(n, from_attributes=True) for n in notifications(app.state.store.engine, unread_only)]
+
+    @app.post("/notifications/read", summary="标为已读（不传 ids 表示全部）")
+    def read_notifications(body: ReadIn):
+        from .tracking.weekly_schedule import mark_read
+
+        return {"marked": mark_read(app.state.store.engine, body.ids or None)}
+
     @app.middleware("http")
     async def revalidate_web(request: Request, call_next):
         """网页文件每次按 ETag 校验，更新后刷新即可生效，不用清浏览器缓存。"""
@@ -379,4 +426,4 @@ def serve() -> None:
     """命令行入口 briefly-api：启动后端服务。"""
     import uvicorn
 
-    uvicorn.run(create_app(), host=config.HOST, port=config.PORT)
+    uvicorn.run(create_app(tracking_scheduler=config.TRACKING_SCHEDULER), host=config.HOST, port=config.PORT)

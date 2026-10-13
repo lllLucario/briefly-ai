@@ -58,6 +58,13 @@ def _text(content) -> str:
     return content if isinstance(content, str) else str(content)
 
 
+SYSTEM_REPLY = "briefly_system"  # 程序生成的固定回复（超长、预算不足），不是模型输出
+
+
+def system_reply(text: str) -> AIMessage:
+    return AIMessage(text, response_metadata={SYSTEM_REPLY: True})
+
+
 def material_blocks(text: str) -> list[str]:
     return [m.group(2) for m in _MATERIAL_BLOCK.finditer(text)]
 
@@ -257,7 +264,7 @@ class ContextBuilder(AgentMiddleware):
                 built = self.build(request, context, factor)
             except ContextBudgetExceeded as e:
                 self._record(context, None, context_overflow=True, budgeted_tokens=e.need, context_limit=e.limit, note="发送前超出预算")
-                return AIMessage(str(e))
+                return system_reply(str(e))
             started = time.monotonic()
             try:
                 response = handler(request.override(system_message=built.system, messages=built.messages))
@@ -269,7 +276,7 @@ class ContextBuilder(AgentMiddleware):
                 if attempt < config.CONTEXT_RETRIES:
                     factor *= 0.6
                     continue
-                return AIMessage(CONTEXT_OVERFLOW)
+                return system_reply(CONTEXT_OVERFLOW)
             latency = int((time.monotonic() - started) * 1000)
             result = response.result if isinstance(response, ModelResponse) else [response]
             ai = next((m for m in reversed(result) if isinstance(m, AIMessage)), None)
@@ -284,4 +291,4 @@ class ContextBuilder(AgentMiddleware):
                 note="重试" if attempt else "",
             )
             return response
-        return AIMessage(CONTEXT_OVERFLOW)
+        return system_reply(CONTEXT_OVERFLOW)

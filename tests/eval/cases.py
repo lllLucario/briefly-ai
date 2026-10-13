@@ -163,6 +163,13 @@ def conflict_tags_honest() -> Check:
     return Check("矛盾处出处如实标注", check)
 
 
+def no_internal_terms() -> Check:
+    """回答里没有块号、程序出处标记、工具名等内部处理信息（Bug 1）。用户输入里的“第 3 块”等原文不在长材料用例中出现。"""
+    from briefly.output_check import find_internal_terms
+
+    return Check("没有内部处理信息（块号等）", lambda out, *_: not find_internal_terms(out))
+
+
 def no_source_tags() -> Check:
     return Check("没有材料出处（只有简述）", lambda r: not re.search(r"〔\d+-\d+〕", r.content))
 
@@ -319,13 +326,13 @@ CASES: list[Case] = [
     Case(
         "L1", "长材料", "按需读取：只问其中一节",
         turns=[Turn("群聊场景有哪些实现方案？各自推荐吗？", materials=("@files/1-3.pdf",), checks=[
-            has_all("doubao-1-5-pro-32k-character-0228"), has_any("不推荐"),
+            has_all("doubao-1-5-pro-32k-character-0228"), has_any("不推荐"), no_internal_terms(),
         ])],
         requires=("files/1-3.pdf",),
     ),
     Case(
         "L2", "长材料", "完整总结：整份文档",
-        turns=[Turn("总结这份文档的主要内容", materials=("@files/1-3.pdf",), checks=[SUMMARIZE, lacks("15299", "13 块", "13块")])],
+        turns=[Turn("总结这份文档的主要内容", materials=("@files/1-3.pdf",), checks=[SUMMARIZE, lacks("15299", "13 块", "13块"), no_internal_terms()])],
         requires=("files/1-3.pdf",),
     ),
 ]

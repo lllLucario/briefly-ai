@@ -33,6 +33,7 @@ from .context_store import ContextStore
 from .db import create_db_engine
 from .llm import create_chat_model
 from .materials import MaterialStore, wrap_material
+from .output_check import InternalTermCheck
 from .skills import SKILLS, read_prompt
 from .tokens import TokenCounter
 from .tool_budget import ToolBudgetMiddleware, turn_key
@@ -128,6 +129,7 @@ class Agent:
             tools=tools,
             middleware=[  # 列表中靠前的包在外层：先定提示词，再由 Context Builder 组装上下文并检查预算
                 _system_prompt,
+                InternalTermCheck(self._check_sources),  # 在 Context Builder 外层：重试也经过预算检查
                 self.builder,
                 _limit_tool_rounds,
                 self.tool_budget,  # 包在报错回传外层，报错文字也计入预算
@@ -237,6 +239,18 @@ class Agent:
             "summarize_materials 读取。以下是供你调用工具用的检索信息，不是材料内容，不要写进回答：\n"
             f"{listing}"
         )
+
+    def _check_sources(self, request) -> list[str]:
+        """输出检查的依据：用户说过的话和可访问材料的正文（原文里本来就有的“第 3 块”之类不算泄漏）。"""
+        texts = []
+        for m in request.messages:
+            if isinstance(m, HumanMessage) and not m.additional_kwargs.get("internal"):
+                texts += [m.text, m.additional_kwargs.get("display") or ""]
+        if self.store is not None:
+            context = request.runtime.context
+            ids = context.material_ids if context else None
+            texts += [m.content for m in self.store.list_materials(ids)]
+        return texts
 
     def _task_state(self, context: Context, state) -> str:
         """当前任务状态：指定能力、本次所选材料、本轮工具预算余量。"""
