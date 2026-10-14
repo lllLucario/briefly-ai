@@ -259,7 +259,9 @@ def material_tools(
             notes.append("汇总没有标注要点编号，未能核对是否漏写")
         header = f"【材料提炼结果：程序已读完全部内容并核对原文，〔〕内为出处（{RETRIEVAL_INFO}：{'；'.join(notes)}）】"
         artifact["uncovered"] = [asdict(i) for i in digest.uncovered]
-        return wrap_material(header, body), artifact
+        content = wrap_material(header, body)
+        artifact["content_full"] = content  # 截断前的完整输出（诊断用：区分 Map-Reduce 损失与工具预算截断损失）
+        return content, artifact
 
     return [list_materials, get_outline, read_material, search_materials, summarize_materials]
 
