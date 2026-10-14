@@ -366,7 +366,7 @@ def test_summarize_materials_returns_verified_digest(store):
     assert "材料已全部处理" in result and "〔〕内为出处" in result
     assert "【材料开始】\n- 支付回调耗时下降〔《周报》周三〕\n【材料结束】" in result  # 出处用标题和章节，不用块号
     extract_call = next(c for c in model.calls if "你负责从一段材料中提取要点" in c[0].content)
-    assert "简述：支付" in extract_call[-1].content
+    assert "简述（用户说明的重点，不是筛选条件）：支付" in extract_call[-1].content
     digest_call = next(c for c in model.calls if "你负责把从材料中逐块提取" in c[0].content)
     assert digest_call[-1].content.startswith("关注点：支付")
 

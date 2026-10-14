@@ -6,14 +6,24 @@
 import re
 import time
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import date, datetime, timedelta
 
 from langchain_core.language_models import BaseChatModel
 from sqlalchemy import JSON, Date, DateTime, Integer, String, Text, select, update
 from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
 
-from .conflicts import ATTRIBUTES, UNRESOLVED, FactConflict, classify, conflict_problems, detect_conflicts, describe
+from .conflicts import (
+    ATTRIBUTES,
+    BRIEF,
+    UNRESOLVED,
+    FactConflict,
+    brief_conflict_problems,
+    classify,
+    conflict_problems,
+    detect_conflicts,
+    describe,
+)
 from .context_store import ContextStore
 from .db import Base
 from .llm import create_chat_model
@@ -110,7 +120,8 @@ def report_check(items: list[WorkItem], conflicts: list[FactConflict] | None = N
     2. 同一句原文拆出的几项，不能只写其中一部分；
     3. 候选重要度为 high 的事实必须写进周报；
     4. 引用了某个事实的行，要写全它的数字、日期等硬信息（合并时只写了一部分）；
-    5. 材料之间说法不一致（未解决、场景不同）的，不能只写其中一种说法。
+    5. 材料之间说法不一致（未解决、场景不同）的，不能只写其中一种说法；
+    6. 简述与材料说法不一致（未解决）的：正文同一条不能同时写两种说法、出处要标对；提醒里要列出两种说法和出处（正文与提醒分开检查）。
 
     待办、进行中、待复核的问题都不能单独撑起一条风险。分类由提取阶段的结构化输出决定，这里由代码检查，不靠写作时自觉。
     """
@@ -150,6 +161,7 @@ def report_check(items: list[WorkItem], conflicts: list[FactConflict] | None = N
                 if lost:
                     problems.append(f"#{n}（{items[n - 1].point}）写进周报时缺少 {'、'.join(lost)}，请按要点写全")
         problems += conflict_problems(conflicts or [], lambda n: n in used)
+        problems += brief_conflict_problems(conflicts or [], text, REMINDER_HEADING)
         leaked = [h for h in HINT_PHRASES if h in body]
         if leaked:
             problems.append(f"周报正文里出现了给你看的说明文字（{'、'.join(leaked)}），这些不是工作内容，请删掉，只写工作本身")
@@ -302,9 +314,11 @@ class WeeklyService:
                 "请撰写本周周报。",
             ]
         )
-        # 多来源冲突：在任何合并之前由代码检测（分批合并可能丢掉其中一种说法），有冲突时调用一次模型归类
-        conflicts = detect_conflicts(extraction.items)
-        conflict_calls = classify(model, conflicts, extraction.items)
+        # 简述里可核实的事实（日期、金额、数量等）：单独提取一次，只用于和材料比对冲突，不进入正文工作项（避免重复）
+        brief_items, brief_calls = self._brief_facts(model, report.brief, period)
+        # 多来源冲突：在任何合并之前由代码检测（分批合并可能丢掉其中一种说法），有冲突时调用一次模型归类（含主体候选确认）
+        conflicts = detect_conflicts(extraction.items, brief_items)
+        conflict_calls = classify(model, conflicts, extraction.items, brief_items) + brief_calls
         if conflicts:
             request += "\n\n" + describe(conflicts, extraction.items)
         system_prompt = read_prompt("weekly") + "\n\n" + read_prompt("weekly_report")
@@ -324,9 +338,17 @@ class WeeklyService:
         reminders += [f"这一项没有写进周报，如需要请补充：{i.point}〔{i.source}〕" for i in synthesis.uncovered if not i.needs_review]
         # 看不出哪个为准的冲突：由代码列进提醒（不依赖写作时自觉），每种说法带出处
         for c in conflicts:
-            if c.resolution == UNRESOLVED:
-                sides = " / ".join(f"{v}〔{extraction.items[n - 1].source}〕" for n, v in zip(c.numbers, c.values))
-                reminders.append(f"材料之间说法不一致：{c.subject} 的{ATTRIBUTES[c.attribute]}为 {sides}，未说明哪个为准，请核对")
+            if c.resolution != UNRESOLVED:
+                continue
+            name = f"{c.subject} 的{ATTRIBUTES[c.attribute]}" + (f"（{c.aspect}）" if c.aspect else "")
+            materials = [(v, src) for v, src, o in zip(c.values, c.sources, c.origins) if o != BRIEF]
+            if "material_vs_material" in c.pairs or "evidence_vs_material" in c.pairs:
+                sides = " / ".join(f"{v}〔{src}〕" for v, src in materials)
+                reminders.append(f"材料之间说法不一致：{name}为 {sides}，未说明哪个为准，请核对")
+            if any(p.startswith("brief_vs_") for p in c.pairs):
+                said = " / ".join(v for v, o in zip(c.values, c.origins) if o == BRIEF)
+                sides = " / ".join(f"{v}〔{src}〕" for v, src in materials)
+                reminders.append(f"简述与材料说法不一致：{name}，简述写的是 {said}〔简述〕，材料写的是 {sides}；正文只采用了其中一种，请核对")
         facts, partial = fact_trace(extraction.items, synthesis.raw)
         # 合并遗漏：引用了，但只写了一部分
         reminders += [f"这一项只写了一部分，缺少 {'、'.join(lost)}（合成周报时遗漏），请补充：{i.point}〔{i.source}〕" for i, lost in partial]
@@ -375,6 +397,21 @@ class WeeklyService:
             "reminders": reminders,  # 模型给用户的提醒：可能想补充或核对的地方，不进入周报
         }
         return content, [asdict(i) for i in extraction.items], generation
+
+    def _brief_facts(self, model, brief: str, period: str) -> tuple[list[WorkItem], int]:
+        """从简述提取可核实的事实，出处标为“简述”。只用于冲突检测。
+
+        只有简述里可能有可比对的取值（数字，或完成、上线、延期等状态词）时才调用模型，否则不增加调用。
+        """
+        if not re.search(r"\d|完成|上线|延期|推迟|进行中|未开始|暂停|阻塞|负责", brief):
+            return [], 0
+        result = extract_items(model, [Source(0, 0, "用户简述", brief)], period=period, cache=self.cache, purpose=WEEKLY_PURPOSE)
+        items = [
+            replace(i, source="简述", fact_id=f"简述.{k}", span_start=-1)
+            for k, i in enumerate(result.items, start=1)
+            if i.attribute and i.value
+        ]
+        return items, result.usage.calls
 
     def _evidence(self, ids: list[int]):
         """已确认的工作记录（文件追踪）。"""

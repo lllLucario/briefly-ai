@@ -123,11 +123,11 @@ def test_extract_prompt_carries_focus_period_and_wrapped_material():
     extract_items(model, [SOURCES[0]], focus="支付改造", period="2026-10-12 至 2026-10-18")
     system, user = model.calls[0]
     assert "逐字照抄" in system.content
-    assert "简述：支付改造" in user.content and "周期：2026-10-12 至 2026-10-18" in user.content
+    assert "简述（用户说明的重点，不是筛选条件）：支付改造" in user.content and "周期：2026-10-12 至 2026-10-18" in user.content
     assert "【材料开始】\n周一：完成登录联调" in user.content
     model.calls.clear()
     extract_items(model, [SOURCES[0]])
-    assert "提取全部工作内容" in model.calls[0][-1].content
+    assert "简述（用户说明的重点，不是筛选条件）：（无）" in model.calls[0][-1].content  # 无论有没有简述都提取全部
 
 
 ITEMS = [
@@ -207,3 +207,10 @@ def test_synthesize_with_no_items_says_so():
 @pytest.mark.parametrize(("text", "expected"), [("中文" * 17, 20), ("abcd" * 10, 10), ("", 0)])
 def test_estimate_tokens(text, expected):
     assert estimate_tokens(text) == expected
+
+
+def test_mismatched_brackets_are_resolved():
+    """回归：模型写成〔#2】，编号没换回出处，还被当成来源不明的数字 2。"""
+    items = [WorkItem("done", "a", "a", "1-1"), WorkItem("plan", "b", "b", "1-2")]
+    text, used, invalid = resolve_refs("- 甲〔#1】\n- 乙【#2〕\n- 丙【本周完成】", items)
+    assert text == "- 甲〔1-1〕\n- 乙〔1-2〕\n- 丙【本周完成】" and used == {1, 2} and invalid == []

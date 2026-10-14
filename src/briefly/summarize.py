@@ -43,7 +43,8 @@ class _Item(BaseModel):
     attribute: Literal["", "date", "amount", "quantity", "status", "owner", "progress"] = Field(
         default="", description="对应的属性：date 日期 / amount 金额 / quantity 数量 / status 状态 / owner 负责人 / progress 进度；不属于这几类留空"
     )
-    value: str = Field(default="", description="属性的值，从原文逐字照抄（如“10 月 20 日”“8000 元”“60%”）")
+    aspect: str = Field(default="", description="这个值具体指什么（如日期的“上线”“提测”“交付”，金额的“预算”），两三个字")
+    value: str = Field(default="", description="属性的值，从原文逐字照抄，保留单位、币种和精度（如“10 月 20 日”“8000 元”“60%”）")
     importance: Literal["high", "medium", "low"] = Field(
         default="medium",
         description="按“用途”判断的候选重要度：high 读者必须知道（结果、决定、关键数据、问题）/ medium 一般工作 / low 日常琐事",
@@ -70,7 +71,7 @@ class _Item(BaseModel):
             return "medium"
         return value
 
-    @field_validator("risk_reason", "subject", "value", mode="before")
+    @field_validator("risk_reason", "subject", "aspect", "value", mode="before")
     @classmethod
     def _lenient_text(cls, value):
         return "" if value is None else str(value)
@@ -111,6 +112,7 @@ class WorkItem:
     subject: str = ""  # 关键字段（日期、金额、数量、状态、负责人、进度）的主体、属性和值，用于发现多来源冲突
     attribute: str = ""
     value: str = ""
+    aspect: str = ""  # 属性的具体含义（上线 / 提测 / 交付……），避免把不同的日期当成同一属性
 
     @property
     def verified_risk(self) -> bool:
@@ -154,7 +156,7 @@ def _extract_messages(
     source: Source, focus: str, period: str | None, prompt: str = "extract", purpose: str = ""
 ) -> list[tuple[str, str]]:
     user = (
-        f"简述：{focus.strip() or '（无，提取全部工作内容）'}\n"
+        f"简述（用户说明的重点，不是筛选条件）：{focus.strip() or '（无）'}\n"
         f"周期：{period or '未指定'}\n"
         + (f"用途：{purpose}\n" if purpose else "")
         + "\n"
@@ -268,6 +270,7 @@ def extract_items(
                         item.subject.strip(),
                         item.attribute,
                         item.value.strip(),
+                        item.aspect.strip(),
                     )
                 )
     result.incomplete = map_omissions(result.items)
@@ -338,6 +341,7 @@ def format_items(items: list[WorkItem]) -> str:
 
 
 _REF = re.compile(r"〔([^〕]*#\d+[^〕]*)〕")
+_MISMATCHED_REF = re.compile(r"〔\s*(#\d+(?:\s*[、,，]\s*#\d+)*)\s*】|【\s*(#\d+(?:\s*[、,，]\s*#\d+)*)\s*〕")
 _BARE_REF = re.compile(r"(?<![\w#〔])#(\d+)(?!\d)")  # 模型偶尔不加〔〕直接写 #13
 
 
@@ -348,6 +352,8 @@ def resolve_refs(text: str, items: list[WorkItem]) -> tuple[str, set[int], list[
     """
     used: set[int] = set()
     invalid: list[int] = []
+    # 模型偶尔把括号写错（〔#17】、【#3〕）：先统一成〔〕，否则编号换不回出处，还会被当成来源不明的数字
+    text = _MISMATCHED_REF.sub(lambda m: f"〔{m.group(1) or m.group(2)}〕", text)
 
     def replace(match: re.Match) -> str:
         tags = []

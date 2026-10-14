@@ -259,6 +259,26 @@ CASES: list[Case] = [
         ],
     ),
     Case(
+        "W7", "周报", "简述与材料冲突：正文只采用一方，提醒写出双方和出处",
+        weekly={"materials": ["proj_a.md"], "brief": "项目A 交付时间是 10 月 25 日", **WEEK},
+        checks=[
+            report_done(),
+            Check("正文没有一条同时写两个日期", lambda r: not any(
+                re.search(r"10\s*月\s*20", line) and re.search(r"10\s*月\s*25", line) for line in r.content.splitlines()
+            )),
+            Check("提醒写出双方说法和出处", lambda r: any(
+                re.search(r"10\s*月\s*20", x) and re.search(r"10\s*月\s*25", x) and "简述" in x
+                for x in r.generation.get("reminders", [])
+            )),
+            Check("记录为简述与材料冲突", lambda r: any("brief_vs_material" in c.get("pairs", []) for c in r.generation.get("conflicts", []))),
+        ],
+    ),
+    Case(
+        "W8", "周报", "简述只提一件事：简述以外的重要工作仍要写进周报",
+        weekly={"materials": ["week_log.md"], "brief": "这周主要做支付改造", **WEEK},
+        checks=[report_done(), report_has("1.8", "200"), report_has("32 条", "游标分页"), no_unverified_numbers()],
+    ),
+    Case(
         "W4", "周报", "只有简述、没有素材",
         weekly={"materials": [], "brief": "这周修复了登录页的两个 bug，和设计对了新版首页的交互稿", **WEEK},
         checks=[report_done(), report_has("登录", "首页"), no_source_tags(), risks_none()],
