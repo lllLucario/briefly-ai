@@ -3,6 +3,7 @@
 读取用“获取文档所有块”接口还原标题、列表、表格等结构（纯文本接口 raw_content 会丢掉结构，章节和分块就做不准）。
 写入用“Markdown 转换为块” + “创建嵌套块”，表格块要先去掉只读的 merge_info，单次最多插入 1000 个块。
 """
+import uuid
 from dataclasses import dataclass, field
 from urllib.parse import unquote
 
@@ -225,18 +226,23 @@ def create_document(client: FeishuClient, title: str, markdown: str, folder_toke
     body = {"title": title[:800]}
     if folder_token:
         body["folder_token"] = folder_token
+    # 新建文档没有去重标识：网络错误或 5xx 时不重试（可能已经建好），由用户决定是否重新写入
     document_id = client.post("/open-apis/docx/v1/documents", body)["document"]["document_id"]
     if markdown.strip():
-        converted = client.post(
-            "/open-apis/docx/v1/documents/blocks/convert", {"content_type": "markdown", "content": markdown}
+        converted = client.post(  # 只做格式转换，不改任何文档，可以重试
+            "/open-apis/docx/v1/documents/blocks/convert",
+            {"content_type": "markdown", "content": markdown},
+            idempotent=True,
         )
         blocks = {b["block_id"]: _clean(b) for b in converted.get("blocks") or []}
         for i, (ids, desc) in enumerate(_batches(converted.get("first_level_block_ids") or [], blocks)):
             if i:
                 client.sleep(0.4)  # 单篇文档编辑每秒最多 3 次
-            client.post(
+            client.post(  # client_token 去重：超时后重试不会把同一批块插入两次
                 f"/open-apis/docx/v1/documents/{document_id}/blocks/{document_id}/descendant",
                 {"children_id": ids, "descendants": desc, "index": -1},
+                idempotent=True,
+                client_token=str(uuid.uuid4()),
             )
     return document_id
 
@@ -268,6 +274,7 @@ def document_url(client: FeishuClient, token: str, doc_type: str = "docx") -> st
         data = client.post(
             "/open-apis/drive/v1/metas/batch_query",
             {"request_docs": [{"doc_token": token, "doc_type": doc_type}], "with_url": True},
+            idempotent=True,  # 查询
         )
         metas = data.get("metas") or []
         if metas and metas[0].get("url"):
@@ -283,6 +290,7 @@ def document_meta(client: FeishuClient, token: str, doc_type: str = "docx") -> d
         data = client.post(
             "/open-apis/drive/v1/metas/batch_query",
             {"request_docs": [{"doc_token": token, "doc_type": doc_type}]},
+            idempotent=True,  # 查询
             user_id_type="open_id",
         )
     except FeishuError:

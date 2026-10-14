@@ -1,6 +1,7 @@
 """机器人消息：把提醒发到用户自己的飞书（需要开启应用的机器人能力，并开通发消息权限）。"""
 import json
 import logging
+import uuid
 
 from .. import config
 from .client import FeishuClient, client_from_config, configured
@@ -16,13 +17,11 @@ def receive_id_type(user: str) -> str:
     return _ID_TYPES[member_type(user)]
 
 
-def send_text(client: FeishuClient, user: str, text: str) -> str:
-    """发一条文本消息，返回 message_id。"""
-    data = client.post(
-        "/open-apis/im/v1/messages",
-        {"receive_id": user.strip(), "msg_type": "text", "content": json.dumps({"text": text}, ensure_ascii=False)},
-        receive_id_type=receive_id_type(user),
-    )
+def send_text(client: FeishuClient, user: str, text: str, message_uuid: str = "") -> str:
+    """发一条文本消息，返回 message_id。message_uuid 不填时随机生成。"""
+    body = {"receive_id": user.strip(), "msg_type": "text", "content": json.dumps({"text": text}, ensure_ascii=False)}
+    body["uuid"] = message_uuid or str(uuid.uuid4())  # 去重：同一 uuid 一小时内只发一次，超时重试不会重复发
+    data = client.post("/open-apis/im/v1/messages", body, idempotent=True, receive_id_type=receive_id_type(user))
     return data.get("message_id", "")
 
 
@@ -35,7 +34,7 @@ def notification_channel(client_factory=client_from_config, user: str | None = N
     def send(notification) -> None:
         text = notification.title + (f"\n{notification.body}" if notification.body else "")
         with client_factory() as client:
-            send_text(client, user, text)
+            send_text(client, user, text, f"briefly-notification-{notification.id}")
 
     send.feishu = True  # 便于去重登记
     return send

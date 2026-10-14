@@ -468,6 +468,7 @@ class Scanner:
         只能说明最后一次编辑的人，归属最多 INFERRED。
         """
         from ..feishu import FeishuError, client_from_config
+        from ..feishu.contact import user_name
         from ..feishu.docx import document_meta, document_revision, read_document
 
         try:
@@ -496,7 +497,7 @@ class Scanner:
                     doc = read_document(client, document_id)
                     meta = {"revision_id": doc.revision_id, "title": doc.title, **document_meta(client, document_id)}
                     if meta.get("last_modified_by_id"):
-                        meta["last_modified_by"] = self._feishu_user(client, meta["last_modified_by_id"], names)
+                        meta["last_modified_by"] = user_name(client, meta["last_modified_by_id"], names)
                 except FeishuError as e:
                     self._source_error(source, str(e))
                     if f is not None and f.status not in (UNREACHABLE, UNTRACKED):
@@ -559,19 +560,6 @@ class Scanner:
                     )
                     s.commit()
                 stats["modified" if latest else "created"] += 1
-
-    @staticmethod
-    def _feishu_user(client, open_id: str, cache: dict[str, str]) -> str:
-        """open_id 换成姓名（需要通讯录权限）；取不到时用 open_id，用户可把它加进署名。"""
-        from ..feishu import FeishuError
-
-        if open_id not in cache:
-            try:
-                user = client.get(f"/open-apis/contact/v3/users/{open_id}", user_id_type="open_id").get("user") or {}
-                cache[open_id] = user.get("name") or open_id
-            except FeishuError:
-                cache[open_id] = open_id
-        return cache[open_id]
 
     def _source_error(self, source: TrackingSource, problem: str) -> None:
         if problem != source.last_error:

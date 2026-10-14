@@ -113,8 +113,119 @@ def test_rate_limit_is_retried_with_backoff():
     fake = FakeFeishu({("GET", f"{API}/x"): [feishu_error(99991400, "rate"), feishu_error(0, "", 429), {"ok": 1}]})
     client = FeishuClient("a", "b", transport=fake.transport, sleep=waits.append)
     assert client.get(f"{API}/x") == {"ok": 1}
-    assert waits == [1, 2]
+    assert 1 <= waits[0] <= 1.25 and 2 <= waits[1] <= 2.5  # 指数退避 + 不超过 25% 的随机抖动
     client.close()
+
+
+def test_rate_limit_reset_header_is_respected():
+    import httpx
+
+    waits = []
+    limited = httpx.Response(429, json={"code": 0, "msg": ""}, headers={"x-ogw-ratelimit-reset": "3"})
+    fake = FakeFeishu({("GET", f"{API}/x"): [limited, {"ok": 1}]})
+    client = FeishuClient("a", "b", transport=fake.transport, sleep=waits.append)
+    assert client.get(f"{API}/x") == {"ok": 1} and waits == [3.0]
+    client.close()
+
+
+def test_business_error_with_http_200_is_an_error():
+    import httpx
+
+    fake = FakeFeishu({("GET", f"{API}/x"): httpx.Response(200, json={"code": 1770002, "msg": "not found"})})
+    with fake.client() as client, pytest.raises(FeishuError, match="文档不存在") as e:
+        client.get(f"{API}/x")
+    assert (e.value.code, e.value.status) == (1770002, 200)
+
+
+def test_gateway_error_without_json_is_an_error():
+    import httpx
+
+    fake = FakeFeishu({("GET", f"{API}/x"): httpx.Response(502, text="<html>Bad Gateway</html>")})
+    with fake.client() as client, pytest.raises(FeishuError, match="HTTP 502") as e:
+        client.get(f"{API}/x")
+    assert len(fake.requests) == 4  # 读取可重试：1 次 + 重试 3 次
+    assert e.value.status == 502
+
+
+def test_unsafe_write_is_not_retried_on_server_error():
+    import httpx
+
+    fake = FakeFeishu({("POST", f"{API}/docx/v1/documents"): httpx.Response(503, text="busy")})
+    with fake.client() as client, pytest.raises(FeishuError):
+        create_document(client, "周报", "")
+    assert len(fake.requests) == 1  # 可能已经建好，不重试，避免重复文档
+
+
+def test_unsafe_write_is_retried_when_rate_limited():
+    fake = FakeFeishu({("POST", f"{API}/docx/v1/documents"): [feishu_error(99991400, "rate"), {"document": {"document_id": DOC}}]})
+    with fake.client() as client:
+        assert create_document(client, "周报", "") == DOC  # 限频时请求没有执行，重试是安全的
+    assert len(fake.requests) == 2
+
+
+def test_network_error_retried_only_for_safe_requests():
+    import httpx
+
+    attempts = []
+
+    def flaky(request):
+        attempts.append(request.url.path)
+        if len(attempts) == 1:
+            raise httpx.ConnectError("reset")
+        return {"ok": 1}
+
+    fake = FakeFeishu({("GET", f"{API}/x"): flaky, ("POST", f"{API}/y"): flaky})
+    with fake.client() as client:
+        assert client.get(f"{API}/x") == {"ok": 1}
+        attempts.clear()
+        with pytest.raises(FeishuError, match="无法连接飞书"):
+            client.post(f"{API}/y", {})
+        attempts.clear()
+        assert client.post(f"{API}/y", {}, idempotent=True) == {"ok": 1}
+
+
+def test_writes_carry_dedup_keys():
+    from briefly.feishu.messages import send_text
+
+    converted = {"first_level_block_ids": ["a"], "blocks": [{"block_id": "a", "block_type": 2, "text": text("x")}]}
+    fake = FakeFeishu({
+        ("POST", f"{API}/docx/v1/documents"): {"document": {"document_id": DOC}},
+        ("POST", f"{API}/docx/v1/documents/blocks/convert"): converted,
+        ("POST", f"{API}/docx/v1/documents/{DOC}/blocks/{DOC}/descendant"): {},
+        ("POST", f"{API}/im/v1/messages"): {"message_id": "om_1"},
+    })  # fmt: skip
+    with fake.client() as client:
+        create_document(client, "周报", "正文")
+        send_text(client, "ou_me", "提醒", "briefly-notification-7")
+    insert = fake.calls("POST", f"{API}/docx/v1/documents/{DOC}/blocks/{DOC}/descendant")[0]
+    assert len(insert.url.params["client_token"]) == 36
+    assert FakeFeishu.body(fake.calls("POST", f"{API}/im/v1/messages")[0])["uuid"] == "briefly-notification-7"
+
+
+def test_concurrent_token_refresh_happens_once():
+    fake = FakeFeishu()
+    with fake.client() as client:
+        old = client.token()
+        new = client.token(refresh=True, stale=old)
+        assert client.token(refresh=True, stale=old) == new  # 另一个线程拿着旧令牌来刷新：直接用新的
+    assert fake.token_calls == 2
+
+
+def test_shared_client_is_reused_and_not_closed_by_with(monkeypatch):
+    from briefly.feishu.client import client_from_config, close_shared
+
+    monkeypatch.setattr(config, "FEISHU_APP_ID", "cli_x")
+    monkeypatch.setattr(config, "FEISHU_APP_SECRET", "s")
+    close_shared()
+    first = client_from_config()
+    with first:
+        pass
+    assert client_from_config() is first and not first._http.is_closed  # 令牌缓存、连接池跨请求复用
+    monkeypatch.setattr(config, "FEISHU_APP_SECRET", "s2")
+    second = client_from_config()
+    assert second is not first and first._http.is_closed  # 凭证变了换新实例
+    close_shared()
+    assert second._http.is_closed
 
 
 def test_errors_are_explained_in_chinese():

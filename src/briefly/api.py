@@ -233,6 +233,9 @@ def create_app(
         yield
         if scheduler is not None:
             scheduler.stop()
+        from .feishu.client import close_shared
+
+        close_shared()  # 关闭共用飞书客户端的连接池
 
     app = FastAPI(title="Briefly AI", description="办公 AI Agent 后端", lifespan=lifespan)
     app.state.store = store or MaterialStore(create_db_engine())
