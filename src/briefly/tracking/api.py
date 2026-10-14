@@ -109,10 +109,10 @@ def _prep(prep: ReportPrep, review: ReviewService) -> dict:
     }
 
 
-def register(app: FastAPI, model_factory: Callable[[], BaseChatModel]) -> None:
+def register(app: FastAPI, model_factory: Callable[[], BaseChatModel], feishu_factory: Callable | None = None) -> None:
     def svc() -> TrackingService:
         if getattr(app.state, "tracking", None) is None:
-            app.state.tracking = TrackingService(app.state.store.engine, app.state.store)
+            app.state.tracking = TrackingService(app.state.store.engine, app.state.store, feishu_factory=feishu_factory)
         return app.state.tracking
 
     def review() -> ReviewService:

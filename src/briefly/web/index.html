@@ -68,6 +68,11 @@
         <textarea id="paste-content" rows="8" placeholder="粘贴文字内容"></textarea>
         <button class="primary">保存为材料</button>
       </form>
+      <form id="feishu-form" class="stack feishu-only hidden">
+        <input id="feishu-url" placeholder="粘贴飞书文档、知识库页面或多维表格链接">
+        <button class="primary">读取飞书内容</button>
+        <small class="muted">需要先在文档右上角“…→ 更多 → 添加文档应用”把应用加进来</small>
+      </form>
       <div id="material-msg" class="notice hidden"></div>
     </section>
     <section class="panel grow">
@@ -113,10 +118,12 @@
           <button id="edit-weekly" class="ghost">修改</button>
           <a id="export-md" class="button ghost">导出 Markdown</a>
           <button id="print-weekly" class="ghost">打印为 PDF</button>
+          <button id="feishu-weekly" class="ghost feishu-only hidden">写入飞书文档</button>
           <button id="delete-weekly" class="ghost danger">删除</button>
         </div>
       </div>
       <div id="weekly-status" class="notice hidden"></div>
+      <div id="weekly-feishu" class="notice hidden"></div>
       <div id="weekly-reminders" class="notice warn hidden"></div>
       <div id="weekly-warnings" class="notice hidden"></div>
       <article id="weekly-preview" class="markdown report"></article>
@@ -163,7 +170,7 @@
           <summary>追踪源与文件</summary>
           <div id="source-rows"></div>
           <div class="stack" style="margin-top:8px">
-            <textarea id="source-paths" rows="2" placeholder="要追踪的文件或文件夹的完整路径，每行一个，如 D:\项目\方案.docx"></textarea>
+            <textarea id="source-paths" rows="2" placeholder="要追踪的文件、文件夹的完整路径，或飞书文档链接，每行一个，如 D:\项目\方案.docx"></textarea>
             <div class="row gap"><label class="toggle"><input type="checkbox" id="source-recursive" checked> 文件夹包含子文件夹</label><button id="source-add" class="ghost">添加并采集基线</button></div>
           </div>
           <div id="file-rows" class="file-rows"></div>

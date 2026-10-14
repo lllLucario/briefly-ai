@@ -53,7 +53,7 @@ def print_scan(result: ScanResult | None) -> None:
 
 def print_add(result: AddResult) -> None:
     for source in result.added:
-        kind = "文件夹" + ("（含子文件夹）" if source.recursive else "") if source.kind == "folder" else "文件"
+        kind = {"folder": "文件夹" + ("（含子文件夹）" if source.recursive else ""), "feishu": "飞书文档"}.get(source.kind, "文件")
         print(f"已添加追踪源 {source.id}：{kind} {source.path}")
     for message in result.messages:
         print(f"  {message}")
@@ -77,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("add", help="添加文件或文件夹（可多个），立即采集基线")
     p.add_argument("collection")
-    p.add_argument("paths", nargs="+")
+    p.add_argument("paths", nargs="+", help="文件、文件夹，或飞书文档链接（需先把应用添加为文档协作者）")
     p.add_argument("--no-recursive", action="store_true", help="文件夹只追踪第一层")
     p = sub.add_parser("sources", help="列出追踪源")
     p.add_argument("collection")
@@ -138,6 +138,10 @@ def main(argv: list[str] | None = None, service: TrackingService | None = None) 
     if service is None:
         engine = create_db_engine()
         service = TrackingService(engine, MaterialStore(engine))
+        if args.cmd == "run-due":
+            from ..feishu.messages import register_channel
+
+            register_channel()  # 配置了飞书时，定时准备的提醒同时发到飞书
     try:
         return _dispatch(args, service) or 0
     except (ValueError, ScanBusy) as e:
@@ -180,8 +184,8 @@ def _dispatch(args, svc: TrackingService) -> int | None:
         print_add(svc.add_paths(args.collection, args.paths, recursive=not args.no_recursive))
     elif cmd == "sources":
         for x in svc.sources(args.collection, include_removed=args.all):
-            kind = "文件夹" if x.kind == "folder" else "文件"
-            extra = "" if x.kind == "file" or x.recursive else "（仅第一层）"
+            kind = {"folder": "文件夹", "feishu": "飞书文档"}.get(x.kind, "文件")
+            extra = "" if x.kind != "folder" or x.recursive else "（仅第一层）"
             problem = f"  ⚠ {x.last_error}" if x.last_error else ""
             print(f"  {x.id}. [{STATUS_TEXT[x.status]}] {kind}{extra} {x.path}{problem}")
     elif cmd in ("pause", "remove"):

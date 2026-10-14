@@ -103,3 +103,15 @@ TRACKING_SCHEDULER = os.getenv("BRIEFLY_TRACKING_SCHEDULER", "1") != "0"
 TRACKING_DIFF_BATCH_TOKENS = int(os.getenv("BRIEFLY_TRACKING_DIFF_BATCH_TOKENS", "3000"))
 # 单个文件一次 Diff 最多保留的变化段数，超出部分只计数（避免超大 Diff 撑爆存储和上下文）
 TRACKING_MAX_HUNKS = int(os.getenv("BRIEFLY_TRACKING_MAX_HUNKS", "400"))
+
+# ---- 飞书（企业自建应用，以应用身份访问：文档需要把应用添加为协作者）
+FEISHU_APP_ID = os.getenv("FEISHU_APP_ID", "")
+FEISHU_APP_SECRET = os.getenv("FEISHU_APP_SECRET", "")
+# 国际版 Lark 用 https://open.larksuite.com
+FEISHU_BASE_URL = os.getenv("FEISHU_BASE_URL", "https://open.feishu.cn")
+# 打开文档时用的域名（只影响生成的链接），如 https://xxx.feishu.cn；留空用 https://feishu.cn
+FEISHU_DOC_DOMAIN = os.getenv("FEISHU_DOC_DOMAIN", "")
+# 写入飞书文档时放在哪个文件夹（应用需有该文件夹的编辑权限）；留空放在应用自己的空间
+FEISHU_FOLDER_TOKEN = os.getenv("FEISHU_FOLDER_TOKEN", "")
+# 你自己的飞书账号（邮箱或 open_id，ou_ 开头）：写入的文档自动加你为协作者、机器人提醒发给你
+FEISHU_NOTIFY_USER = os.getenv("FEISHU_NOTIFY_USER", "")

@@ -19,10 +19,11 @@ dependencies = [
     "python-multipart>=0.0.32,<1",
     "pypdf>=4.0",
     "tzdata>=2024.1",  # Windows 下 zoneinfo 需要（每日扫描的时区）
+    "httpx>=0.28,<1",  # 飞书开放平台 REST
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "httpx>=0.28,<1"]
+dev = ["pytest>=8"]
 
 [project.scripts]
 briefly = "briefly.cli:main"

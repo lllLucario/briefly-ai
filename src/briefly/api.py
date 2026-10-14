@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from . import config
 from .agent import Agent, new_thread_id, sqlite_checkpointer
 from .db import create_db_engine
+from .feishu import FeishuClient, client_from_config
 from .llm import create_chat_model
 from .materials import Material, MaterialNotFound, MaterialStore
 from .sessions import ChatSession, SessionStore
@@ -206,10 +207,12 @@ def create_app(
     model_factory: Callable[[], BaseChatModel] = create_chat_model,
     agent_factory: Callable[[MaterialStore], Agent] = default_agent,
     tracking_scheduler: bool = False,
+    feishu_factory: Callable[[], FeishuClient] = client_from_config,
 ) -> FastAPI:
     """store、model_factory、agent_factory 可注入，便于测试用内存库和假模型。智能体在第一次用到时才创建。
 
-    tracking_scheduler：是否在本进程内启动文件追踪的每日扫描线程（briefly-api 按配置开启，测试默认关闭）。
+    tracking_scheduler：是否在本进程内启动文件追踪的每日扫描线程（briefly-api 按配置开启，测试默认关闭）；
+    开启时若配置了飞书，提醒同时由飞书机器人发送。feishu_factory 创建飞书客户端，测试时注入模拟响应。
     """
 
     @asynccontextmanager
@@ -219,7 +222,12 @@ def create_app(
             from .tracking.collection import TrackingService
             from .tracking.scheduler import DailyScheduler
 
-            scheduler = DailyScheduler(TrackingService(app.state.store.engine, app.state.store))
+            from .feishu.messages import register_channel
+
+            register_channel()
+            scheduler = DailyScheduler(
+                TrackingService(app.state.store.engine, app.state.store, feishu_factory=feishu_factory)
+            )
             scheduler.start()
         app.state.scheduler = scheduler
         yield
@@ -327,6 +335,8 @@ def create_app(
         response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
         return CreatedMaterial(material=summary(store, m), created=is_new)
 
+    app.state.created_material = lambda m, is_new: CreatedMaterial(material=summary(app.state.store, m), created=is_new)
+
     @app.post("/materials", response_model=CreatedMaterial, status_code=201, summary="粘贴文本创建材料")
     def add_text(body: MaterialIn, store: Store, response: Response):
         material, is_new = store.add_text(body.title, body.content)
@@ -414,9 +424,11 @@ def create_app(
             response.headers["Cache-Control"] = "no-cache"
         return response
 
+    from .feishu.api import register as register_feishu
     from .tracking.api import register as register_tracking
 
-    register_tracking(app, model_factory)  # 文件追踪：集合、扫描、定时、周报准备与审核
+    register_tracking(app, model_factory, feishu_factory)  # 文件追踪：集合、扫描、定时、周报准备与审核
+    register_feishu(app, feishu_factory)  # 飞书：导入链接、周报写入飞书文档
 
     @app.get("/", include_in_schema=False)
     def index():

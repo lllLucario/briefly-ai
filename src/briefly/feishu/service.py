@@ -1,0 +1,121 @@
+"""飞书与材料、周报的衔接：粘贴链接导入为材料、周报写入飞书文档（并记录写入历史）。"""
+import re
+from dataclasses import dataclass, field
+from datetime import datetime
+
+from sqlalchemy import DateTime, Integer, String, Text, select
+from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
+
+from .. import config
+from ..db import Base
+from ..materials import Material, MaterialStore
+from .bitable import read_table
+from .client import FeishuClient, FeishuError
+from .docx import create_document, document_url, read_document, share_with
+from .links import BITABLE, DOCX, WIKI, FeishuLink, parse_link
+
+# 周报的栏目行（【本周完成】）写成飞书文档的二级标题
+_SECTION = re.compile(r"(?m)^【([^】\n]+)】(.*)$")
+FEISHU_SOURCE = "feishu"  # 材料来源
+DOC_TYPE, TABLE_TYPE = "feishu", "bitable"  # 材料类型
+
+
+@dataclass
+class Fetched:
+    kind: str  # docx / bitable
+    token: str  # 实际的文档 token（知识库链接已换成文档本身的 token）
+    title: str
+    markdown: str
+    url: str
+    revision_id: int | None = None
+    warnings: list[str] = field(default_factory=list)
+
+
+def resolve(client: FeishuClient, link: FeishuLink) -> FeishuLink:
+    """知识库链接换成实际的文档或多维表格。"""
+    if link.kind != WIKI:
+        return link
+    node = client.get("/open-apis/wiki/v2/spaces/get_node", token=link.token).get("node") or {}
+    obj_type, obj_token = node.get("obj_type"), node.get("obj_token")
+    if obj_type == "docx":
+        return FeishuLink(DOCX, obj_token, url=link.url)
+    if obj_type == "bitable":
+        return FeishuLink(BITABLE, obj_token, link.table_id, link.view_id, link.url)
+    names = {"doc": "旧版文档", "sheet": "电子表格", "mindnote": "思维笔记", "file": "文件", "slides": "幻灯片"}
+    raise ValueError(f"知识库页面是{names.get(obj_type, obj_type or '未知类型')}，目前只支持新版文档和多维表格")
+
+
+def fetch(client: FeishuClient, url: str) -> Fetched:
+    link = resolve(client, parse_link(url))
+    if link.kind == DOCX:
+        doc = read_document(client, link.token)
+        return Fetched(DOCX, link.token, doc.title, doc.markdown, url, doc.revision_id, doc.warnings)
+    table = read_table(client, link.token, link.table_id, link.view_id)
+    return Fetched(BITABLE, link.token, table.title, table.markdown, url, None, table.warnings)
+
+
+def import_link(client: FeishuClient, store: MaterialStore, url: str) -> tuple[Material, bool]:
+    """读取飞书文档或多维表格的当前内容，存为材料（内容相同的不重复存）。"""
+    got = fetch(client, url)
+    if not got.markdown.strip():
+        raise ValueError(f"《{got.title}》没有可读取的文字内容")
+    report = {
+        "structure": "markdown",
+        "feishu": {"kind": got.kind, "token": got.token, "url": got.url, "revision_id": got.revision_id,
+                   "fetched_at": datetime.now().isoformat(timespec="seconds")},
+    }  # fmt: skip
+    if got.warnings:
+        report["warnings"] = got.warnings
+    kind = DOC_TYPE if got.kind == DOCX else TABLE_TYPE
+    return store.add_text(got.title, got.markdown, source=FEISHU_SOURCE, kind=kind, markdown=True, report=report)
+
+
+class FeishuExport(Base):
+    """写入飞书的记录：哪份周报、写成了哪篇文档。"""
+
+    __tablename__ = "feishu_exports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    report_id: Mapped[int] = mapped_column(Integer, index=True)
+    document_id: Mapped[str] = mapped_column(String(64))
+    url: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(String(200))
+    shared_with: Mapped[str] = mapped_column(String(200), default="")
+    share_error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+def export_weekly(client: FeishuClient, weekly, report_id: int) -> FeishuExport:
+    """把周报（去掉出处标记的正文）写成一篇新的飞书文档，并把用户加为协作者。"""
+    report = weekly.get(report_id)
+    _, text = weekly.export_markdown(report_id)
+    text = _SECTION.sub(lambda m: f"## {m.group(1)}" + (f"\n\n{m.group(2).strip()}" if m.group(2).strip() else ""), text)
+    name = (report.options or {}).get("name")
+    title = f"{name + ' ' if name else ''}周报 {report.period_start:%m.%d}–{report.period_end:%m.%d}"
+    document_id = create_document(client, title, text, config.FEISHU_FOLDER_TOKEN)
+    shared, error = "", ""
+    if config.FEISHU_NOTIFY_USER:
+        try:
+            share_with(client, document_id, config.FEISHU_NOTIFY_USER)
+            shared = config.FEISHU_NOTIFY_USER
+        except FeishuError as e:
+            error = str(e)
+    elif not config.FEISHU_FOLDER_TOKEN:
+        error = "未设置 FEISHU_NOTIFY_USER 或 FEISHU_FOLDER_TOKEN：文档在应用自己的空间里，你可能看不到"
+    export = FeishuExport(
+        report_id=report_id,
+        document_id=document_id,
+        url=document_url(client, document_id),
+        title=title,
+        shared_with=shared,
+        share_error=error,
+    )
+    with sessionmaker(weekly.store.engine, expire_on_commit=False)() as s:
+        s.add(export)
+        s.commit()
+    return export
+
+
+def exports_of(engine, report_id: int) -> list[FeishuExport]:
+    with sessionmaker(engine, expire_on_commit=False)() as s:
+        return list(s.scalars(select(FeishuExport).where(FeishuExport.report_id == report_id).order_by(FeishuExport.id.desc())))

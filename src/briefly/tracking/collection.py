@@ -1,4 +1,5 @@
 """追踪集合与追踪源的管理：创建集合、批量添加文件或文件夹（立即采集 Baseline）、暂停、恢复、移除。"""
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -7,6 +8,7 @@ from sqlalchemy import Engine, delete, func, select, update
 from sqlalchemy.orm import sessionmaker
 
 from .. import config
+from ..feishu.links import looks_like_feishu
 from ..materials import MaterialNotFound, MaterialStore
 from .blobs import BlobStore
 from .models import (
@@ -31,7 +33,7 @@ from .models import (
     WeeklySchedule,
     WorkEvidence,
 )
-from .scanner import ScanResult, Scanner, covers, is_supported, is_within, path_key
+from .scanner import FEISHU, ScanResult, Scanner, covers, feishu_key, is_supported, is_within, path_key
 
 
 class TrackingNotFound(MaterialNotFound):
@@ -46,11 +48,20 @@ class AddResult:
 
 
 class TrackingService:
-    def __init__(self, engine: Engine, store: MaterialStore, blobs: BlobStore | None = None, scanner: Scanner | None = None):
+    def __init__(
+        self,
+        engine: Engine,
+        store: MaterialStore,
+        blobs: BlobStore | None = None,
+        scanner: Scanner | None = None,
+        feishu_factory: Callable | None = None,
+    ):
+        """feishu_factory 创建飞书客户端（追踪飞书文档用）；不传时按配置创建，测试时注入模拟响应。"""
         self.engine = engine
         self.store = store
         self.blobs = blobs or BlobStore()
-        self.scanner = scanner or Scanner(engine, store, self.blobs)
+        self.feishu_factory = feishu_factory
+        self.scanner = scanner or Scanner(engine, store, self.blobs, feishu_factory=feishu_factory)
         self._session = sessionmaker(engine, expire_on_commit=False)
 
     # ---- 集合
@@ -123,14 +134,44 @@ class TrackingService:
         collect_garbage(self.engine, self.blobs)
 
     # ---- 追踪源
+    def _feishu_path(self, raw: str) -> str:
+        """飞书链接 → 追踪源路径 feishu://docx/<id>：知识库链接换成文档本身，并确认应用能读取。"""
+        from ..feishu import FeishuError, client_from_config, parse_link
+        from ..feishu.docx import document_revision
+        from ..feishu.links import BITABLE
+        from ..feishu.service import resolve
+
+        link = parse_link(raw)
+        try:
+            with (self.feishu_factory or client_from_config)() as client:
+                link = resolve(client, link)
+                if link.kind == BITABLE:
+                    raise ValueError("多维表格暂不支持追踪，可以在“材料”页粘贴链接导入当前内容")
+                document_revision(client, link.token)
+        except FeishuError as e:
+            raise ValueError(str(e)) from e
+        return feishu_key(link.token)
+
     def add_paths(self, ref: str | int, paths: list[str], recursive: bool = True, scan: bool = True) -> AddResult:
-        """批量添加文件或文件夹，并立即扫描建立 Baseline。"""
+        """批量添加文件、文件夹或飞书文档链接，并立即扫描建立 Baseline。"""
         c = self.collection(ref)
         result = AddResult()
         tracking_root = path_key(Path(config.TRACKING_DIR).resolve())
         with self._session() as s:
             existing = list(s.scalars(select(TrackingSource).where(TrackingSource.collection_id == c.id)))
         for raw in paths:
+            if looks_like_feishu(raw):
+                try:
+                    key = self._feishu_path(raw)
+                except ValueError as e:
+                    result.messages.append(f"{raw}：{e}，未添加")
+                    continue
+                same = next((x for x in existing if x.kind == FEISHU and x.path == key), None)
+                if same and same.status != REMOVED:
+                    result.messages.append(f"{raw}：已在追踪（追踪源 {same.id}）")
+                    continue
+                result.added.append(self._save_source(c.id, same, FEISHU, key, False, existing))
+                continue
             try:
                 p = Path(raw).expanduser().resolve(strict=True)
             except (OSError, RuntimeError):
@@ -150,12 +191,12 @@ class TrackingService:
             else:
                 result.messages.append(f"{raw}：不是普通文件或文件夹，未添加")
                 continue
-            same = next((x for x in existing if x.kind == kind and path_key(x.path) == key), None)
+            same = next((x for x in existing if x.kind == kind and x.kind != FEISHU and path_key(x.path) == key), None)
             if same and same.status != REMOVED:
                 result.messages.append(f"{raw}：已在追踪（追踪源 {same.id}）")
                 continue
             for other in existing:
-                if other.status == REMOVED or other is same:
+                if other.status == REMOVED or other is same or other.kind == FEISHU:
                     continue
                 if kind == "file" and other.kind == "folder" and covers(other, key):
                     result.messages.append(f"{raw}：已被文件夹追踪源 {other.id} 覆盖，同一文件只处理一次")
@@ -163,23 +204,28 @@ class TrackingService:
                     TrackingSource(kind="folder", path=str(p), recursive=recursive), path_key(other.path)
                 ):
                     result.messages.append(f"{raw}：包含已有的追踪源 {other.id}（{other.path}），重叠的文件只处理一次")
-            with self._session() as s:
-                if same:  # 之前移除过：恢复为启用
-                    s.execute(
-                        update(TrackingSource)
-                        .where(TrackingSource.id == same.id)
-                        .values(status=ACTIVE, recursive=recursive, last_error="")
-                    )
-                    source = s.get(TrackingSource, same.id)
-                else:
-                    source = TrackingSource(collection_id=c.id, kind=kind, path=str(p), recursive=recursive)
-                    s.add(source)
-                s.commit()
-                existing.append(source)
-                result.added.append(source)
+            result.added.append(self._save_source(c.id, same, kind, str(p), recursive, existing))
         if scan and result.added:
             result.scan = self.scanner.scan(c.id, REGISTER, baseline_sources={x.id for x in result.added})
         return result
+
+    def _save_source(
+        self, collection_id: int, same: TrackingSource | None, kind: str, path: str, recursive: bool, existing: list
+    ) -> TrackingSource:
+        with self._session() as s:
+            if same:  # 之前移除过：恢复为启用
+                s.execute(
+                    update(TrackingSource)
+                    .where(TrackingSource.id == same.id)
+                    .values(status=ACTIVE, recursive=recursive, last_error="")
+                )
+                source = s.get(TrackingSource, same.id)
+            else:
+                source = TrackingSource(collection_id=collection_id, kind=kind, path=path, recursive=recursive)
+                s.add(source)
+            s.commit()
+        existing.append(source)
+        return source
 
     def sources(self, ref: str | int, include_removed: bool = False) -> list[TrackingSource]:
         c = self.collection(ref)

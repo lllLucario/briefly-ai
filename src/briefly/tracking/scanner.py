@@ -10,12 +10,14 @@
 """
 import logging
 import os
+import re
 import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 
 from sqlalchemy import Engine, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -67,6 +69,14 @@ EXCLUDED_DIRS = {
 TEMP_PREFIXES = ("~$", ".~lock.", "~")
 TEMP_SUFFIXES = (".tmp", ".temp", ".swp", ".swx", ".bak", ".crdownload", ".part", ".partial", ".download", "~")
 SYSTEM_FILES = {"thumbs.db", "desktop.ini", ".ds_store"}
+
+
+# 飞书文档追踪源：path 为 feishu://docx/<document_id>，同时作为文件记录的 path_key
+FEISHU, FEISHU_PREFIX = "feishu", "feishu://"
+
+
+def feishu_key(document_id: str) -> str:
+    return f"{FEISHU_PREFIX}docx/{document_id}"
 
 
 class ScanBusy(Exception):
@@ -170,6 +180,8 @@ def _add(listing: Listing, path: Path, source_id: int) -> None:
 
 def covers(source: TrackingSource, key: str) -> bool:
     """追踪源是否覆盖这个路径（不看文件是否存在）。"""
+    if source.kind == FEISHU or key.startswith(FEISHU_PREFIX):
+        return source.kind == FEISHU and key == source.path
     src = path_key(source.path)
     if source.kind == "file":
         return key == src
@@ -218,11 +230,13 @@ class Scanner:
         store: MaterialStore,
         blobs: BlobStore | None = None,
         reader: Callable[[Path], tuple[bytes, os.stat_result]] = read_stable,
+        feishu_factory: Callable | None = None,
     ) -> None:
         self.engine = engine
         self.store = store
         self.blobs = blobs or BlobStore()
         self.reader = reader  # 可替换，便于测试“正在写入”
+        self.feishu_factory = feishu_factory  # 创建飞书客户端；不传时按配置创建
         self._session = sessionmaker(engine, expire_on_commit=False)
         self.owner = uuid.uuid4().hex
 
@@ -343,6 +357,8 @@ class Scanner:
             files = list(s.scalars(select(TrackedFile).where(TrackedFile.collection_id == collection_id)))
         active = [x for x in sources if x.status == ACTIVE]
         paused = [x for x in sources if x.status == PAUSED]
+        feishu_sources = [x for x in active if x.kind == FEISHU]
+        active = [x for x in active if x.kind != FEISHU]
 
         listing = Listing()
         for source in active:
@@ -359,7 +375,9 @@ class Scanner:
         for f in files:
             if f.path_key in listing.files:
                 continue
-            covering = [x for x in active if covers(x, f.path_key)]
+            covering = [x for x in active + feishu_sources if covers(x, f.path_key)]
+            if f.path_key.startswith(FEISHU_PREFIX) and covering:
+                continue  # 飞书文档在下面单独处理
             if not covering:
                 if any(covers(x, f.path_key) for x in paused):
                     continue  # 只被暂停的追踪源覆盖：保持原状态，不扫描
@@ -406,6 +424,10 @@ class Scanner:
             self._scan_new(collection_id, key, path, kind, run, stats, vanished, vanished_hash, claimed)
             processed += 1
 
+        # 飞书文档：按版本号判断有没有变化，变了才读取全部内容
+        if feishu_sources:
+            self._scan_feishu(collection_id, feishu_sources, by_key, run, trigger, baseline_sources, stats)
+
         # 4. 确实不在了的文件（没有被认作移动）记 DELETED
         for f in vanished:
             if f.id in claimed:
@@ -429,6 +451,133 @@ class Scanner:
                 )
                 s.commit()
             stats["deleted"] += 1
+
+    def _scan_feishu(
+        self,
+        collection_id: int,
+        sources: list[TrackingSource],
+        by_key: dict[str, TrackedFile],
+        run: ScanRun,
+        trigger: str,
+        baseline_sources: set[int],
+        stats: dict,
+    ) -> None:
+        """飞书文档：版本号（revision_id）没变就跳过；变了读取全部块转成 Markdown，内容不同才保存新版本。
+
+        访问失败（网络、权限、文档被删）一律标记 unreachable，不判定为删除。最后编辑人来自云文档元数据，
+        只能说明最后一次编辑的人，归属最多 INFERRED。
+        """
+        from ..feishu import FeishuError, client_from_config
+        from ..feishu.docx import document_meta, document_revision, read_document
+
+        try:
+            client = (self.feishu_factory or client_from_config)()
+        except FeishuError as e:
+            for source in sources:
+                self._source_error(source, str(e))
+                if (f := by_key.get(source.path)) is not None and f.status == PRESENT:
+                    self._set_status(f.id, UNREACHABLE, str(e))
+                    stats["unreachable"] += 1
+            return
+        names: dict[str, str] = {}
+        with client:
+            for source in sources:
+                document_id = source.path.rsplit("/", 1)[-1]
+                f = by_key.get(source.path)
+                stats["files"] += 1
+                try:
+                    title, revision = document_revision(client, document_id)
+                    latest = self._latest(f.id) if f else None
+                    if f and latest and f.status == PRESENT and revision is not None and f.mtime == revision:
+                        stats["stat_skipped"] += 1  # 版本号没变：不读内容
+                        stats["unchanged"] += 1
+                        self._source_error(source, "")
+                        continue
+                    doc = read_document(client, document_id)
+                    meta = {"revision_id": doc.revision_id, "title": doc.title, **document_meta(client, document_id)}
+                    if meta.get("last_modified_by_id"):
+                        meta["last_modified_by"] = self._feishu_user(client, meta["last_modified_by_id"], names)
+                except FeishuError as e:
+                    self._source_error(source, str(e))
+                    if f is not None and f.status not in (UNREACHABLE, UNTRACKED):
+                        self._set_status(f.id, UNREACHABLE, str(e))
+                    stats["unreachable"] += 1
+                    continue
+                self._source_error(source, "")
+                safe = re.sub(r'[\\/:*?"<>|\r\n]+', "_", doc.title).strip() or document_id
+                display = f"{FEISHU_PREFIX}docx/{document_id}/{safe}"  # 展示名取最后一段，即文档标题
+                data = f"# {doc.title}\n\n{doc.markdown}".encode("utf-8")
+                digest = sha256_bytes(data)
+                st = SimpleNamespace(st_size=len(data), st_mtime=float(doc.revision_id or 0))
+                if f is None:
+                    f = TrackedFile(
+                        collection_id=collection_id,
+                        path=display,
+                        path_key=source.path,
+                        file_type=FEISHU,
+                        status=PRESENT,
+                        first_seen_at=datetime.now(),
+                    )
+                    with self._session() as s:
+                        s.add(f)
+                        s.commit()
+                    latest = None
+                    kind = BASELINE if source.id in baseline_sources else FIRST_SEEN
+                else:
+                    kind = FINAL if trigger == PRE_REPORT else INCREMENTAL
+                if latest and latest.sha256 == digest:
+                    with self._session() as s:  # 版本号变了、正文没变（如只改了格式或评论）
+                        s.execute(
+                            update(TrackedFile)
+                            .where(TrackedFile.id == f.id)
+                            .values(path=display, size=st.st_size, mtime=st.st_mtime, status=PRESENT, last_error="", last_seen_at=datetime.now())
+                        )
+                        s.commit()
+                    stats["unchanged"] += 1
+                    stats["mtime_only"] += 1
+                    continue
+                if f.path != display:
+                    with self._session() as s:
+                        s.execute(update(TrackedFile).where(TrackedFile.id == f.id).values(path=display))
+                        s.commit()
+                path = PurePosixPath(f"{safe}.md")  # 按 Markdown 解析和比较
+                snapshot = self._save_snapshot(f, path, data, digest, st, kind, run, stats, gap=bool(stats.get("gap")) and latest is not None, meta=meta)
+                if snapshot is None or kind == BASELINE:
+                    continue
+                with self._session() as s:
+                    s.add(
+                        FileChange(
+                            collection_id=collection_id,
+                            file_id=f.id,
+                            scan_run_id=run.id,
+                            change_type=MODIFIED if latest else CREATED,
+                            from_snapshot_id=latest.id if latest else None,
+                            to_snapshot_id=snapshot.id,
+                            details={"path": display, "revision_id": doc.revision_id}
+                            | ({} if latest else {"basis": "扫描时首次发现，首次发现时间不代表创建时间"}),
+                        )
+                    )
+                    s.commit()
+                stats["modified" if latest else "created"] += 1
+
+    @staticmethod
+    def _feishu_user(client, open_id: str, cache: dict[str, str]) -> str:
+        """open_id 换成姓名（需要通讯录权限）；取不到时用 open_id，用户可把它加进署名。"""
+        from ..feishu import FeishuError
+
+        if open_id not in cache:
+            try:
+                user = client.get(f"/open-apis/contact/v3/users/{open_id}", user_id_type="open_id").get("user") or {}
+                cache[open_id] = user.get("name") or open_id
+            except FeishuError:
+                cache[open_id] = open_id
+        return cache[open_id]
+
+    def _source_error(self, source: TrackingSource, problem: str) -> None:
+        if problem != source.last_error:
+            with self._session() as s:
+                s.execute(update(TrackingSource).where(TrackingSource.id == source.id).values(last_error=problem))
+                s.commit()
 
     def _set_status(self, file_id: int, status: str, error: str = "") -> None:
         with self._session() as s:
@@ -616,8 +765,11 @@ class Scanner:
         run: ScanRun,
         stats: dict,
         gap: bool,
+        meta: dict | None = None,
     ) -> FileSnapshot | None:
-        """保存一个版本：原始字节进版本库、解析文本存为材料、版本记录与文件状态同一事务提交。"""
+        """保存一个版本：原始字节进版本库、解析文本存为材料、版本记录与文件状态同一事务提交。
+
+        meta 不传时从文件里读（Word 修订、文档属性）；飞书文档由调用方传入（版本号、最后编辑人）。"""
         try:
             self.blobs.put(data, digest)
         except StoreFull as e:
@@ -627,10 +779,11 @@ class Scanner:
         material_id, parse_error = self._parse(f.file_type, path.name, data, digest)
         if parse_error:
             stats["parse_errors"] += 1
-        try:
-            meta = extract_meta(f.file_type, data)
-        except Exception as e:  # 元数据只用于归属判断，读不出不影响版本保存
-            meta = {"error": f"{type(e).__name__}: {e}"[:200]}
+        if meta is None:
+            try:
+                meta = extract_meta(f.file_type, data)
+            except Exception as e:  # 元数据只用于归属判断，读不出不影响版本保存
+                meta = {"error": f"{type(e).__name__}: {e}"[:200]}
         with self._session() as s:
             latest = self._latest(f.id, s)
             if latest and latest.sha256 == digest:  # 并发或重试时已经保存过

@@ -11,6 +11,7 @@ const state = {
   weeklyTimer: null,
   weeklyReport: null,
   activeMaterial: null,
+  feishu: null, // 飞书配置状态（/feishu/status）
 };
 
 // ---------- 通用 ----------
@@ -82,6 +83,8 @@ async function loadMaterials() {
   renderPicked();
 }
 
+const FILE_TYPES = { feishu: "飞书文档", bitable: "多维表格" };
+
 function renderMaterialRows() {
   const rows = $("#material-rows");
   if (!state.materials.length) {
@@ -92,7 +95,7 @@ function renderMaterialRows() {
     <tr class="clickable ${state.activeMaterial === m.id ? "active" : ""}" data-id="${m.id}">
       <td>${m.id}</td>
       <td>${escapeHtml(m.title)} ${m.warnings.length ? `<span class="warn-dot" title="${escapeHtml(m.warnings.join("\n"))}">⚠</span>` : ""}</td>
-      <td>${m.file_type || "粘贴"}</td>
+      <td>${FILE_TYPES[m.file_type] || m.file_type || "粘贴"}</td>
       <td>${m.char_count}</td>
       <td>${m.chunk_count} / ${m.section_count}</td>
       <td>${m.structure || "-"}</td>
@@ -191,6 +194,27 @@ $("#paste-form").addEventListener("submit", async (e) => {
     showNotice(msg, `${r.created ? "已保存" : "内容相同的材料已存在"}：${escapeHtml(r.material.title)}（${r.material.char_count} 字）`);
     $("#paste-title").value = "";
     $("#paste-content").value = "";
+    await loadMaterials();
+  } catch (err) { showNotice(msg, escapeHtml(err.message), "error"); }
+});
+
+// 飞书：配置了应用凭证才显示相关入口
+async function loadFeishu() {
+  try { state.feishu = await api("/feishu/status"); } catch (_) { state.feishu = null; }
+  document.querySelectorAll(".feishu-only").forEach((el) => el.classList.toggle("hidden", !state.feishu?.configured));
+}
+
+$("#feishu-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const msg = $("#material-msg");
+  const url = $("#feishu-url").value.trim();
+  if (!url) return;
+  showNotice(msg, "正在读取飞书内容…");
+  try {
+    const r = await api("/materials/feishu", { method: "POST", json: { url } });
+    const warn = r.material.warnings.length ? `<br>${r.material.warnings.map(escapeHtml).join("<br>")}` : "";
+    showNotice(msg, `${r.created ? "已读取" : "内容没有变化，材料已存在"}：${escapeHtml(r.material.title)}（${r.material.char_count} 字）${warn}`);
+    $("#feishu-url").value = "";
     await loadMaterials();
   } catch (err) { showNotice(msg, escapeHtml(err.message), "error"); }
 });
@@ -474,10 +498,41 @@ async function refreshWeekly() {
   } else warnings.classList.add("hidden");
 
   $("#weekly-preview").innerHTML = done ? renderReport(r.content) : "";
+  $("#feishu-weekly").disabled = !done;
+  if (done && state.feishu?.configured) loadFeishuExports(id);
+  else $("#weekly-feishu").classList.add("hidden");
   $("#weekly-preview").classList.toggle("hide-tags", !$("#show-tags").checked);
   renderWeeklyMeta(r);
   loadWeeklyList();
 }
+
+function feishuLinks(exports) {
+  return exports.map((x) => `<a href="${escapeHtml(x.url)}" target="_blank" rel="noopener">${escapeHtml(x.title)}</a>（${fmtTime(x.created_at)}）`
+    + (x.share_error ? `<br><span class="danger">${escapeHtml(x.share_error)}</span>` : "")).join("<br>");
+}
+
+async function loadFeishuExports(id) {
+  try {
+    const exports = await api(`/weekly-reports/${id}/feishu`);
+    if (id !== state.weeklyId) return;
+    if (exports.length) showNotice($("#weekly-feishu"), `<b>已写入飞书</b><br>${feishuLinks(exports.slice(0, 3))}`);
+    else $("#weekly-feishu").classList.add("hidden");
+  } catch (_) { /* 只是展示历史，失败不影响周报 */ }
+}
+
+$("#feishu-weekly").addEventListener("click", async () => {
+  const id = state.weeklyId;
+  const box = $("#weekly-feishu");
+  const btn = $("#feishu-weekly");
+  btn.disabled = true;
+  showNotice(box, "正在写入飞书文档…");
+  try {
+    const x = await api(`/weekly-reports/${id}/feishu`, { method: "POST" });
+    showNotice(box, `<b>已写入飞书</b>（出处标记不写入）<br>${feishuLinks([x])}`, x.share_error ? "warn" : "");
+  } catch (err) {
+    showNotice(box, escapeHtml(err.message), "error");
+  } finally { btn.disabled = false; }
+});
 
 function renderWeeklyMeta(r) {
   const g = r.generation || {};
@@ -595,7 +650,7 @@ $("#inbox").addEventListener("click", async (e) => {
 // ---------- 启动 ----------
 (async function init() {
   try {
-    await Promise.all([loadSkills(), loadMaterials(), loadSessions(), loadInbox()]);
+    await Promise.all([loadSkills(), loadMaterials(), loadSessions(), loadInbox(), loadFeishu()]);
     setInterval(loadInbox, 60000);
   } catch (err) {
     showNotice($("#context-box"), `连接后端失败：${escapeHtml(err.message)}`, "error");

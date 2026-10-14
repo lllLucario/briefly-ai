@@ -2,7 +2,8 @@
 
 证据强弱：
 - DOCX 修订记录（Track Changes：w:ins / w:del 的作者、时间）：作者与用户署名一致 → ATTRIBUTED。
-- 文档属性“最后修改人”（docx / xlsx 的 docProps/core.xml）：只说明最后一次保存的人，可能被别人覆盖 → 最多 INFERRED。
+- 文档属性“最后修改人”（docx / xlsx 的 docProps/core.xml）、飞书文档的最后编辑人（云文档元数据）：
+  只说明最后一次保存的人，可能被别人覆盖 → 最多 INFERRED。
 - 追踪时间、文件修改时间、首次发现时间：不作为归属依据。
 - 用户确认 → USER_CONFIRMED；用户排除 → EXCLUDED（在 review.py 中设置）。
 没有可靠身份来源的变化一律 UNKNOWN，进入候选清单等用户确认。
@@ -118,11 +119,13 @@ def judge(owner_names: list[str], before: dict | None, after: dict) -> tuple[str
         basis.append(f"新增修订 {len(new)} 处，但没有作者信息")
 
     last = after.get("last_modified_by", "")
+    label = "飞书文档的“最后编辑人”" if "last_modified_by_id" in after else "文档属性“最后修改人”"
     if last:
-        if owners and _norm(last) in owners:
-            basis.append(f"文档属性“最后修改人”为 {last}（只说明最后一次保存的人，不能证明全部修改都是你做的）")
+        # 飞书文档的最后编辑人可能只有 open_id（应用没有通讯录权限时），署名里写 open_id 也能匹配
+        if owners and (_norm(last) in owners or _norm(after.get("last_modified_by_id", "")) in owners):
+            basis.append(f"{label}为 {last}（只说明最后一次保存的人，不能证明全部修改都是你做的）")
             return INFERRED, basis, flags
-        basis.append(f"文档属性“最后修改人”为 {last}" + ("，不是你的署名" if owners else ""))
+        basis.append(f"{label}为 {last}" + ("，不是你的署名" if owners else ""))
         if owners:
             flags.append("others")
         return UNKNOWN, basis, flags

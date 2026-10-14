@@ -108,7 +108,7 @@ async function loadSources() {
   $("#source-rows").innerHTML = sources.length
     ? sources.map((s) => `<div class="src-row">
         <span class="badge">${SRC_STATUS[s.status] || s.status}</span>
-        <span class="path">${s.kind === "folder" ? "📁" : "📄"} ${escapeHtml(s.path)}${s.kind === "folder" && !s.recursive ? "（仅第一层）" : ""}
+        <span class="path">${{ folder: "📁", feishu: "🪶 飞书文档" }[s.kind] || "📄"} ${escapeHtml(s.path)}${s.kind === "folder" && !s.recursive ? "（仅第一层）" : ""}
         ${s.last_error ? `<span class="badge warn">${escapeHtml(s.last_error)}</span>` : ""}</span>
         ${s.status === "active" ? `<button class="ghost" data-src="${s.id}" data-act="pause">暂停</button>` : `<button class="ghost" data-src="${s.id}" data-act="resume">恢复</button>`}
         <button class="ghost danger" data-src="${s.id}" data-act="remove">移除</button></div>`).join("")

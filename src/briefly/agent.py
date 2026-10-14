@@ -13,6 +13,7 @@
 import logging
 import sqlite3
 import uuid
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -37,8 +38,11 @@ from .output_check import InternalTermCheck
 from .skills import SKILLS, read_prompt
 from .tokens import TokenCounter
 from .tool_budget import ToolBudgetMiddleware, turn_key
+from .feishu import client_from_config
+from .feishu import configured as feishu_configured
 from .tools import DEFAULT_TOOLS
 from .tools.context import context_tools
+from .tools.feishu import feishu_tools
 from .tools.materials import material_tools
 
 __all__ = [
@@ -104,8 +108,12 @@ class Agent:
         thread_id: str | None = None,
         store: MaterialStore | None = None,
         context_store: ContextStore | None = None,
+        feishu_factory: Callable | None = None,
     ) -> None:
-        """context_store 存会话记忆、超大工具结果和观测数据；不传时与材料库同库，都没有时用内存库。"""
+        """context_store 存会话记忆、超大工具结果和观测数据；不传时与材料库同库，都没有时用内存库。
+
+        配置了飞书（或传入 feishu_factory，测试用）且有材料库时，加上读取飞书链接的工具。
+        """
         self.store = store
         model = model or create_chat_model()
         self.model_name = getattr(model, "model_name", None) or config.MODEL
@@ -124,6 +132,8 @@ class Agent:
         tools += context_tools(self.context_store)
         if store is not None:
             tools += material_tools(store, model, self.context_store)  # 完整提炼工具与智能体用同一个模型
+            if feishu_factory is not None or feishu_configured():
+                tools += feishu_tools(store, feishu_factory or client_from_config)
         self.graph = create_agent(
             model,
             tools=tools,

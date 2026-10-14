@@ -5,18 +5,26 @@ from pathlib import Path
 from . import config
 from .agent import Agent, sqlite_checkpointer
 from .db import create_db_engine
+from .feishu import FeishuError, client_from_config, looks_like_feishu
+from .feishu.service import import_link
 from .materials import MaterialStore
 from .skills import SKILLS
 
 REPL_HELP = (
-    "命令：/file <路径> [指令]  读取文件并处理  |  /add <路径>  存入材料库  |  /materials  列出材料"
+    "命令：/file <路径或飞书链接> [指令]  读取并处理  |  /add <路径或飞书链接>  存入材料库  |  /materials  列出材料"
     "  |  /context  查看上下文用量  |  /reset  开始新会话  |  /exit  退出"
 )
 NO_INSTRUCTION = "（用户只提供了文件，没有说明要做什么）"
 
 
 def add_file(agent: Agent, path: str | Path):
-    """文件存入材料库（按内容去重，同一文件不重复解析入库）。"""
+    """文件存入材料库（按内容去重，同一文件不重复解析入库）。飞书链接读取当前内容后存入。"""
+    if looks_like_feishu(str(path)):
+        try:
+            with client_from_config() as client:
+                return import_link(client, agent.store, str(path))
+        except FeishuError as e:
+            raise ValueError(str(e)) from e
     path = Path(path)
     return agent.store.add_file(path.name, path.read_bytes())
 
@@ -93,7 +101,9 @@ def main() -> None:
 
         sys.exit(track_main(sys.argv[2:]))
     ap = argparse.ArgumentParser(prog="briefly", description="办公 AI Agent（文件追踪见 briefly track -h）")
-    ap.add_argument("input", nargs="?", help="文件路径（txt/md/docx/pdf/xlsx/csv），- 表示标准输入；不填则进入对话模式")
+    ap.add_argument(
+        "input", nargs="?", help="文件路径（txt/md/docx/pdf/xlsx/csv）或飞书文档链接，- 表示标准输入；不填则进入对话模式"
+    )
     ap.add_argument("-s", "--skill", choices=list(SKILLS), help="指定能力；不指定则由模型判断")
     ap.add_argument("-e", "--extra", default="", help="额外要求，如“控制在200字内”")
     ap.add_argument("-o", "--output", help="结果写入文件，默认打印")
@@ -115,7 +125,10 @@ def main() -> None:
             text = f"{text}\n\n【额外要求】{args.extra}"
         result = agent.chat(text, args.skill)  # 过长的输入在 chat 里转存为材料
     else:
-        material, _ = add_file(agent, args.input)
+        try:
+            material, _ = add_file(agent, args.input)
+        except (OSError, ValueError) as e:
+            sys.exit(f"读取失败：{e}")
         result = agent.chat(args.extra or NO_INSTRUCTION, args.skill, material_ids=[material.id])
 
     if args.output:
