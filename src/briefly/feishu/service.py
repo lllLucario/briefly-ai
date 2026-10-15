@@ -100,6 +100,11 @@ def export_weekly(client: FeishuClient, weekly, report_id: int) -> FeishuExport:
             shared = config.FEISHU_NOTIFY_USER
         except FeishuError as e:
             error = str(e)
+            if e.code == 1063001:  # 实测：填普通邮箱（如 QQ 邮箱）时飞书找不到这个用户
+                error = (
+                    "文档已写入，但没能把你加为协作者：FEISHU_NOTIFY_USER 要填飞书 open_id（ou_ 开头）"
+                    f"或飞书邮箱，普通邮箱飞书找不到对应用户（{e}）"
+                )
     elif not config.FEISHU_FOLDER_TOKEN:
         error = "未设置 FEISHU_NOTIFY_USER 或 FEISHU_FOLDER_TOKEN：文档在应用自己的空间里，你可能看不到"
     export = FeishuExport(

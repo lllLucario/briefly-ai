@@ -113,5 +113,5 @@ FEISHU_BASE_URL = os.getenv("FEISHU_BASE_URL", "https://open.feishu.cn")
 FEISHU_DOC_DOMAIN = os.getenv("FEISHU_DOC_DOMAIN", "")
 # 写入飞书文档时放在哪个文件夹（应用需有该文件夹的编辑权限）；留空放在应用自己的空间
 FEISHU_FOLDER_TOKEN = os.getenv("FEISHU_FOLDER_TOKEN", "")
-# 你自己的飞书账号（邮箱或 open_id，ou_ 开头）：写入的文档自动加你为协作者、机器人提醒发给你
+# 你自己的飞书账号：open_id（ou_ 开头）或飞书邮箱，普通邮箱（QQ、Gmail）飞书找不到。写入的文档自动加你为协作者、机器人提醒发给你
 FEISHU_NOTIFY_USER = os.getenv("FEISHU_NOTIFY_USER", "")

@@ -613,3 +613,13 @@ def test_channel_registered_once_only_when_configured(monkeypatch):
     monkeypatch.setattr(config, "FEISHU_APP_SECRET", "s")
     assert register_channel() and register_channel()
     assert len(weekly_schedule.CHANNELS) == 1
+
+
+def test_export_explains_unknown_collaborator(store, monkeypatch):
+    monkeypatch.setattr(config, "FEISHU_NOTIFY_USER", "someone@qq.com")
+    weekly, report_id = done_report(store)
+    routes = write_routes([]) | {("POST", f"{API}/drive/v1/permissions/{DOC}/members"): feishu_error(1063001, "Invalid parameter")}
+    with FakeFeishu(routes).client() as client:
+        export = export_weekly(client, weekly, report_id)
+    assert export.document_id == DOC and not export.shared_with
+    assert "open_id" in export.share_error and "普通邮箱" in export.share_error

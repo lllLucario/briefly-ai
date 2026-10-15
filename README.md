@@ -52,7 +52,7 @@ briefly track inbox                          # 查看提醒（网页顶部也会
 
 ### 飞书（可选）
 
-在飞书开发者后台创建企业自建应用，开通文档、知识库、多维表格、云空间、机器人发消息等权限并发布版本，然后在 `.env` 填 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_NOTIFY_USER`（你的飞书邮箱或 open_id）。应用以自己的身份访问，需要在文档右上角“…→ 更多 → 添加文档应用”把它加进来。
+在飞书开发者后台创建企业自建应用，开通文档、知识库、多维表格、云空间、机器人发消息等权限并发布版本，然后在 `.env` 填 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_NOTIFY_USER`（你的飞书 open_id，`ou_` 开头；普通邮箱不行）。应用以自己的身份访问，需要在文档右上角“…→ 更多 → 添加文档应用”把它加进来。
 
 ```bash
 briefly https://xxx.feishu.cn/docx/... -s summary   # 读取飞书文档并总结（对话中 /add、/file 也可以粘贴链接）
