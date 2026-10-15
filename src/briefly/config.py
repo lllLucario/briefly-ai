@@ -125,3 +125,12 @@ FEISHU_OAUTH_SCOPES = os.getenv(
 )
 # 用户令牌存放位置（本机文件，不进 Git）
 FEISHU_USER_TOKEN_FILE = os.getenv("FEISHU_USER_TOKEN_FILE", "data/feishu_user_token.json")
+
+# ---- 邮件（发送周报，SMTP）：465 用 SSL，587 等用 STARTTLS；QQ、163 等邮箱的密码填“授权码”
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+# 发件人显示名、网页上默认填的收件人（逗号分隔，如导师邮箱）
+MAIL_FROM_NAME = os.getenv("MAIL_FROM_NAME", "")
+MAIL_DEFAULT_TO = os.getenv("MAIL_DEFAULT_TO", "")

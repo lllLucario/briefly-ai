@@ -19,7 +19,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from pydantic import BaseModel
 
-from . import config
+from . import config, mail
 from .agent import Agent, new_thread_id, sqlite_checkpointer
 from .db import create_db_engine
 from .feishu import FeishuClient, client_from_config
@@ -171,6 +171,28 @@ class NotificationOut(BaseModel):
 
 class ReadIn(BaseModel):
     ids: list[int] = []
+
+
+class MailIn(BaseModel):
+    to: str  # 收件人，逗号或分号分隔
+    cc: str = ""
+
+
+class MailOut(BaseModel):
+    id: int
+    report_id: int
+    to: str
+    cc: str
+    subject: str
+    status: str  # sent / failed
+    error: str
+    created_at: datetime
+
+
+class MailStatus(BaseModel):
+    configured: bool
+    sender: str  # 发件邮箱
+    default_to: str  # 默认收件人
 
 
 def default_agent(store: MaterialStore) -> Agent:
@@ -408,6 +430,22 @@ def create_app(
             media_type="text/markdown; charset=utf-8",
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
         )
+
+    app.state.mail_connect = mail._connect  # 测试时替换成模拟的 SMTP
+
+    @app.get("/mail/status", response_model=MailStatus, summary="邮件是否已配置")
+    def mail_status():
+        return MailStatus(configured=mail.configured(), sender=config.SMTP_USER, default_to=config.MAIL_DEFAULT_TO)
+
+    @app.post("/weekly-reports/{report_id}/email", response_model=MailOut, status_code=201, summary="把周报通过邮件发给收件人（失败不自动重试）")
+    def email_weekly(report_id: int, body: MailIn, weekly: Weekly):
+        record = mail.send_weekly(weekly, report_id, body.to, body.cc, connect=app.state.mail_connect)
+        return MailOut.model_validate(record, from_attributes=True)
+
+    @app.get("/weekly-reports/{report_id}/email", response_model=list[MailOut], summary="周报的邮件发送记录")
+    def list_emails(report_id: int, weekly: Weekly):
+        weekly.get(report_id)
+        return [MailOut.model_validate(x, from_attributes=True) for x in mail.sends_of(app.state.store.engine, report_id)]
 
     @app.get("/notifications", response_model=list[NotificationOut], summary="提醒（文件追踪：周报已准备好、准备失败等）")
     def list_notifications(unread_only: bool = True):

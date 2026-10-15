@@ -12,6 +12,7 @@ const state = {
   weeklyReport: null,
   activeMaterial: null,
   feishu: null, // 飞书配置状态（/feishu/status）
+  mail: null, // 邮件配置状态（/mail/status）
 };
 
 // ---------- 通用 ----------
@@ -604,6 +605,9 @@ async function refreshWeekly() {
 
   $("#weekly-preview").innerHTML = done ? renderReport(r.content) : "";
   $("#feishu-weekly").disabled = !done;
+  $("#mail-weekly").disabled = !done;
+  if (done && state.mail?.configured) loadMailSends(id);
+  else $("#weekly-mail").classList.add("hidden");
   if (done && state.feishu?.configured) loadFeishuExports(id);
   else $("#weekly-feishu").classList.add("hidden");
   $("#weekly-preview").classList.toggle("hide-tags", !$("#show-tags").checked);
@@ -636,6 +640,43 @@ $("#feishu-weekly").addEventListener("click", async () => {
     showNotice(box, `<b>已写入飞书</b>（出处标记不写入）<br>${feishuLinks([x])}`, x.share_error ? "warn" : "");
   } catch (err) {
     showNotice(box, escapeHtml(err.message), "error");
+  } finally { btn.disabled = false; }
+});
+
+// 邮件：只由用户手动发送，发送前确认收件人；失败不自动重试（可能已经发出去了）
+async function loadMail() {
+  try { state.mail = await api("/mail/status"); } catch (_) { state.mail = null; }
+  document.querySelectorAll(".mail-only").forEach((el) => el.classList.toggle("hidden", !state.mail?.configured));
+}
+
+function mailLines(sends) {
+  return sends.map((x) => `${fmtTime(x.created_at)} ${x.status === "sent" ? "已发送" : "<span class=\"danger\">发送失败</span>"} → ${escapeHtml(x.to)}`
+    + (x.cc ? `（抄送 ${escapeHtml(x.cc)}）` : "") + (x.error ? `<br><span class="danger">${escapeHtml(x.error)}</span>` : "")).join("<br>");
+}
+
+async function loadMailSends(id) {
+  try {
+    const sends = await api(`/weekly-reports/${id}/email`);
+    if (id !== state.weeklyId) return;
+    if (sends.length) showNotice($("#weekly-mail"), `<b>邮件</b><br>${mailLines(sends.slice(0, 3))}`);
+    else $("#weekly-mail").classList.add("hidden");
+  } catch (_) { /* 只是展示历史 */ }
+}
+
+$("#mail-weekly").addEventListener("click", async () => {
+  const id = state.weeklyId;
+  const to = prompt("收件人邮箱（多个用逗号分隔）", state.mail?.default_to || "");
+  if (!to || !to.trim()) return;
+  if (!confirm(`将从 ${state.mail.sender} 把这份周报发送给：${to.trim()}
+发出后无法撤回，确认发送？`)) return;
+  const btn = $("#mail-weekly");
+  btn.disabled = true;
+  showNotice($("#weekly-mail"), "正在发送邮件…");
+  try {
+    const x = await api(`/weekly-reports/${id}/email`, { method: "POST", json: { to } });
+    showNotice($("#weekly-mail"), `<b>邮件</b><br>${mailLines([x])}`, x.status === "sent" ? "" : "error");
+  } catch (err) {
+    showNotice($("#weekly-mail"), escapeHtml(err.message), "error");
   } finally { btn.disabled = false; }
 });
 
@@ -755,7 +796,7 @@ $("#inbox").addEventListener("click", async (e) => {
 // ---------- 启动 ----------
 (async function init() {
   try {
-    await Promise.all([loadSkills(), loadMaterials(), loadSessions(), loadInbox(), loadFeishu()]);
+    await Promise.all([loadSkills(), loadMaterials(), loadSessions(), loadInbox(), loadFeishu(), loadMail()]);
     handleFeishuRedirect();
     setInterval(loadInbox, 60000);
   } catch (err) {
