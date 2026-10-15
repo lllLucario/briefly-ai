@@ -211,8 +211,11 @@ function renderFeishuAccount() {
   const user = state.feishu?.user;
   $("#feishu-browser").classList.toggle("hidden", !user);
   if (user) {
+    const missing = user.missing_scopes || [];
     box.innerHTML = `<div class="row gap wrap"><span>已连接：<b>${escapeHtml(user.name || user.open_id)}</b></span>
-      <button class="ghost danger" id="feishu-logout">断开</button></div>`;
+      <button class="ghost danger" id="feishu-logout">断开</button></div>`
+      + (missing.length ? `<div class="notice warn">权限有更新，请重新连接飞书以授权：${missing.map(escapeHtml).join("、")}
+        <a class="button" href="/feishu/oauth/login">重新连接</a></div>` : "");
     if (!state.drivePath) openDriveFolder("", "我的空间", true);
   } else {
     box.innerHTML = `<div class="row gap wrap"><a class="button primary" href="/feishu/oauth/login">连接飞书</a>

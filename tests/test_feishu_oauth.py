@@ -236,3 +236,21 @@ def test_export_as_owner_skips_sharing(api, monkeypatch):
     assert out["shared_with"] == "你（文档所有者）" and not out["share_error"]
     assert fake.calls("POST", f"{API}/docx/v1/documents")[0].headers["Authorization"] == "Bearer u-0"  # 以用户身份新建
     assert not fake.calls("POST", f"{API}/drive/v1/permissions/{DOC}/members")
+
+
+def test_missing_scopes_after_config_change(tmp_path, monkeypatch):
+    fake = FakeFeishu()
+    tokens = connected_tokens(fake, tmp_path / "t.json")
+    data = tokens.load(); data["scope"] = "offline_access drive:drive:readonly"; tokens._save(data)
+    monkeypatch.setattr(config, "FEISHU_OAUTH_SCOPES", "offline_access drive:drive:readonly minutes:minutes.basic:read")
+    assert tokens.connected()["missing_scopes"] == ["minutes:minutes.basic:read"]
+
+
+def test_user_scope_error_says_reconnect(tmp_path):
+    fake = FakeFeishu({("GET", f"{API}/minutes/v1/minutes/obcn1234567890"): feishu_error(99991679, "Unauthorized"),
+                       ("GET", f"{API}/minutes/v1/minutes/obcn1234567890/x"): feishu_error(2091005, "permission deny")})
+    tokens = connected_tokens(fake, tmp_path / "t.json")
+    with fake.client() as app_client, pytest.raises(Exception, match="没有这条妙记的权限"):
+        with_user(app_client, tokens).get(f"{API}/minutes/v1/minutes/obcn1234567890/x")  # 用户、应用都没权限：报应用的错误
+    with fake.client() as app_client, pytest.raises(Exception, match="重新连接飞书"):
+        app_client.as_user(tokens).get(f"{API}/minutes/v1/minutes/obcn1234567890")

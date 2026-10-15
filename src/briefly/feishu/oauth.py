@@ -130,11 +130,17 @@ class UserTokens:
             self.path.unlink(missing_ok=True)
 
     def connected(self) -> dict | None:
-        """已连接时返回 {name, open_id, scope, refresh_expires_at}（不含令牌）。"""
+        """已连接时返回 {name, open_id, scope, refresh_expires_at, missing_scopes}（不含令牌）。
+
+        missing_scopes：配置要求、但这次授权里没有的权限（授权之后又加了新功能），需要重新连接飞书。
+        """
         data = self.load()
         if not data or data.get("refresh_expires_at", 0) < time.time():
             return None
-        return {k: data.get(k) for k in ("name", "open_id", "scope", "refresh_expires_at")}
+        info = {k: data.get(k) for k in ("name", "open_id", "scope", "refresh_expires_at")}
+        granted = set((data.get("scope") or "").split())
+        info["missing_scopes"] = sorted(set(config.FEISHU_OAUTH_SCOPES.split()) - granted) if granted else []
+        return info
 
     def _store(self, body: dict, extra: dict | None = None) -> dict:
         now = time.time()

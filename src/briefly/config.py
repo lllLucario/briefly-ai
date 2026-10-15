@@ -121,7 +121,7 @@ FEISHU_REDIRECT_URI = os.getenv("FEISHU_REDIRECT_URI", "")
 FEISHU_OAUTH_SCOPES = os.getenv(
     "FEISHU_OAUTH_SCOPES",
     "offline_access drive:drive:readonly docx:document docx:document:readonly wiki:wiki:readonly "
-    "bitable:app:readonly search:docs:read",
+    "bitable:app:readonly search:docs:read minutes:minutes.basic:read minutes:minutes.transcript:export",
 )
 # 用户令牌存放位置（本机文件，不进 Git）
 FEISHU_USER_TOKEN_FILE = os.getenv("FEISHU_USER_TOKEN_FILE", "data/feishu_user_token.json")
