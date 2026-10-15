@@ -211,6 +211,35 @@ class FeishuClient:
         params = {k: v for k, v in params.items() if v is not None}
         return self.request("POST", path, json=json, params=params, idempotent=idempotent)
 
+    def download(self, path: str, **params) -> bytes:
+        """下载接口（成功时返回文件流而不是 JSON，如妙记文字稿）。失败时飞书仍返回 JSON 错误，按普通接口处理。"""
+        params = {k: v for k, v in params.items() if v is not None}
+        token, refreshed, attempt = self.token(), False, 0
+        while True:
+            r = None
+            try:
+                r = self._http.get(path, params=params, headers={"Authorization": f"Bearer {token}"})
+            except httpx.HTTPError as e:
+                error = f"无法连接飞书：{type(e).__name__}: {e}"
+            if r is not None:
+                if r.status_code < 400 and "application/json" not in r.headers.get("content-type", ""):
+                    return r.content
+                body = _json(r)
+                code = body.get("code")
+                if code == 0 and r.status_code < 400:  # 成功但给的是 JSON：原样返回
+                    return r.content
+                if code in _TOKEN_INVALID and not refreshed:
+                    token, refreshed = self.token(refresh=True, stale=token), True
+                    continue
+                error = describe_error(code, body.get("msg", r.text[:200]), r.status_code)
+                retry = code in _RATE_LIMITED or r.status_code in {429} | _TRANSIENT_STATUS
+                if not retry or attempt >= self.retries:
+                    raise FeishuError(error, code, r.status_code)
+            elif attempt >= self.retries:  # 下载是读取，网络错误可以重试
+                raise FeishuError(error)
+            attempt += 1
+            self.sleep(_backoff(attempt, r))
+
     def paginate(self, method: str, path: str, *, params: dict | None = None, json: dict | None = None, limit: int = 100) -> list[dict]:
         """按 page_token 翻页，合并各页的 items。limit 是最多翻几页（防止异常数据导致死循环）。翻页都是读取，可重试。"""
         items: list[dict] = []
@@ -296,6 +325,9 @@ class FallbackClient:
 
     def paginate(self, method: str, path: str, **kwargs) -> list[dict]:
         return self._fallback(lambda c: c.paginate(method, path, **kwargs))
+
+    def download(self, path: str, **params) -> bytes:
+        return self._fallback(lambda c: c.download(path, **params))
 
     def close(self) -> None:
         self.app.close()  # 共用实例不会真的关闭；用户视图共用同一个连接池

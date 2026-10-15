@@ -1,4 +1,4 @@
-"""飞书工具：用户在对话里粘贴飞书文档或多维表格链接时，读取当前内容存为材料，之后用材料工具处理。"""
+"""飞书工具：用户在对话里粘贴飞书文档、多维表格或妙记链接时，读取当前内容存为材料，之后用材料工具处理。"""
 from collections.abc import Callable
 
 from langchain.tools import ToolRuntime
@@ -16,7 +16,7 @@ from .materials import RETRIEVAL_INFO
 def feishu_tools(store: MaterialStore, client_factory: Callable = default_client) -> list[BaseTool]:
     @tool
     def read_feishu_link(url: str, runtime: ToolRuntime[Context]) -> str:
-        """读取飞书新版文档、知识库页面或多维表格的当前内容，并存为材料。用户消息里有飞书链接（feishu.cn、larksuite.com）时调用，
+        """读取飞书新版文档、知识库页面、多维表格或妙记（会议录音的文字稿）的当前内容，并存为材料。用户消息里有飞书链接（feishu.cn、larksuite.com）时调用，
         url 填用户给的完整链接。内容较短时直接返回全文；较长时返回材料编号，再用 get_outline、read_material、summarize_materials 读取。"""
         try:
             with client_factory() as client:

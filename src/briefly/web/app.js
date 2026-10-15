@@ -83,7 +83,7 @@ async function loadMaterials() {
   renderPicked();
 }
 
-const FILE_TYPES = { feishu: "飞书文档", bitable: "多维表格" };
+const FILE_TYPES = { feishu: "飞书文档", bitable: "多维表格", minutes: "妙记" };
 
 function renderMaterialRows() {
   const rows = $("#material-rows");

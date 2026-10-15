@@ -12,12 +12,13 @@ from ..materials import Material, MaterialStore
 from .bitable import read_table
 from .client import FeishuClient, FeishuError
 from .docx import create_document, document_meta, document_url, read_document, share_with
-from .links import BITABLE, DOCX, WIKI, FeishuLink, parse_link
+from .links import BITABLE, DOCX, MINUTES, WIKI, FeishuLink, parse_link
+from .minutes import read_minutes
 
 # 周报的栏目行（【本周完成】）写成飞书文档的二级标题
 _SECTION = re.compile(r"(?m)^【([^】\n]+)】(.*)$")
 FEISHU_SOURCE = "feishu"  # 材料来源
-DOC_TYPE, TABLE_TYPE = "feishu", "bitable"  # 材料类型
+DOC_TYPE, TABLE_TYPE, MINUTES_TYPE = "feishu", "bitable", "minutes"  # 材料类型
 
 
 @dataclass
@@ -50,24 +51,30 @@ def fetch(client: FeishuClient, url: str) -> Fetched:
     if link.kind == DOCX:
         doc = read_document(client, link.token)
         return Fetched(DOCX, link.token, doc.title, doc.markdown, url, doc.revision_id, doc.warnings)
+    if link.kind == MINUTES:
+        m = read_minutes(client, link.token)
+        return Fetched(MINUTES, link.token, m.title, m.text, url, None, m.warnings)
     table = read_table(client, link.token, link.table_id, link.view_id)
     return Fetched(BITABLE, link.token, table.title, table.markdown, url, None, table.warnings)
 
 
 def import_link(client: FeishuClient, store: MaterialStore, url: str) -> tuple[Material, bool]:
-    """读取飞书文档或多维表格的当前内容，存为材料（内容相同的不重复存）。"""
+    """读取飞书文档、多维表格或妙记文字稿的当前内容，存为材料（内容相同的不重复存）。"""
     got = fetch(client, url)
-    if not got.markdown.strip():
-        raise ValueError(f"《{got.title}》没有可读取的文字内容")
+    if not got.markdown.strip() or (got.kind == MINUTES and got.warnings):
+        raise ValueError(got.warnings[0] if got.warnings else f"《{got.title}》没有可读取的文字内容")
+    is_markdown = got.kind != MINUTES  # 妙记文字稿是纯文本（说话人 + 时间戳），章节按规则识别
     report = {
-        "structure": "markdown",
+        "structure": "markdown" if is_markdown else "",
         "feishu": {"kind": got.kind, "token": got.token, "url": got.url, "revision_id": got.revision_id,
                    "fetched_at": datetime.now().isoformat(timespec="seconds")},
     }  # fmt: skip
     if got.warnings:
         report["warnings"] = got.warnings
-    kind = DOC_TYPE if got.kind == DOCX else TABLE_TYPE
-    return store.add_text(got.title, got.markdown, source=FEISHU_SOURCE, kind=kind, markdown=True, report=report)
+    kind = {DOCX: DOC_TYPE, BITABLE: TABLE_TYPE, MINUTES: MINUTES_TYPE}[got.kind]
+    return store.add_text(
+        got.title, got.markdown, source=FEISHU_SOURCE, kind=kind, markdown=True if is_markdown else None, report=report
+    )
 
 
 class FeishuExport(Base):

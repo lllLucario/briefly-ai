@@ -1,11 +1,11 @@
-"""识别飞书链接：文档（docx）、知识库页面（wiki）、多维表格（base）。"""
+"""识别飞书链接：文档（docx）、知识库页面（wiki）、多维表格（base）、妙记（minutes）。"""
 import re
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
 
-DOCX, WIKI, BITABLE = "docx", "wiki", "bitable"
+DOCX, WIKI, BITABLE, MINUTES = "docx", "wiki", "bitable", "minutes"
 _HOSTS = ("feishu.cn", "larksuite.com", "larkoffice.com", "feishu.net")
-_KINDS = {"docx": DOCX, "wiki": WIKI, "base": BITABLE}
+_KINDS = {"docx": DOCX, "wiki": WIKI, "base": BITABLE, "minutes": MINUTES}
 _UNSUPPORTED = {
     "docs": "旧版飞书文档（/docs/）不支持，请在飞书中升级为新版文档后再粘贴链接",
     "sheets": "飞书电子表格暂不支持，可以导出为 Excel 后上传",
@@ -17,7 +17,7 @@ _UNSUPPORTED = {
 
 @dataclass(frozen=True)
 class FeishuLink:
-    kind: str  # docx / wiki / bitable
+    kind: str  # docx / wiki / bitable / minutes
     token: str
     table_id: str = ""  # 多维表格：链接里的 ?table=
     view_id: str = ""  # 多维表格：链接里的 ?view=
@@ -54,7 +54,7 @@ def parse_link(url: str) -> FeishuLink:
                 view_id=(query.get("view") or [""])[0],
                 url=url,
             )
-    raise ValueError("无法识别的飞书链接：支持新版文档（/docx/）、知识库页面（/wiki/）和多维表格（/base/）")
+    raise ValueError("无法识别的飞书链接：支持新版文档（/docx/）、知识库页面（/wiki/）、多维表格（/base/）和妙记（/minutes/）")
 
 
 def find_links(text: str) -> list[str]:

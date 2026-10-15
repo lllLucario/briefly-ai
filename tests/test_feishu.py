@@ -649,3 +649,57 @@ def test_bitable_links_show_linked_titles():
     assert "| 需求澄清 | 决策链缺失 |" in whole.markdown and "| 决策链缺失 | 需求澄清 |" in whole.markdown
     assert "| 报价 |  |" in whole.markdown
     assert "| 需求澄清 | 关联 1 条记录 |" in single.markdown  # 只读一张表时不知道被关联记录的标题
+
+
+# ---- 妙记
+MINUTE = "obcnq3b9jl72l83w4f149w9c"
+TRANSCRIPT = "2026-10-15 10:00:00 CST|1分钟 56秒\n\n说话人 1 00:00:01\n支付回调部分按原计划十月二十日上线。\n\n说话人 2 00:00:15\n李四负责在十月十八日之前确认签名算法。\n"
+
+
+def minutes_routes(transcript=TRANSCRIPT):
+    import httpx
+
+    return {
+        ("GET", f"{API}/minutes/v1/minutes/{MINUTE}"): {"minute": {"token": MINUTE, "title": "支付回调周会", "duration": "116000", "create_time": "1791031017000", "url": f"https://abc.feishu.cn/minutes/{MINUTE}"}},
+        ("GET", f"{API}/minutes/v1/minutes/{MINUTE}/transcript"): httpx.Response(200, content=transcript.encode("utf-8"), headers={"content-type": "application/octet-stream"}),
+    }  # fmt: skip
+
+
+def test_parse_minutes_link():
+    link = parse_link(f"https://abc.feishu.cn/minutes/{MINUTE}?from=from_copylink")
+    assert (link.kind, link.token) == ("minutes", MINUTE)
+
+
+def test_import_minutes_transcript(store):
+    fake = FakeFeishu(minutes_routes())
+    with fake.client() as client:
+        m, created = import_link(client, store, f"https://abc.feishu.cn/minutes/{MINUTE}")
+    assert created and (m.title, m.file_type, m.source) == ("支付回调周会", "minutes", "feishu")
+    assert m.content.startswith("妙记《支付回调周会》（") and "时长 1 分 56 秒" in m.content.split("\n")[0]
+    assert "说话人 2 00:00:15\n李四负责" in m.content
+    req = fake.calls("GET", f"{API}/minutes/v1/minutes/{MINUTE}/transcript")[0]
+    assert (req.url.params["need_speaker"], req.url.params["file_format"]) == ("true", "txt")
+    assert m.parse_report["structure"] in ("rules", "none")  # 纯文本，不按 Markdown 解析
+
+
+def test_minutes_without_transcript_is_rejected(store):
+    fake = FakeFeishu(minutes_routes(transcript=""))
+    with fake.client() as client, pytest.raises(ValueError, match="转写"):
+        import_link(client, store, f"https://abc.feishu.cn/minutes/{MINUTE}")
+
+
+def test_minutes_permission_error_is_explained(store):
+    routes = minutes_routes()
+    routes[("GET", f"{API}/minutes/v1/minutes/{MINUTE}/transcript")] = feishu_error(99991672, "scope required: minutes:minutes.transcript:export")
+    with FakeFeishu(routes).client() as client, pytest.raises(FeishuError, match="缺少接口权限"):
+        import_link(client, store, f"https://abc.feishu.cn/minutes/{MINUTE}")
+
+
+def test_download_retries_rate_limit_and_refreshes_token():
+    import httpx
+
+    fake = FakeFeishu({("GET", f"{API}/f"): [feishu_error(99991663, "token invalid"), feishu_error(99991400, "rate"),
+                                              httpx.Response(200, content=b"abc", headers={"content-type": "text/plain"})]})  # fmt: skip
+    with fake.client() as client:
+        assert client.download(f"{API}/f") == b"abc"
+    assert fake.token_calls == 2
