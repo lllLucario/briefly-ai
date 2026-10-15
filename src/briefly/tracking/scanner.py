@@ -467,12 +467,13 @@ class Scanner:
         访问失败（网络、权限、文档被删）一律标记 unreachable，不判定为删除。最后编辑人来自云文档元数据，
         只能说明最后一次编辑的人，归属最多 INFERRED。
         """
-        from ..feishu import FeishuError, client_from_config
+        from ..feishu import FeishuError
+        from ..feishu.client import default_client
         from ..feishu.contact import user_name
         from ..feishu.docx import document_meta, document_revision, read_document
 
         try:
-            client = (self.feishu_factory or client_from_config)()
+            client = (self.feishu_factory or default_client)()
         except FeishuError as e:
             for source in sources:
                 self._source_error(source, str(e))

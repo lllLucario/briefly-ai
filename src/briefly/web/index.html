@@ -71,8 +71,17 @@
       <form id="feishu-form" class="stack feishu-only hidden">
         <input id="feishu-url" placeholder="粘贴飞书文档、知识库页面或多维表格链接">
         <button class="primary">读取飞书内容</button>
-        <small class="muted">需要先在文档右上角“…→ 更多 → 添加文档应用”把应用加进来</small>
+        <small class="muted">没连接飞书账号时，需要先在文档右上角“…→ 更多 → 添加文档应用”把应用加进来</small>
       </form>
+      <div id="feishu-drive" class="stack feishu-only hidden">
+        <h3>飞书云空间</h3>
+        <div id="feishu-account" class="stack"></div>
+        <div id="feishu-browser" class="stack hidden">
+          <form id="drive-search" class="row gap"><input id="drive-q" placeholder="搜索云文档、知识库（30 字以内）"><button class="ghost">搜索</button></form>
+          <div id="drive-path" class="crumbs"></div>
+          <ul id="drive-list" class="drive-list"></ul>
+        </div>
+      </div>
       <div id="material-msg" class="notice hidden"></div>
     </section>
     <section class="panel grow">

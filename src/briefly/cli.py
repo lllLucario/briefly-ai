@@ -5,7 +5,8 @@ from pathlib import Path
 from . import config
 from .agent import Agent, sqlite_checkpointer
 from .db import create_db_engine
-from .feishu import FeishuError, client_from_config, looks_like_feishu
+from .feishu import FeishuError, looks_like_feishu
+from .feishu.client import default_client
 from .feishu.service import import_link
 from .materials import MaterialStore
 from .skills import SKILLS
@@ -21,7 +22,7 @@ def add_file(agent: Agent, path: str | Path):
     """文件存入材料库（按内容去重，同一文件不重复解析入库）。飞书链接读取当前内容后存入。"""
     if looks_like_feishu(str(path)):
         try:
-            with client_from_config() as client:
+            with default_client() as client:
                 return import_link(client, agent.store, str(path))
         except FeishuError as e:
             raise ValueError(str(e)) from e

@@ -208,11 +208,13 @@ def create_app(
     agent_factory: Callable[[MaterialStore], Agent] = default_agent,
     tracking_scheduler: bool = False,
     feishu_factory: Callable[[], FeishuClient] = client_from_config,
+    feishu_tokens=None,
 ) -> FastAPI:
     """store、model_factory、agent_factory 可注入，便于测试用内存库和假模型。智能体在第一次用到时才创建。
 
     tracking_scheduler：是否在本进程内启动文件追踪的每日扫描线程（briefly-api 按配置开启，测试默认关闭）；
-    开启时若配置了飞书，提醒同时由飞书机器人发送。feishu_factory 创建飞书客户端，测试时注入模拟响应。
+    开启时若配置了飞书，提醒同时由飞书机器人发送。feishu_factory 创建应用身份的飞书客户端，
+    feishu_tokens 是飞书用户授权的令牌存储（默认 data/feishu_user_token.json），测试时注入模拟响应。
     """
 
     @asynccontextmanager
@@ -226,7 +228,7 @@ def create_app(
 
             register_channel()
             scheduler = DailyScheduler(
-                TrackingService(app.state.store.engine, app.state.store, feishu_factory=feishu_factory)
+                TrackingService(app.state.store.engine, app.state.store, feishu_factory=app.state.feishu_reader)
             )
             scheduler.start()
         app.state.scheduler = scheduler
@@ -430,8 +432,9 @@ def create_app(
     from .feishu.api import register as register_feishu
     from .tracking.api import register as register_tracking
 
-    register_tracking(app, model_factory, feishu_factory)  # 文件追踪：集合、扫描、定时、周报准备与审核
-    register_feishu(app, feishu_factory)  # 飞书：导入链接、周报写入飞书文档
+    register_feishu(app, feishu_factory, feishu_tokens)  # 飞书：用户授权、云空间、导入链接、周报写入飞书文档
+    # 文件追踪：集合、扫描、定时、周报准备与审核；飞书文档连接了账号时先用用户身份读取
+    register_tracking(app, model_factory, app.state.feishu_reader)
 
     @app.get("/", include_in_schema=False)
     def index():

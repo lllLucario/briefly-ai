@@ -11,7 +11,7 @@ from ..db import Base
 from ..materials import Material, MaterialStore
 from .bitable import read_table
 from .client import FeishuClient, FeishuError
-from .docx import create_document, document_url, read_document, share_with
+from .docx import create_document, document_meta, document_url, read_document, share_with
 from .links import BITABLE, DOCX, WIKI, FeishuLink, parse_link
 
 # 周报的栏目行（【本周完成】）写成飞书文档的二级标题
@@ -85,8 +85,11 @@ class FeishuExport(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
-def export_weekly(client: FeishuClient, weekly, report_id: int) -> FeishuExport:
-    """把周报（去掉出处标记的正文）写成一篇新的飞书文档，并把用户加为协作者。"""
+def export_weekly(client: FeishuClient, weekly, report_id: int, me: str = "") -> FeishuExport:
+    """把周报（去掉出处标记的正文）写成一篇新的飞书文档，并把用户加为协作者。
+
+    me：已连接飞书账号时用户的 open_id。文档以用户身份新建时用户就是所有者，不用再加协作者。
+    """
     report = weekly.get(report_id)
     _, text = weekly.export_markdown(report_id)
     text = _SECTION.sub(lambda m: f"## {m.group(1)}" + (f"\n\n{m.group(2).strip()}" if m.group(2).strip() else ""), text)
@@ -94,7 +97,10 @@ def export_weekly(client: FeishuClient, weekly, report_id: int) -> FeishuExport:
     title = f"{name + ' ' if name else ''}周报 {report.period_start:%m.%d}–{report.period_end:%m.%d}"
     document_id = create_document(client, title, text, config.FEISHU_FOLDER_TOKEN)
     shared, error = "", ""
-    if config.FEISHU_NOTIFY_USER:
+    owner = document_meta(client, document_id).get("owner_id", "") if me else ""
+    if me and owner == me:
+        shared = "你（文档所有者）"
+    elif config.FEISHU_NOTIFY_USER:
         try:
             share_with(client, document_id, config.FEISHU_NOTIFY_USER)
             shared = config.FEISHU_NOTIFY_USER

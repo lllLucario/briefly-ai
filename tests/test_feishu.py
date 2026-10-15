@@ -515,7 +515,9 @@ def api(store, monkeypatch):
 
 def test_api_status(api):
     client, _, _ = api
-    assert client.get("/feishu/status").json() == {"configured": True, "notify_user": True, "folder": False}
+    status = client.get("/feishu/status").json()
+    assert (status["configured"], status["notify_user"], status["folder"], status["user"]) == (True, True, False, None)
+    assert status["redirect_uri"].endswith("/feishu/oauth/callback")
 
 
 def test_api_import_link(api):

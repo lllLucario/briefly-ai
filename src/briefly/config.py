@@ -115,3 +115,13 @@ FEISHU_DOC_DOMAIN = os.getenv("FEISHU_DOC_DOMAIN", "")
 FEISHU_FOLDER_TOKEN = os.getenv("FEISHU_FOLDER_TOKEN", "")
 # 你自己的飞书账号：open_id（ou_ 开头）或飞书邮箱，普通邮箱（QQ、Gmail）飞书找不到。写入的文档自动加你为协作者、机器人提醒发给你
 FEISHU_NOTIFY_USER = os.getenv("FEISHU_NOTIFY_USER", "")
+# 用户授权（OAuth）：回调地址要与开发者后台“安全设置 → 重定向 URL”完全一致；留空用 http://HOST:PORT/feishu/oauth/callback
+FEISHU_REDIRECT_URI = os.getenv("FEISHU_REDIRECT_URI", "")
+# 申请的用户权限（空格分隔）；每一项都要先在后台“权限管理”里开通对应的用户身份权限
+FEISHU_OAUTH_SCOPES = os.getenv(
+    "FEISHU_OAUTH_SCOPES",
+    "offline_access drive:drive:readonly docx:document docx:document:readonly wiki:wiki:readonly "
+    "bitable:app:readonly search:docs:read",
+)
+# 用户令牌存放位置（本机文件，不进 Git）
+FEISHU_USER_TOKEN_FILE = os.getenv("FEISHU_USER_TOKEN_FILE", "data/feishu_user_token.json")

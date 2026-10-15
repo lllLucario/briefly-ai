@@ -6,13 +6,14 @@ from langchain_core.tools import BaseTool, tool
 
 from .. import config
 from ..context import Context
-from ..feishu import FeishuError, client_from_config
+from ..feishu import FeishuError
+from ..feishu.client import default_client
 from ..feishu.service import import_link
 from ..materials import MaterialStore, wrap_material
 from .materials import RETRIEVAL_INFO
 
 
-def feishu_tools(store: MaterialStore, client_factory: Callable = client_from_config) -> list[BaseTool]:
+def feishu_tools(store: MaterialStore, client_factory: Callable = default_client) -> list[BaseTool]:
     @tool
     def read_feishu_link(url: str, runtime: ToolRuntime[Context]) -> str:
         """读取飞书新版文档、知识库页面或多维表格的当前内容，并存为材料。用户消息里有飞书链接（feishu.cn、larksuite.com）时调用，

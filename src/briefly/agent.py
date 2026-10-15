@@ -38,8 +38,8 @@ from .output_check import InternalTermCheck
 from .skills import SKILLS, read_prompt
 from .tokens import TokenCounter
 from .tool_budget import ToolBudgetMiddleware, turn_key
-from .feishu import client_from_config
 from .feishu import configured as feishu_configured
+from .feishu.client import default_client
 from .tools import DEFAULT_TOOLS
 from .tools.context import context_tools
 from .tools.feishu import feishu_tools
@@ -133,7 +133,7 @@ class Agent:
         if store is not None:
             tools += material_tools(store, model, self.context_store)  # 完整提炼工具与智能体用同一个模型
             if feishu_factory is not None or feishu_configured():
-                tools += feishu_tools(store, feishu_factory or client_from_config)
+                tools += feishu_tools(store, feishu_factory or default_client)
         self.graph = create_agent(
             model,
             tools=tools,

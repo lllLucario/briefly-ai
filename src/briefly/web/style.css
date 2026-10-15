@@ -241,3 +241,14 @@ dialog h3 { margin-top: 0; }
   .detail-grid { grid-template-columns: 1fr; }
   .table th:nth-child(6), .table td:nth-child(6), .table th:nth-child(7), .table td:nth-child(7) { display: none; }
 }
+
+/* 飞书云空间浏览 */
+.crumbs { font-size: 13px; color: var(--muted); }
+.crumbs a { color: var(--accent); cursor: pointer; }
+.drive-list { list-style: none; margin: 0; padding: 0; max-height: 360px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; }
+.drive-list li { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.drive-list li:last-child { border-bottom: none; }
+.drive-list li .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drive-list li .kind { color: var(--muted); font-size: 12px; min-width: 4em; }
+.drive-list li.folder .name { color: var(--accent); cursor: pointer; }
+.drive-list li.disabled .name { color: var(--muted); }

@@ -136,14 +136,15 @@ class TrackingService:
     # ---- 追踪源
     def _feishu_path(self, raw: str) -> str:
         """飞书链接 → 追踪源路径 feishu://docx/<id>：知识库链接换成文档本身，并确认应用能读取。"""
-        from ..feishu import FeishuError, client_from_config, parse_link
+        from ..feishu import FeishuError, parse_link
+        from ..feishu.client import default_client
         from ..feishu.docx import document_revision
         from ..feishu.links import BITABLE
         from ..feishu.service import resolve
 
         link = parse_link(raw)
         try:
-            with (self.feishu_factory or client_from_config)() as client:
+            with (self.feishu_factory or default_client)() as client:
                 link = resolve(client, link)
                 if link.kind == BITABLE:
                     raise ValueError("多维表格暂不支持追踪，可以在“材料”页粘贴链接导入当前内容")

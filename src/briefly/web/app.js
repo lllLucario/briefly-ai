@@ -202,6 +202,108 @@ $("#paste-form").addEventListener("submit", async (e) => {
 async function loadFeishu() {
   try { state.feishu = await api("/feishu/status"); } catch (_) { state.feishu = null; }
   document.querySelectorAll(".feishu-only").forEach((el) => el.classList.toggle("hidden", !state.feishu?.configured));
+  renderFeishuAccount();
+}
+
+// 飞书账号（用户授权）：连接后可以浏览、搜索自己的云文档并导入，不用逐篇添加应用
+function renderFeishuAccount() {
+  const box = $("#feishu-account");
+  const user = state.feishu?.user;
+  $("#feishu-browser").classList.toggle("hidden", !user);
+  if (user) {
+    box.innerHTML = `<div class="row gap wrap"><span>已连接：<b>${escapeHtml(user.name || user.open_id)}</b></span>
+      <button class="ghost danger" id="feishu-logout">断开</button></div>`;
+    if (!state.drivePath) openDriveFolder("", "我的空间", true);
+  } else {
+    box.innerHTML = `<div class="row gap wrap"><a class="button primary" href="/feishu/oauth/login">连接飞书</a>
+      <small class="muted">用你的飞书账号授权后，可以浏览和搜索自己的云文档直接导入</small></div>
+      <small class="muted">首次使用需在开发者后台“安全设置 → 重定向 URL”登记：${escapeHtml(state.feishu?.redirect_uri || "")}</small>`;
+    state.drivePath = null;
+  }
+}
+
+$("#feishu-account").addEventListener("click", async (e) => {
+  if (e.target.id !== "feishu-logout") return;
+  if (!confirm("断开飞书账号？本机保存的授权会被删除，之后只能读取添加了应用的文档。")) return;
+  await api("/feishu/oauth/logout", { method: "POST" });
+  await loadFeishu();
+});
+
+async function openDriveFolder(token, name, reset = false) {
+  if (reset) state.drivePath = [];
+  const at = state.drivePath.findIndex((x) => x.token === token);
+  if (at >= 0) state.drivePath = state.drivePath.slice(0, at + 1);
+  else state.drivePath.push({ token, name });
+  renderDrivePath();
+  await showDriveItems(() => api(`/feishu/drive/files?folder=${encodeURIComponent(token)}`));
+}
+
+function renderDrivePath(label) {
+  $("#drive-path").innerHTML = label
+    ? `<a data-crumb="">我的空间</a> / ${escapeHtml(label)}`
+    : state.drivePath.map((x) => `<a data-crumb="${escapeHtml(x.token)}">${escapeHtml(x.name)}</a>`).join(" / ");
+}
+
+async function showDriveItems(load) {
+  const list = $("#drive-list");
+  list.innerHTML = `<li class="muted">加载中…</li>`;
+  try {
+    const items = await load();
+    list.innerHTML = items.length ? items.map((x) => `
+      <li class="${x.kind === "folder" ? "folder" : x.importable ? "" : "disabled"}">
+        <span class="kind">${escapeHtml(x.kind_name)}</span>
+        <span class="name" ${x.kind === "folder" ? `data-folder="${escapeHtml(x.token)}"` : ""} title="${escapeHtml(x.name)}">${escapeHtml(x.name)}</span>
+        <small class="muted">${x.modified ? fmtTime(new Date(x.modified * 1000).toISOString()) : escapeHtml(x.owner || "")}</small>
+        ${x.importable ? `<button class="ghost" data-import="${escapeHtml(x.url)}">导入</button>` : ""}
+      </li>`).join("") : `<li class="muted">没有内容</li>`;
+  } catch (err) {
+    list.innerHTML = `<li class="danger">${escapeHtml(err.message)}</li>`;
+    if (err.message.includes("连接飞书")) loadFeishu(); // 授权失效：回到“连接飞书”
+  }
+}
+
+$("#drive-path").addEventListener("click", (e) => {
+  const a = e.target.closest("[data-crumb]");
+  if (!a) return;
+  const token = a.dataset.crumb;
+  const item = (state.drivePath || []).find((x) => x.token === token);
+  if (token === "" && !item) openDriveFolder("", "我的空间", true);
+  else openDriveFolder(token, item?.name || "", false);
+});
+
+$("#drive-search").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const q = $("#drive-q").value.trim();
+  if (!q) return openDriveFolder("", "我的空间", true);
+  renderDrivePath(`搜索“${q}”`);
+  showDriveItems(() => api(`/feishu/drive/search?q=${encodeURIComponent(q)}`));
+});
+
+$("#drive-list").addEventListener("click", async (e) => {
+  const folder = e.target.closest("[data-folder]");
+  if (folder) return openDriveFolder(folder.dataset.folder, folder.textContent.trim());
+  const btn = e.target.closest("[data-import]");
+  if (!btn) return;
+  const msg = $("#material-msg");
+  btn.disabled = true;
+  showNotice(msg, "正在读取飞书内容…");
+  try {
+    const r = await api("/materials/feishu", { method: "POST", json: { url: btn.dataset.import } });
+    const warn = r.material.warnings.length ? `<br>${r.material.warnings.map(escapeHtml).join("<br>")}` : "";
+    showNotice(msg, `${r.created ? "已导入" : "内容没有变化，材料已存在"}：${escapeHtml(r.material.title)}（${r.material.char_count} 字）${warn}`);
+    await loadMaterials();
+  } catch (err) { showNotice(msg, escapeHtml(err.message), "error"); }
+  finally { btn.disabled = false; }
+});
+
+// 授权回调后回到本页：显示结果并切到“材料”页
+function handleFeishuRedirect() {
+  const params = new URLSearchParams(location.search);
+  if (!params.has("feishu") && !params.has("feishu_error")) return;
+  document.querySelector('.tabs button[data-tab="materials"]').click();
+  if (params.has("feishu_error")) showNotice($("#material-msg"), `连接飞书失败：${escapeHtml(params.get("feishu_error"))}`, "error");
+  else showNotice($("#material-msg"), `已连接飞书账号：${escapeHtml(params.get("name") || "")}`);
+  history.replaceState(null, "", "/");
 }
 
 $("#feishu-form").addEventListener("submit", async (e) => {
@@ -651,6 +753,7 @@ $("#inbox").addEventListener("click", async (e) => {
 (async function init() {
   try {
     await Promise.all([loadSkills(), loadMaterials(), loadSessions(), loadInbox(), loadFeishu()]);
+    handleFeishuRedirect();
     setInterval(loadInbox, 60000);
   } catch (err) {
     showNotice($("#context-box"), `连接后端失败：${escapeHtml(err.message)}`, "error");

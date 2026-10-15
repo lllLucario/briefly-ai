@@ -3,6 +3,7 @@
 只封装用到的接口，不引入官方 SDK：接口少，用 httpx 写清楚、测试时用 httpx.MockTransport 模拟响应。
 所有飞书调用都经过这里；业务模块（docx、bitable、messages、contact）只拼路径和参数，工具和追踪模块只调用业务模块。
 """
+import copy
 import logging
 import random
 import threading
@@ -16,7 +17,9 @@ from .. import config
 log = logging.getLogger(__name__)
 
 # 令牌失效（过期、被重置）：刷新令牌后重试一次
-_TOKEN_INVALID = {99991661, 99991663, 99991664, 99991665}
+_TOKEN_INVALID = {99991661, 99991663, 99991664, 99991665, 99991668, 99991677}  # 后两个是 user_access_token 失效 / 过期
+# 用户身份没权限、但应用身份可能有（文档分享给了应用）：退回应用身份重试
+_NO_PERMISSION = {1770032, 91403, 131006, 1063002, 99991672, 99991679}
 # 限频：应用级 400 + 99991400；单篇文档并发编辑 HTTP 429
 _RATE_LIMITED = {99991400}
 _TRANSIENT_STATUS = {500, 502, 503, 504}
@@ -89,6 +92,14 @@ class FeishuClient:
         self._token = ""
         self._expires_at = 0.0
         self._lock = threading.Lock()
+        self._user_tokens = None  # as_user 返回的视图里是 UserTokens
+        self.user_mode = False
+
+    def as_user(self, tokens) -> "FeishuClient":
+        """以用户身份调用的视图：共用连接池和重试逻辑，只换令牌来源。关闭视图不会关闭连接池。"""
+        view = copy.copy(self)
+        view._user_tokens, view.user_mode, view.shared = tokens, True, True
+        return view
 
     def close(self, force: bool = False) -> None:
         """共用实例只在 force 时关闭（进程退出时由 close_shared 调用）。"""
@@ -108,6 +119,8 @@ class FeishuClient:
         stale：调用方刚用过、被飞书判定失效的令牌。多个线程同时遇到失效时只有第一个真的去刷新，
         其余发现令牌已经换过，直接用新的。
         """
+        if self._user_tokens is not None:  # 用户身份：令牌来自 OAuth 授权
+            return self._user_tokens.access_token(refresh=refresh, stale=stale)
         with self._lock:
             if refresh and stale and self._token != stale:
                 return self._token
@@ -246,6 +259,66 @@ def client_from_config() -> FeishuClient:
             _shared.clear()
             _shared[key] = client
         return client
+
+
+class FallbackClient:
+    """先以用户身份调用，用户没权限（或授权失效）时退回应用身份。接口与 FeishuClient 相同。
+
+    用于“读取”和“以用户身份新建文档”：用户自己能看到的文档不用再逐篇添加应用；用户看不到、但分享给了应用的，照常可读。
+    """
+
+    def __init__(self, user: FeishuClient, app: FeishuClient) -> None:
+        self.user, self.app = user, app
+        self.sleep = app.sleep
+        self.user_mode = True  # 写入时以用户身份为准（新建的文档归用户所有）
+
+    def _fallback(self, call: Callable[[FeishuClient], dict | list]):
+        from .oauth import FeishuNotAuthorized
+
+        try:
+            return call(self.user)
+        except FeishuNotAuthorized:
+            self.user_mode = False
+        except FeishuError as e:
+            if e.code not in _NO_PERMISSION and e.status != 403:
+                raise
+            log.info("用户身份没有权限（%s），改用应用身份", e.code or e.status)
+        return call(self.app)
+
+    def request(self, method: str, path: str, **kwargs) -> dict:
+        return self._fallback(lambda c: c.request(method, path, **kwargs))
+
+    def get(self, path: str, **params) -> dict:
+        return self._fallback(lambda c: c.get(path, **params))
+
+    def post(self, path: str, json: dict, *, idempotent: bool = False, **params) -> dict:
+        return self._fallback(lambda c: c.post(path, json, idempotent=idempotent, **params))
+
+    def paginate(self, method: str, path: str, **kwargs) -> list[dict]:
+        return self._fallback(lambda c: c.paginate(method, path, **kwargs))
+
+    def close(self) -> None:
+        self.app.close()  # 共用实例不会真的关闭；用户视图共用同一个连接池
+
+    def __enter__(self) -> "FallbackClient":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+def with_user(app: FeishuClient, tokens) -> FeishuClient | FallbackClient:
+    """连接了飞书账号（tokens 有效）时返回“先用户、后应用”的客户端，否则原样返回应用身份的客户端。"""
+    if tokens is None or tokens.connected() is None:
+        return app
+    return FallbackClient(app.as_user(tokens), app)
+
+
+def default_client() -> FeishuClient | FallbackClient:
+    """业务代码默认用的客户端（命令行、追踪、对话工具）：连接了飞书账号时先用用户身份，否则只用应用身份。"""
+    from .oauth import UserTokens
+
+    return with_user(client_from_config(), UserTokens())
 
 
 def close_shared() -> None:
