@@ -20,6 +20,8 @@ INTERNAL_PATTERNS = [
     re.compile(r"(?i)\bmap[\s-]?reduce\b"),
     re.compile(r"\bmaterial_id\b|\btool_call\b|\bsummarize_materials\b|\bread_material\b|\bget_outline\b"),
     re.compile(r"〔\d+-\d+(?:\s*[、,，]\s*\d+-\d+)*〕"),  # 程序内部的出处标记〔材料号-块号〕
+    # 评论程序标注的出处（“文档自身出处标注不一致”）：原文没有“出处”二字时，说的就是工具结果里的〔〕（2026-10-15 实测）
+    re.compile(r"出处(?:标注|标记)"),
 ]
 
 RETRY_HINT = (

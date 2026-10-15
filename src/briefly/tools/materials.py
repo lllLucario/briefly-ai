@@ -201,11 +201,14 @@ def material_tools(
             for material_id in material_ids:
                 _check_in_scope(material_id, scope)
             scope = material_ids
-        sources, labels = [], {}
+        sources, labels, outlines, titles = [], {}, {}, {}
         for m in store.list_materials(scope):
+            titles[m.id] = m.title
+            outlines[m.id] = store.sections(m.id)
             for c in store.chunks(m.id):
-                sources.append(Source(m.id, c.index, m.title, c.content))
-                section = c.section.rsplit(" > ", 1)[-1] if c.section else ""  # 块起点所在的章节（出处粒度到块）
+                # 传入块在全文中的起点：要点的原文位置才能对应到章节（不传时只知道块内位置）
+                sources.append(Source(m.id, c.index, m.title, c.content, c.start))
+                section = c.section.rsplit(" > ", 1)[-1] if c.section else ""  # 块起点所在的章节：定位不到要点时的退路
                 labels[f"{m.id}-{c.index}"] = f"《{m.title}》" + (section if section != m.title else "")
         if not sources:
             return "当前没有可用的材料。", {}
@@ -226,6 +229,9 @@ def material_tools(
             "dropped": extraction.dropped,
             "items": [asdict(i) for i in extraction.items],  # 机器可读的出处：source 为“材料号-块号”
         }
+        # 出处按要点所在章节标：一块常跨两个章节，按块起点标会把后一章的要点标成前一章，
+        # 模型读到“讲约束规则的要点标在角色设定下”会当成文档自己标错了（2026-10-15 实测）
+        item_labels = [_item_label(i, labels, outlines, titles) for i in extraction.items]
         if not extraction.items:
             return f"没有提取到{'与“' + focus + '”相关的' if focus else ''}内容（{'；'.join(notes)}）。", artifact
         request = f"关注点：{focus or '无，整理全部要点'}"
@@ -246,24 +252,63 @@ def material_tools(
         if unresolved:  # 看不出哪个为准的不同说法：原样列出，回答里要保留，不要替用户选定
             front.append("不同材料说法不一致（看不出哪个为准，回答中请同时写出并说明不一致）：\n" + "\n".join(
                 f"- {c.subject} 的{ATTRIBUTES[c.attribute]}："
-                + " / ".join(f"{v}〔{labels.get(extraction.items[n - 1].source, '')}〕" for n, v in zip(c.numbers, c.values))
+                + " / ".join(f"{v}〔{item_labels[n - 1]}〕" for n, v in zip(c.numbers, c.values))
                 for c in unresolved
             ))
         artifact["conflicts"] = [c.to_dict() for c in conflicts]
         if digest.uncovered:  # 汇总时漏写的要点原样附上，保证交给你的内容是完整的
-            front.append("汇总时未写入的要点：\n" + "\n".join(f"- {i.point}〔{labels.get(i.source, '')}〕" for i in digest.uncovered))
-        body = "\n\n".join([*front, ("要点清单：\n" if front else "") + _readable_sources(digest.text, labels)])
+            index = {id(i): n for n, i in enumerate(extraction.items)}
+            front.append("汇总时未写入的要点：\n" + "\n".join(f"- {i.point}〔{item_labels[index[id(i)]]}〕" for i in digest.uncovered))
+        text = _item_sources(digest.raw, item_labels) if digest.raw else _readable_sources(digest.text, labels)
+        body = "\n\n".join([*front, ("要点清单：\n" if front else "") + text])
         if digest.invalid_refs:
             notes.append(f"汇总引用了不存在的要点编号 {digest.invalid_refs}，相关内容请谨慎使用")
         if not digest.coverage_checked:
             notes.append("汇总没有标注要点编号，未能核对是否漏写")
-        header = f"【材料提炼结果：程序已读完全部内容并核对原文，〔〕内为出处（{RETRIEVAL_INFO}：{'；'.join(notes)}）】"
+        header = (
+            f"【材料提炼结果：程序已读完全部内容并核对原文。〔〕内是程序标注的出处（要点来自哪份材料的哪一章），"
+            f"不是原文内容，不要评论或转述它（{RETRIEVAL_INFO}：{'；'.join(notes)}）】"
+        )
         artifact["uncovered"] = [asdict(i) for i in digest.uncovered]
         content = wrap_material(header, body)
         artifact["content_full"] = content  # 截断前的完整输出（诊断用：区分 Map-Reduce 损失与工具预算截断损失）
         return content, artifact
 
     return [list_materials, get_outline, read_material, search_materials, summarize_materials]
+
+
+def _item_label(item, labels: dict[str, str], outlines: dict, titles: dict[int, str]) -> str:
+    """要点所在的最深一级章节；原文位置不精确（-1）或不在任何章节里时，用块起点所在的章节。"""
+    fallback = labels.get(item.source, "")
+    try:
+        material_id = int(item.source.split("-", 1)[0])
+    except ValueError:
+        return fallback
+    if item.span_start < 0:
+        return fallback
+    hits = [s for s in outlines.get(material_id, []) if s.start <= item.span_start < s.end]
+    if not hits:
+        return fallback
+    section = max(hits, key=lambda s: s.level).title
+    title = titles.get(material_id, "")
+    return f"《{title}》" + (section if section != title else "")
+
+
+def _item_sources(raw: str, item_labels: list[str]) -> str:
+    """合成结果里的编号〔#3〕〔#3、#5〕换成各要点自己的出处〔《标题》章节〕（同一出处只写一次）。"""
+    from ..summarize import resolve_refs
+
+    keys = [f"{n}-0" for n in range(1, len(item_labels) + 1)]  # 借 resolve_refs 的编号解析，先换成临时键
+    placeholder = [_Ref(k) for k in keys]
+    text, _, _ = resolve_refs(raw, placeholder)
+    return _readable_sources(text, dict(zip(keys, item_labels)))
+
+
+class _Ref:
+    """resolve_refs 只读工作项的 source 字段。"""
+
+    def __init__(self, source: str) -> None:
+        self.source = source
 
 
 def _readable_sources(text: str, labels: dict[str, str]) -> str:

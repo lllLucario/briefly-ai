@@ -28,6 +28,7 @@ def store():
         "根据 chunk 3 的内容",
         "支付回调耗时下降〔1-3〕",
         "我用 summarize_materials 读取了全文",
+        "材料个别处的出处标注不一致，不影响内容",  # 把工具结果里的〔〕当成文档内容来评论
     ],
 )
 def test_internal_terms_are_detected(text):
@@ -38,6 +39,7 @@ def test_terms_found_in_original_are_not_leaks():
     assert find_internal_terms("村里第 3 块地种了玉米", ["村里第3块地种了玉米，第4块地休耕"]) == []
     assert find_internal_terms("支付回调耗时降到 200 毫秒，下周三提测") == []
     assert find_internal_terms("第 3 段写了背景，第 2 页是附录") == []  # 段、页是用户看得懂的位置
+    assert find_internal_terms("文中要求出处标注到页码", ["引用必须写出处标注到页码"]) == []  # 原文本身在讲出处标注
 
 
 def scripted(*answers):
@@ -114,7 +116,7 @@ def test_material_tools_do_not_expose_internal_numbers(store):
     message = next(x for x in agent.history if isinstance(x, ToolMessage))
 
     assert find_internal_terms(message.content) == []  # 给模型看的文字里没有块号
-    assert "〔《周报》〕" in message.content  # 章节名与标题相同时不重复
+    assert "〔《周报》周三〕" in message.content  # 出处是要点所在的章节（块从“周报”开头，但要点在“周三”下）
     assert message.artifact["items"][0]["source"] == f"{m.id}-1"  # 机器可读的出处保留在 artifact
     assert message.artifact["total"] == 1 and message.artifact["failed"] == []
 

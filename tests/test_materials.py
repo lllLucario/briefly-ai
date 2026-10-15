@@ -363,7 +363,7 @@ def run_summarize(
 def test_summarize_materials_returns_verified_digest(store):
     store.add_text("周报", "# 周三\n支付回调耗时降到 200 毫秒。")
     result, model = run_summarize(store, {"focus": "支付"})
-    assert "材料已全部处理" in result and "〔〕内为出处" in result
+    assert "材料已全部处理" in result and "〔〕内是程序标注的出处" in result and "不要评论" in result
     assert "【材料开始】\n- 支付回调耗时下降〔《周报》周三〕\n【材料结束】" in result  # 出处用标题和章节，不用块号
     extract_call = next(c for c in model.calls if "你负责从一段材料中提取要点" in c[0].content)
     assert "简述（用户说明的重点，不是筛选条件）：支付" in extract_call[-1].content
@@ -473,3 +473,19 @@ def test_search_then_read_then_answer(store, monkeypatch):
     assert reply == "本周修复了支付缺陷。"
     assert "命中 1 次" in model.calls[1][-1].content
     assert "周三：修复支付缺陷" in model.calls[2][-1].content
+
+
+def test_summarize_labels_each_point_with_its_own_section(store):
+    """一块跨两个章节时，后一章的要点不能标成前一章（模型会以为文档自己标错了出处）。"""
+    store.add_text("规范", "# 规范\n## 2.1 角色设定\n角色要写清楚职责。\n## 2.2 约束规则\n规则要分条列出。")
+
+    def extract(messages):
+        return structured("Extraction", items=[
+            {"category": "other", "point": "角色写清职责", "quote": "角色要写清楚职责。"},
+            {"category": "other", "point": "规则分条", "quote": "规则要分条列出。"},
+        ])  # fmt: skip
+
+    result, _ = run_summarize(store, {}, extract=extract, digest="- 角色〔#1〕\n- 规则〔#2〕\n- 合并〔#1、#2〕")
+    assert "- 角色〔《规范》2.1 角色设定〕" in result
+    assert "- 规则〔《规范》2.2 约束规则〕" in result  # 同一块，但要点在 2.2
+    assert "- 合并〔《规范》2.1 角色设定〕〔《规范》2.2 约束规则〕" in result

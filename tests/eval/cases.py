@@ -45,6 +45,25 @@ def sections(*heads: str) -> Check:
     return Check(f"格式 {''.join(heads)}", lambda out, *_: all(h in out for h in heads))
 
 
+def section_of(out: str, head: str) -> str:
+    """输出中某一栏（如【决议】）的内容：从栏目标题到下一个【……】标题。"""
+    # 只认行首的栏目标题：正文里可能写着“见【行动项】”
+    m = re.search(rf"(?m)^\s*{re.escape(head)}", out)
+    if not m:
+        return ""
+    rest = out[m.end():]
+    end = re.search(r"(?m)^\s*【", rest)
+    return rest if not end else rest[:end.start()]
+
+
+def reply_section_lacks(head: str, *parts: str) -> Check:
+    return Check(f"{head}不含 {'、'.join(parts)}", lambda out, *_: not any(_flat(p) in _flat(section_of(out, head)) for p in parts))
+
+
+def reply_section_has(head: str, *parts: str) -> Check:
+    return Check(f"{head}包含 {'、'.join(parts)}", lambda out, *_: all(_flat(p) in _flat(section_of(out, head)) for p in parts))
+
+
 def has_table() -> Check:
     return Check("有表格", lambda out, *_: bool(re.search(r"(?m)^\|.*\|\s*$", out)))
 
@@ -295,6 +314,16 @@ CASES: list[Case] = [
         turns=[Turn("", materials=("meeting.txt",), checks=[
             MINUTES, has_table(), has_all("李强", "赵琳", "王敏"), has_any("10月20日", "10-20", "10 月 20 日"),
             has_any("10月18日", "10-18", "10 月 18 日"),
+            reply_section_lacks("【决议】", "压测报告", "工作量评估", "找运维"),  # 分工是行动项，不是决议
+        ])],
+    ),
+    Case(
+        "S6", "五项能力", "会议纪要：妙记转写稿，决定与分工分开",
+        turns=[Turn("整理成会议纪要", materials=("meeting_transcript.txt",), skill="minutes", checks=[
+            MINUTES, has_table(), reply_section_has("【决议】", "27"),
+            reply_section_lacks("【决议】", "通知业务方", "回归测试", "确认签名算法"),  # 2026-10-15 妙记联调 1/2 把分工写进了决议
+            reply_section_has("【行动项】", "李四", "张三", "王五", "签名算法", "回归测试", "通知业务方"),
+            no_new_numbers(fixture("meeting_transcript.txt")),
         ])],
     ),
     Case(
@@ -373,6 +402,13 @@ CASES: list[Case] = [
         "L1", "长材料", "按需读取：只问其中一节",
         turns=[Turn("群聊场景有哪些实现方案？各自推荐吗？", materials=("@files/1-3.pdf",), checks=[
             has_all("doubao-1-5-pro-32k-character-0228"), has_any("不推荐"), no_internal_terms(),
+        ])],
+        requires=("files/1-3.pdf",),
+    ),
+    Case(
+        "L3", "长材料", "完整提炼后按章节回答：不评论程序标注的出处",
+        turns=[Turn("这篇讲了什么？列出主要章节和最重要的几条内容", materials=("@files/1-3.pdf",), checks=[
+            lacks("出处标注", "出处标记", "标注不一致", "出处不一致"), no_internal_terms(),
         ])],
         requires=("files/1-3.pdf",),
     ),
