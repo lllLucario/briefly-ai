@@ -675,7 +675,7 @@ def test_import_minutes_transcript(store):
     with fake.client() as client:
         m, created = import_link(client, store, f"https://abc.feishu.cn/minutes/{MINUTE}")
     assert created and (m.title, m.file_type, m.source) == ("支付回调周会", "minutes", "feishu")
-    assert m.content.startswith("妙记《支付回调周会》（") and "时长 1 分 56 秒" in m.content.split("\n")[0]
+    assert m.content.split("\n")[0] == "妙记《支付回调周会》（时长 1 分 56 秒）"  # 不写录制时间，避免和文字稿的北京时间看起来矛盾
     assert "说话人 2 00:00:15\n李四负责" in m.content
     req = fake.calls("GET", f"{API}/minutes/v1/minutes/{MINUTE}/transcript")[0]
     assert (req.url.params["need_speaker"], req.url.params["file_format"]) == ("true", "txt")
