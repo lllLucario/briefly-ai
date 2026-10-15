@@ -307,6 +307,7 @@ def test_create_document_strips_readonly_fields_and_batches():
         ({"text": "设计稿", "link": "https://x.cn"}, 15, "[设计稿](https://x.cn)"),
         ({"type": 1, "value": [{"text": "引用值", "type": "text"}]}, 19, "引用值"),
         ({"link_record_ids": ["r1", "r2"]}, 18, "关联 2 条记录"),
+        ({"link_record_ids": None}, 21, ""),  # 实测：没有关联时是 null
         (None, 1, ""),
     ],
 )
@@ -623,3 +624,26 @@ def test_export_explains_unknown_collaborator(store, monkeypatch):
         export = export_weekly(client, weekly, report_id)
     assert export.document_id == DOC and not export.shared_with
     assert "open_id" in export.share_error and "普通邮箱" in export.share_error
+
+
+def test_bitable_links_show_linked_titles():
+    base = f"{API}/bitable/v1/apps/bascnAbCdEfGhIjKl"
+    routes = {
+        ("GET", base): {"app": {"name": "客户跟进"}},
+        ("GET", f"{base}/tables"): {"items": [{"table_id": "tA", "name": "跟进"}, {"table_id": "tB", "name": "问题"}], "has_more": False},
+        ("GET", f"{base}/tables/tA/fields"): {"items": [{"field_name": "主题", "type": 1, "is_primary": True}, {"field_name": "问题", "type": 21}], "has_more": False},
+        ("POST", f"{base}/tables/tA/records/search"): {"items": [
+            {"record_id": "ra", "fields": {"主题": [{"text": "需求澄清", "type": "text"}], "问题": {"link_record_ids": ["rb"]}}},
+            {"record_id": "ra2", "fields": {"主题": [{"text": "报价", "type": "text"}], "问题": {"link_record_ids": None}}},
+        ], "has_more": False},
+        ("GET", f"{base}/tables/tB/fields"): {"items": [{"field_name": "标题", "type": 1, "is_primary": True}, {"field_name": "关联跟进", "type": 21}], "has_more": False},
+        ("POST", f"{base}/tables/tB/records/search"): {"items": [
+            {"record_id": "rb", "fields": {"标题": "决策链缺失", "关联跟进": {"link_record_ids": ["ra"]}}},
+        ], "has_more": False},
+    }  # fmt: skip
+    with FakeFeishu(routes).client() as client:
+        whole = read_table(client, "bascnAbCdEfGhIjKl")
+        single = read_table(client, "bascnAbCdEfGhIjKl", "tA")
+    assert "| 需求澄清 | 决策链缺失 |" in whole.markdown and "| 决策链缺失 | 需求澄清 |" in whole.markdown
+    assert "| 报价 |  |" in whole.markdown
+    assert "| 需求澄清 | 关联 1 条记录 |" in single.markdown  # 只读一张表时不知道被关联记录的标题
