@@ -74,6 +74,9 @@ def _connect() -> smtplib.SMTP:
 def _describe(e: Exception) -> str:
     if isinstance(e, smtplib.SMTPAuthenticationError):
         return "邮箱登录失败：请检查 SMTP_USER 和 SMTP_PASSWORD（QQ、163 等邮箱要填“授权码”，不是登录密码）"
+    if isinstance(e, smtplib.SMTPDataError) and e.smtp_code == 554:
+        # 163 等邮箱的反垃圾检查：内容短、像测试的邮件常被退回（554 DT:SPM）
+        return f"邮件被服务器当作垃圾邮件拒收（554）：可以先发给自己的邮箱，或把收件人加进通讯录后再试（{e.smtp_error!r}）"
     if isinstance(e, smtplib.SMTPRecipientsRefused):
         return f"收件人被邮件服务器拒绝：{', '.join(e.recipients)}"
     if isinstance(e, (OSError, smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected)):

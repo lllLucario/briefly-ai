@@ -134,3 +134,9 @@ def test_api(monkeypatch):
         assert client.post("/weekly-reports/999/email", json={"to": "a@b.com"}).status_code == 404
     assert len(smtp.sent) == 1
     engine.dispose()
+
+
+def test_spam_rejection_is_explained(weekly):
+    smtp = FakeSMTP(fail_send=smtplib.SMTPDataError(554, b"DT:SPM 163 smtp14"))
+    record = mail.send_weekly(weekly, done_report(weekly), "mentor@example.com", connect=smtp)
+    assert record.status == mail.FAILED and "垃圾邮件" in record.error and "DT:SPM" in record.error
