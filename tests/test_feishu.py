@@ -703,3 +703,17 @@ def test_download_retries_rate_limit_and_refreshes_token():
     with fake.client() as client:
         assert client.download(f"{API}/f") == b"abc"
     assert fake.token_calls == 2
+
+
+def test_zero_quota_is_not_retried():
+    import httpx
+
+    waits = []
+    zero = httpx.Response(400, json={"code": 99991400, "msg": "request trigger frequency limit"},
+                          headers={"x-ogw-ratelimit-limit": "0", "x-ogw-ratelimit-reset": "1"})  # 实测：飞书 OCR 对个人版
+    fake = FakeFeishu({("POST", f"{API}/ocr"): zero})
+    client = FeishuClient("a", "b", transport=fake.transport, sleep=waits.append)
+    with pytest.raises(FeishuError, match="额度为 0"):
+        client.post(f"{API}/ocr", {}, idempotent=True)
+    assert len(fake.requests) == 1 and waits == []
+    client.close()

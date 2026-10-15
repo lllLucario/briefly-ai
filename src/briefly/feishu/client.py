@@ -58,7 +58,9 @@ class FeishuNotConfigured(FeishuError):
     """没有配置应用凭证。"""
 
 
-def describe_error(code: int | None, msg: str, status: int | None = None) -> str:
+def describe_error(code: int | None, msg: str, status: int | None = None, no_quota: bool = False) -> str:
+    if no_quota:
+        return f"这个飞书接口对当前应用的调用额度为 0：账号版本可能不支持，或需要向飞书申请额度（飞书接口错误 {code}：{msg}）"
     hint = _HINTS.get(code or 0) or _HTTP_HINTS.get(status or 0)
     raw = f"飞书接口错误 {code}：{msg}" if code else f"飞书接口错误（HTTP {status}）：{msg}"
     return f"{hint}（{raw}）" if hint else raw
@@ -169,9 +171,9 @@ class FeishuClient:
                 code = body.get("code")
                 if code == 0 and r.status_code < 400:
                     return body
-                limited = code in _RATE_LIMITED or r.status_code == 429
+                limited = (code in _RATE_LIMITED or r.status_code == 429) and not _no_quota(r)
                 retry = limited or (idempotent and r.status_code in _TRANSIENT_STATUS)
-                error = describe_error(code, body.get("msg", r.text[:200]), r.status_code)
+                error = describe_error(code, body.get("msg", r.text[:200]), r.status_code, _no_quota(r))
                 if not retry or attempt >= self.retries:
                     raise FeishuError(error, code, r.status_code)
             elif not retry or attempt >= self.retries:
@@ -233,8 +235,8 @@ class FeishuClient:
                 if code in _TOKEN_INVALID and not refreshed:
                     token, refreshed = self.token(refresh=True, stale=token), True
                     continue
-                error = describe_error(code, body.get("msg", r.text[:200]), r.status_code)
-                retry = code in _RATE_LIMITED or r.status_code in {429} | _TRANSIENT_STATUS
+                error = describe_error(code, body.get("msg", r.text[:200]), r.status_code, _no_quota(r))
+                retry = (code in _RATE_LIMITED or r.status_code in {429} | _TRANSIENT_STATUS) and not _no_quota(r)
                 if not retry or attempt >= self.retries:
                     raise FeishuError(error, code, r.status_code)
             elif attempt >= self.retries:  # 下载是读取，网络错误可以重试
@@ -253,6 +255,12 @@ class FeishuClient:
                 return items
             params["page_token"] = data["page_token"]
         raise FeishuError(f"分页超过 {limit} 页，内容过多，未读取完")
+
+
+def _no_quota(r: httpx.Response) -> bool:
+    """限流响应里额度为 0（x-ogw-ratelimit-limit: 0）：不是调用太频繁，而是不让调用，重试没有意义。
+    2026-10-15 实测：飞书 OCR 对个人版账号就是这样。"""
+    return r.headers.get("x-ogw-ratelimit-limit") == "0"
 
 
 def _backoff(attempt: int, r: httpx.Response | None) -> float:
