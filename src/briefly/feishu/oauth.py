@@ -1,6 +1,6 @@
 """飞书用户授权（OAuth 2.0 授权码 + PKCE）：以用户本人身份访问云空间，不用逐篇“添加文档应用”。
 
-流程：网页 /feishu/oauth/login → 飞书授权页 → /feishu/oauth/callback?code&state → v3 令牌端点换 user_access_token
+流程：网页 /feishu/oauth/login → 飞书授权页 → /feishu/oauth/callback?code&state → v2 令牌端点换 user_access_token（PKCE 暂时只能搭配 v2，见 TOKEN_URL）
 （带 refresh_token，需要 offline_access）→ 存到本地 JSON 文件（单用户、本机程序，data/ 不进 Git）。
 access_token 过期前 5 分钟用 refresh_token 刷新；refresh_token 失效（过期、被撤销）时清掉授权，提示重新连接。
 """
@@ -23,7 +23,10 @@ from .client import FeishuError
 log = logging.getLogger(__name__)
 
 AUTHORIZE_URL = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
-TOKEN_URL = "https://accounts.feishu.cn/oauth/v3/token"
+# 令牌端点用 v2：授权页文档写明“使用 PKCE 时暂时搭配 v2 换取 Token，后续将尽快支持最新的 Token 端点”。
+# 2026-10-15 实测用 v3（accounts.feishu.cn/oauth/v3/token）换令牌报 20049 PKCE code challenge failed。
+# 飞书支持后可换回 v3（请求和响应结构相同，v3 建议表单格式）。
+TOKEN_URL = "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
 STATE_TTL = 600  # 授权页停留超过 10 分钟，state 失效
 
 
@@ -82,10 +85,10 @@ def fetch_user_info(client, access_token: str) -> dict:
 
 # ---- 令牌
 def _token_request(http: httpx.Client, form: dict) -> dict:
-    """调用 v3 令牌端点（表单格式，client_secret 放在请求体里）。返回字段直接在顶层，不在 data 里。"""
+    """调用令牌端点（v2 要求 JSON，client_secret 放在请求体里）。返回字段直接在顶层，不在 data 里。"""
     form = {"client_id": config.FEISHU_APP_ID, "client_secret": config.FEISHU_APP_SECRET, **form}
     try:
-        r = http.post(TOKEN_URL, data=form)
+        r = http.post(TOKEN_URL, json=form)
     except httpx.HTTPError as e:
         raise FeishuError(f"无法连接飞书授权服务：{type(e).__name__}: {e}") from e
     try:

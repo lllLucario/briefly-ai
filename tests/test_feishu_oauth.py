@@ -32,7 +32,7 @@ def token_reply(n: int, refresh: bool = True) -> httpx.Response:
 
 
 def form(request) -> dict:
-    return {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
+    return json.loads(request.content)
 
 
 def connected_tokens(fake: FakeFeishu, path, expires_in: float = 7200) -> UserTokens:
@@ -63,7 +63,7 @@ def test_unknown_state_is_rejected():
 
 # ---- 换取与刷新
 def test_exchange_saves_tokens(tmp_path):
-    fake = FakeFeishu({("POST", "/oauth/v3/token"): token_reply(1)})
+    fake = FakeFeishu({("POST", "/open-apis/authen/v2/oauth/token"): token_reply(1)})
     state = parse_qs(urlparse(authorize_url()).query)["state"][0]
     tokens = UserTokens(tmp_path / "t.json", transport=fake.transport)
     tokens.exchange("code-1", state, lambda token: {"name": "王五", "open_id": "ou_me"} if token == "u-1" else {})
@@ -76,7 +76,7 @@ def test_exchange_saves_tokens(tmp_path):
 
 
 def test_expiring_token_is_refreshed_and_rotated(tmp_path):
-    fake = FakeFeishu({("POST", "/oauth/v3/token"): token_reply(2)})
+    fake = FakeFeishu({("POST", "/open-apis/authen/v2/oauth/token"): token_reply(2)})
     tokens = connected_tokens(fake, tmp_path / "t.json", expires_in=60)  # 5 分钟内过期
     assert tokens.access_token() == "u-2"
     assert form(fake.requests[0]) | {} == {"grant_type": "refresh_token", "refresh_token": "r-0", "client_id": "cli_test", "client_secret": "secret"}
@@ -85,7 +85,7 @@ def test_expiring_token_is_refreshed_and_rotated(tmp_path):
 
 
 def test_stale_token_refresh_happens_once(tmp_path):
-    fake = FakeFeishu({("POST", "/oauth/v3/token"): token_reply(3)})
+    fake = FakeFeishu({("POST", "/open-apis/authen/v2/oauth/token"): token_reply(3)})
     tokens = connected_tokens(fake, tmp_path / "t.json")
     assert tokens.access_token(refresh=True, stale="u-0") == "u-3"
     assert tokens.access_token(refresh=True, stale="u-0") == "u-3"  # 另一个线程拿着旧令牌：不再刷新
@@ -94,7 +94,7 @@ def test_stale_token_refresh_happens_once(tmp_path):
 
 def test_revoked_refresh_token_clears_authorization(tmp_path):
     revoked = httpx.Response(400, json={"code": 20064, "error": "invalid_grant", "error_description": "refresh token revoked"})
-    fake = FakeFeishu({("POST", "/oauth/v3/token"): revoked})
+    fake = FakeFeishu({("POST", "/open-apis/authen/v2/oauth/token"): revoked})
     tokens = connected_tokens(fake, tmp_path / "t.json", expires_in=0)
     with pytest.raises(FeishuNotAuthorized, match="重新连接"):
         tokens.access_token()
@@ -178,7 +178,7 @@ def api(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config, "FEISHU_NOTIFY_USER", "")
     fake = FakeFeishu({
-        ("POST", "/oauth/v3/token"): token_reply(1),
+        ("POST", "/open-apis/authen/v2/oauth/token"): token_reply(1),
         ("GET", f"{API}/authen/v1/user_info"): {"name": "王五", "open_id": "ou_me"},
         ("GET", f"{API}/drive/v1/files"): {"files": [{"token": DOC, "name": "周报草稿", "type": "docx"}]},
     })  # fmt: skip
