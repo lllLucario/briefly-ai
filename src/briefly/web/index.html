@@ -15,7 +15,6 @@
       <button data-tab="chat" class="active">对话</button>
       <button data-tab="materials">材料</button>
       <button data-tab="weekly">周报</button>
-      <button data-tab="tracking">追踪</button>
     </nav>
     <a class="doclink" href="/docs" target="_blank">接口文档</a>
   </header>
@@ -83,6 +82,10 @@
         </div>
       </div>
       <div id="material-msg" class="notice hidden"></div>
+      <details id="tracked-box" class="meta hidden">
+        <summary id="tracked-summary">正在追踪的文件</summary>
+        <div id="tracked-list"></div>
+      </details>
     </section>
     <section class="panel grow">
       <h3>材料库</h3>
@@ -98,12 +101,93 @@
 
   <!-- 周报 -->
   <main id="tab-weekly" class="tab">
-    <aside class="sidebar">
-      <button id="new-weekly" class="primary block">＋ 新周报</button>
+    <aside class="sidebar weekly-side">
+      <div class="side-head"><b>周报计划</b><button id="new-plan" class="ghost small">＋ 新建</button></div>
+      <ul id="plan-list" class="list plan-list"></ul>
+      <div class="side-head"><b>周报历史</b><button id="new-weekly" class="ghost small">＋ 临时周报</button></div>
       <ul id="weekly-list" class="list"></ul>
     </aside>
-    <section class="panel grow" id="weekly-form-panel">
-      <h3>生成周报</h3>
+
+    <!-- 周报计划 -->
+    <section class="panel grow hidden" id="plan-panel">
+      <div class="chat-head">
+        <h3 id="plan-title"></h3>
+        <nav class="subtabs" id="plan-tabs">
+          <button data-sub="week" class="active">本周准备</button>
+          <button data-sub="files">追踪的文件</button>
+          <button data-sub="settings">设置</button>
+        </nav>
+      </div>
+      <div id="plan-msg" class="notice hidden"></div>
+
+      <div id="plan-week" class="plan-sub">
+        <div class="row gap wrap plan-bar">
+          <span id="week-label" class="muted"></span>
+          <span class="grow"></span>
+          <button id="scan-btn" class="ghost">检查更新</button>
+          <button id="prepare-btn" class="primary">准备本周工作</button>
+        </div>
+        <details class="meta period-pick"><summary>换一个周期</summary>
+          <div class="row gap wrap"><label>开始 <input type="date" id="prep-start"></label><label>结束 <input type="date" id="prep-end"></label></div>
+        </details>
+        <div id="prep-box"></div>
+        <div id="plan-extra" class="stack plan-extra">
+          <h4>还要加什么（可选）</h4>
+          <label>勾选材料</label>
+          <div id="plan-materials" class="checklist"></div>
+          <textarea id="plan-brief" rows="2" placeholder="简述：这周大概做了什么（可不填）"></textarea>
+          <div class="row gap wrap">
+            <label>读者 <input id="plan-audience" placeholder="默认直属上级"></label>
+            <label>署名 <input id="plan-author" placeholder="可不填"></label>
+            <span class="grow"></span>
+            <span id="make-report-hint" class="muted"></span>
+            <button id="make-report" class="primary">生成周报</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="plan-files" class="plan-sub hidden">
+        <div id="source-tree" class="tree"></div>
+        <details class="meta" id="add-source-box">
+          <summary>＋ 添加要追踪的文件</summary>
+          <div class="stack">
+            <textarea id="source-paths" rows="2" placeholder="文件或文件夹的完整路径，或飞书文档链接，每行一个，如 D:\项目\方案.docx"></textarea>
+            <div class="row gap"><label class="toggle"><input type="checkbox" id="source-recursive" checked> 文件夹包含子文件夹</label><button id="source-add" class="ghost">添加</button></div>
+            <small class="muted">添加后立即记录初始版本，之后每个工作日自动检查更新。连接飞书后，也可以在“材料”页的云空间里直接点“追踪”。</small>
+          </div>
+        </details>
+      </div>
+
+      <div id="plan-settings" class="plan-sub hidden stack">
+        <h4>每周定时准备</h4>
+        <div class="row gap wrap">
+          <select id="schedule-weekday"></select>
+          <input type="time" id="schedule-time" value="16:30">
+          <button id="schedule-save" class="ghost">保存</button>
+          <button id="schedule-off" class="ghost danger">关闭</button>
+          <span id="schedule-text" class="muted"></span>
+        </div>
+        <small class="muted">到点自动检查更新并准备本周工作，然后在页面顶部提醒你确认（需要 briefly-api 在运行）。</small>
+        <div id="schedule-runs"></div>
+        <h4>生成周报时默认填写</h4>
+        <div class="row gap wrap">
+          <label>读者 <input id="set-audience" placeholder="如 直属上级、导师"></label>
+          <label>署名 <input id="set-author" placeholder="写在周报上的名字"></label>
+          <button id="settings-save" class="ghost">保存</button>
+        </div>
+        <h4>你在文档里的名字</h4>
+        <div class="row gap wrap">
+          <input id="set-owners" placeholder="Word 修订作者、飞书里的姓名，可多个，逗号分隔" style="flex:1;min-width:240px">
+          <button id="owners-save" class="ghost">保存</button>
+        </div>
+        <small class="muted">用来判断文件的改动是不是你做的；不填也能用，每条记录由你自己确认。</small>
+        <h4>删除</h4>
+        <div><button id="plan-delete" class="ghost danger">删除这个周报计划</button> <small class="muted">只删除记录的版本和候选记录，不影响原文件和已生成的周报。</small></div>
+      </div>
+    </section>
+
+    <section class="panel grow hidden" id="weekly-form-panel">
+      <h3>临时周报</h3>
       <form id="weekly-form" class="stack">
         <label>素材（勾选材料）</label>
         <div id="weekly-materials" class="checklist"></div>
@@ -118,6 +202,12 @@
         <small class="muted">日期不填则为本周一到本周日。素材与简述至少提供一项。</small>
         <button class="primary">提交生成</button>
       </form>
+    </section>
+
+    <section class="panel grow" id="weekly-empty">
+      <div class="empty">选择左侧的周报计划或一份周报。<br>
+        <b>周报计划</b>：追踪你的文件，每周自动整理出“本周工作”，你确认后生成周报。<br>
+        <b>临时周报</b>：直接勾选材料、写一段简述生成。</div>
     </section>
     <section class="panel grow hidden" id="weekly-detail-panel">
       <div class="chat-head">
@@ -143,63 +233,6 @@
         <div class="row gap"><button id="save-weekly" class="primary">保存</button><button id="cancel-edit" class="ghost">取消</button></div>
       </div>
       <details id="weekly-meta" class="meta"><summary>生成信息</summary><div id="weekly-meta-body"></div></details>
-    </section>
-  </main>
-
-  <!-- 追踪 -->
-  <main id="tab-tracking" class="tab">
-    <aside class="sidebar">
-      <ul id="collection-list" class="list"></ul>
-      <form id="collection-form" class="stack">
-        <input id="collection-name" placeholder="新集合名称，如 项目A">
-        <input id="collection-owners" placeholder="你在 Word 修订里的署名（可多个，逗号分隔）">
-        <button class="primary">＋ 新建集合</button>
-      </form>
-    </aside>
-    <section class="panel grow" id="tracking-panel">
-      <div id="tracking-empty" class="empty">选择或新建一个追踪集合。<br>追踪文件和文件夹的变化，生成候选工作记录，你确认后再写进周报。</div>
-      <div id="tracking-body" class="hidden">
-        <div class="chat-head">
-          <h3 id="collection-title"></h3>
-          <div class="row gap wrap">
-            <button id="scan-btn" class="ghost">立即扫描</button>
-            <button id="collection-delete" class="ghost danger">删除集合</button>
-          </div>
-        </div>
-        <div id="tracking-msg" class="notice hidden"></div>
-
-        <h4>本周周报准备</h4>
-        <div class="row gap wrap">
-          <label>开始 <input type="date" id="prep-start"></label>
-          <label>结束 <input type="date" id="prep-end"></label>
-          <button id="prepare-btn" class="primary">准备候选清单</button>
-          <small class="muted">最终扫描后对比本周的版本，生成候选工作记录（会调用模型）</small>
-        </div>
-        <div id="prep-box"></div>
-
-        <details class="meta" id="sources-box" open>
-          <summary>追踪源与文件</summary>
-          <div id="source-rows"></div>
-          <div class="stack" style="margin-top:8px">
-            <textarea id="source-paths" rows="2" placeholder="要追踪的文件、文件夹的完整路径，或飞书文档链接，每行一个，如 D:\项目\方案.docx"></textarea>
-            <div class="row gap"><label class="toggle"><input type="checkbox" id="source-recursive" checked> 文件夹包含子文件夹</label><button id="source-add" class="ghost">添加并采集基线</button></div>
-          </div>
-          <div id="file-rows" class="file-rows"></div>
-        </details>
-
-        <details class="meta" id="schedule-box">
-          <summary>每周定时准备</summary>
-          <div class="row gap wrap" style="margin-top:8px">
-            <select id="schedule-weekday"></select>
-            <input type="time" id="schedule-time" value="16:30">
-            <button id="schedule-save" class="ghost">保存</button>
-            <button id="schedule-off" class="ghost danger">关闭</button>
-            <span id="schedule-text" class="muted"></span>
-          </div>
-          <small class="muted">到点自动最终扫描并生成候选清单，然后在页面顶部提醒你审核（需要 briefly-api 在运行）。</small>
-          <div id="schedule-runs"></div>
-        </details>
-      </div>
     </section>
   </main>
 
@@ -235,6 +268,6 @@
 
   <div id="print-area" class="markdown"></div>
   <script src="/web/app.js"></script>
-  <script src="/web/tracking.js"></script>
+  <script src="/web/plans.js"></script>
 </body>
 </html>

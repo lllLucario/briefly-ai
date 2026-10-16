@@ -282,7 +282,7 @@ def test_attribution_from_word_revisions(env):
         (["张三"], {}, {"last_modified_by": "张三"}, INFERRED, [], "不能证明全部修改都是你做的"),
         (["张三"], {}, {"last_modified_by": "王五"}, UNKNOWN, ["others"], "不是你的署名"),
         (["张三"], {}, {}, UNKNOWN, [], "修改时间和追踪时间不能说明是谁做的"),
-        ([], {}, {"revisions": [{"type": "insert", "author": "张三", "text": "a"}]}, UNKNOWN, ["no_owner", "others"], "未设置你在文档中的署名"),
+        ([], {}, {"revisions": [{"type": "insert", "author": "张三", "text": "a"}]}, UNKNOWN, ["no_owner", "others"], "未设置你在文档里的名字"),
         (["张三"], {}, {"revisions": [{"type": "insert", "author": "", "text": "a"}]}, UNKNOWN, [], "没有作者信息"),
     ],
 )

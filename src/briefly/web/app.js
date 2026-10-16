@@ -47,6 +47,53 @@ function renderMarkdown(text) {
   return `<div style="white-space:pre-wrap">${escapeHtml(text)}</div>`;
 }
 
+// 文件类型图标（内联 SVG）：本地文件按扩展名显示带颜色的类型标签，文件夹、飞书文档、多维表格、妙记各有图形
+const FILE_LABELS = {
+  pdf: ["PDF", "#e5484d"], docx: ["DOC", "#2f6fed"], doc: ["DOC", "#2f6fed"], xlsx: ["XLS", "#1f9d55"], xls: ["XLS", "#1f9d55"],
+  csv: ["CSV", "#1f9d55"], md: ["MD", "#6b7280"], txt: ["TXT", "#6b7280"],
+};
+const KIND_NAMES = {
+  folder: "文件夹", pdf: "PDF", docx: "Word", doc: "Word", xlsx: "Excel", xls: "Excel", csv: "CSV", md: "Markdown", txt: "文本",
+  feishu: "飞书文档", bitable: "多维表格", minutes: "妙记", wiki: "知识库", sheet: "电子表格", paste: "粘贴",
+};
+
+function fileIcon(kind) {
+  const k = String(kind || "").toLowerCase();
+  const svg = (body) => `<svg class="ficon" viewBox="0 0 20 20" aria-hidden="true">${body}</svg>`;
+  const page = (stroke, fill = "#fff") =>
+    `<path d="M5.5 2h6.5l4 4v11a1 1 0 0 1-1 1h-9.5a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z" fill="${fill}" stroke="${stroke}" stroke-width="1.2"/>`
+    + `<path d="M12 2v4h4" fill="none" stroke="${stroke}" stroke-width="1.2"/>`;
+  if (k === "folder") {
+    return svg('<path d="M2 5.2A1.2 1.2 0 0 1 3.2 4h4.1l1.7 1.8h7.8A1.2 1.2 0 0 1 18 7v8.8a1.2 1.2 0 0 1-1.2 1.2H3.2A1.2 1.2 0 0 1 2 15.8z" fill="#f2b33d"/>'
+      + '<path d="M2 8.2h16v7.6a1.2 1.2 0 0 1-1.2 1.2H3.2A1.2 1.2 0 0 1 2 15.8z" fill="#ffcd5e"/>');
+  }
+  if (k === "feishu" || k === "docx-feishu") {
+    return svg(page("#3370ff", "#eaf0ff") + '<path d="M7 9.5h6M7 12h6M7 14.5h4" stroke="#3370ff" stroke-width="1.2" stroke-linecap="round"/>');
+  }
+  if (k === "bitable" || k === "sheet") {
+    const c = k === "bitable" ? "#7a55e6" : "#1f9d55";
+    return svg(`<rect x="3" y="3.5" width="14" height="13" rx="1.5" fill="#fff" stroke="${c}" stroke-width="1.2"/>`
+      + `<path d="M3 7.8h14M3 12.2h14M8 3.5v13" stroke="${c}" stroke-width="1.1"/>`);
+  }
+  if (k === "minutes") {
+    return svg('<rect x="7.5" y="2.5" width="5" height="9" rx="2.5" fill="#f0e9ff" stroke="#8b5cf6" stroke-width="1.2"/>'
+      + '<path d="M5 9.5a5 5 0 0 0 10 0M10 14.5V17M7.5 17h5" fill="none" stroke="#8b5cf6" stroke-width="1.2" stroke-linecap="round"/>');
+  }
+  if (k === "wiki") {
+    return svg('<path d="M4 4.5A1.5 1.5 0 0 1 5.5 3H16v12H5.5A1.5 1.5 0 0 0 4 16.5z" fill="#eaf0ff" stroke="#3370ff" stroke-width="1.2"/>'
+      + '<path d="M4 16.5A1.5 1.5 0 0 1 5.5 15H16v2H5.5A1.5 1.5 0 0 1 4 16.5z" fill="#3370ff"/>');
+  }
+  const [label, color] = FILE_LABELS[k] || ["", "#9aa1ab"];
+  return svg(page(color) + (label
+    ? `<rect x="2" y="10.5" width="13" height="6" rx="1" fill="${color}"/>`
+      + `<text x="8.5" y="15.1" text-anchor="middle" font-size="4.6" font-weight="700" fill="#fff" font-family="Arial, sans-serif">${label}</text>`
+    : '<path d="M7 9.5h6M7 12h6M7 14.5h4" stroke="#9aa1ab" stroke-width="1.2" stroke-linecap="round"/>'));
+}
+
+function kindName(kind) {
+  return KIND_NAMES[String(kind || "").toLowerCase()] || kind || "";
+}
+
 function fmtTime(iso) {
   const d = new Date(iso);
   const pad = (n) => String(n).padStart(2, "0");
@@ -69,8 +116,7 @@ document.querySelectorAll(".tabs button").forEach((btn) => {
     document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b === btn));
     document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.id === `tab-${btn.dataset.tab}`));
     if (btn.dataset.tab === "materials") loadMaterials();
-    if (btn.dataset.tab === "weekly") { loadMaterials(); loadWeeklyList(); }
-    if (btn.dataset.tab === "tracking") loadTracking();
+    if (btn.dataset.tab === "weekly") { loadMaterials(); loadWeeklyList(); loadPlans(); }
   });
 });
 
@@ -79,6 +125,7 @@ async function loadMaterials() {
   state.materials = await api("/materials");
   renderMaterialRows();
   renderWeeklyMaterialChecklist();
+  if (typeof plans !== "undefined" && plans.id) renderPlanMaterials();
   // 已删除的材料从对话选择中去掉
   for (const id of [...state.picked]) if (!state.materials.some((m) => m.id === id)) state.picked.delete(id);
   renderPicked();
@@ -96,7 +143,7 @@ function renderMaterialRows() {
     <tr class="clickable ${state.activeMaterial === m.id ? "active" : ""}" data-id="${m.id}">
       <td>${m.id}</td>
       <td>${escapeHtml(m.title)} ${m.warnings.length ? `<span class="warn-dot" title="${escapeHtml(m.warnings.join("\n"))}">⚠</span>` : ""}</td>
-      <td>${FILE_TYPES[m.file_type] || m.file_type || "粘贴"}</td>
+      <td class="nowrap">${fileIcon(m.file_type || "paste")} ${escapeHtml(FILE_TYPES[m.file_type] || kindName(m.file_type || "paste"))}</td>
       <td>${m.char_count}</td>
       <td>${m.chunk_count} / ${m.section_count}</td>
       <td>${m.structure || "-"}</td>
@@ -255,10 +302,11 @@ async function showDriveItems(load) {
     const items = await load();
     list.innerHTML = items.length ? items.map((x) => `
       <li class="${x.kind === "folder" ? "folder" : x.importable ? "" : "disabled"}">
-        <span class="kind">${escapeHtml(x.kind_name)}</span>
+        <span class="kind">${fileIcon(x.kind === "docx" ? "feishu" : x.kind)}</span>
         <span class="name" ${x.kind === "folder" ? `data-folder="${escapeHtml(x.token)}"` : ""} title="${escapeHtml(x.name)}">${escapeHtml(x.name)}</span>
         <small class="muted">${x.modified ? fmtTime(new Date(x.modified * 1000).toISOString()) : escapeHtml(x.owner || "")}</small>
         ${x.importable ? `<button class="ghost" data-import="${escapeHtml(x.url)}">导入</button>` : ""}
+        ${["docx", "wiki"].includes(x.kind) ? trackPicker(x.url) : ""}
       </li>`).join("") : `<li class="muted">没有内容</li>`;
   } catch (err) {
     list.innerHTML = `<li class="danger">${escapeHtml(err.message)}</li>`;
@@ -498,14 +546,26 @@ function renderWeeklyMaterialChecklist() {
     : `<p class="muted">材料库是空的。也可以只写简述生成周报。</p>`;
 }
 
+function showWeeklyView(view) {
+  const panels = { plan: "#plan-panel", form: "#weekly-form-panel", detail: "#weekly-detail-panel", empty: "#weekly-empty" };
+  Object.entries(panels).forEach(([k, sel]) => $(sel).classList.toggle("hidden", k !== view));
+  if (view !== "plan") { plans.id = null; renderPlanList(); }
+}
+
 async function loadWeeklyList() {
   const reports = await api("/weekly-reports");
+  state.weeklyPlans = Object.fromEntries(reports.map((r) => [r.id, r.plan]));
   $("#weekly-list").innerHTML = reports.length
     ? reports.map((r) => `<li data-id="${r.id}" class="${r.id === state.weeklyId ? "active" : ""}">
-        ${r.period_start} ~ ${r.period_end}
+        ${shortDate(r.period_start)}–${shortDate(r.period_end)} <span class="muted">${r.plan ? escapeHtml(r.plan.name) : "临时"}</span>
         <small><span class="status-pill ${r.status}">${STATUS_TEXT[r.status] || r.status}</span> ${fmtTime(r.created_at)}</small></li>`).join("")
     : `<li class="muted" style="cursor:default">还没有周报</li>`;
   return reports;
+}
+
+function shortDate(iso) {
+  const [, m, d] = String(iso).split("-");
+  return `${m}.${d}`;
 }
 
 $("#weekly-list").addEventListener("click", (e) => {
@@ -516,8 +576,7 @@ $("#weekly-list").addEventListener("click", (e) => {
 $("#new-weekly").addEventListener("click", () => {
   stopPolling();
   state.weeklyId = null;
-  $("#weekly-form-panel").classList.remove("hidden");
-  $("#weekly-detail-panel").classList.add("hidden");
+  showWeeklyView("form");
   loadWeeklyList();
 });
 
@@ -547,8 +606,7 @@ function stopPolling() {
 async function openWeekly(id) {
   stopPolling();
   state.weeklyId = id;
-  $("#weekly-form-panel").classList.add("hidden");
-  $("#weekly-detail-panel").classList.remove("hidden");
+  showWeeklyView("detail");
   exitEdit();
   await refreshWeekly();
 }
@@ -577,7 +635,8 @@ async function refreshWeekly() {
   }
   if (id !== state.weeklyId) return; // 已切到别的周报
   state.weeklyReport = r;
-  $("#weekly-title").textContent = `周报 ${r.period_start} ~ ${r.period_end}`;
+  const plan = (state.weeklyPlans || {})[r.id];
+  $("#weekly-title").textContent = `周报 ${r.period_start} ~ ${r.period_end}${plan ? `（${plan.name}）` : ""}`;
   const done = r.status === "done";
   ["#edit-weekly", "#print-weekly", "#show-tags"].forEach((s) => ($(s).disabled = !done));
   $("#export-md").classList.toggle("hidden", !done);
@@ -752,7 +811,9 @@ $("#delete-weekly").addEventListener("click", async () => {
   if (!confirm("删除这份周报？")) return;
   stopPolling();
   await api(`/weekly-reports/${state.weeklyId}`, { method: "DELETE" });
-  $("#new-weekly").click();
+  state.weeklyId = null;
+  showWeeklyView("empty");
+  loadWeeklyList();
 });
 
 // 打印为 PDF：只打印去掉出处标记的正文（提醒不进入导出）
@@ -774,7 +835,7 @@ async function loadInbox() {
   box.innerHTML = items.map((n) => `
     <div class="inbox-item">
       <div><b>🔔 ${escapeHtml(n.title)}</b>${escapeHtml(n.body)}</div>
-      ${n.collection_id ? `<button class="primary" data-go="${n.collection_id}" data-read-id="${n.id}">去审核</button>` : ""}
+      ${n.collection_id ? `<button class="primary" data-go="${n.collection_id}" data-read-id="${n.id}">去确认</button>` : ""}
       <button class="ghost" data-read="${n.id}">知道了</button>
     </div>`).join("");
 }
@@ -784,7 +845,7 @@ $("#inbox").addEventListener("click", async (e) => {
   if (go) {
     await api("/notifications/read", { method: "POST", json: { ids: [Number(go.dataset.readId)] } });
     loadInbox();
-    gotoTracking(go.dataset.go);
+    gotoPlan(go.dataset.go);
     return;
   }
   const b = e.target.closest("[data-read]");
