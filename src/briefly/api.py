@@ -19,6 +19,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from pydantic import BaseModel
 
+from . import api_docs as docs
 from . import config, mail
 from .agent import Agent, new_thread_id, sqlite_checkpointer
 from .db import create_db_engine
@@ -261,7 +262,13 @@ def create_app(
 
         close_shared()  # 关闭共用飞书客户端的连接池
 
-    app = FastAPI(title="Briefly AI", description="办公 AI Agent 后端", lifespan=lifespan)
+    app = FastAPI(
+        title="Briefly AI",
+        description=docs.DESCRIPTION,
+        openapi_tags=docs.OPENAPI_TAGS,
+        swagger_ui_parameters=docs.SWAGGER_UI,
+        lifespan=lifespan,
+    )
     app.state.store = store or MaterialStore(create_db_engine())
     app.state.weekly = WeeklyService(app.state.store, model_factory)
     app.state.sessions = SessionStore(app.state.store.engine)
@@ -289,14 +296,14 @@ def create_app(
     Sessions = Annotated[SessionStore, Depends(lambda: app.state.sessions)]
     AgentDep = Annotated[Agent, Depends(get_agent)]
 
-    @app.get("/skills", response_model=list[SkillOut], summary="可指定的能力")
+    @app.get("/skills", tags=[docs.CHAT], response_model=list[SkillOut], summary="可指定的能力")
     def list_skills():
         return [SkillOut(name=s.name, description=s.description) for s in SKILLS.values()]
 
     def session_out(s: ChatSession) -> SessionOut:
         return SessionOut.model_validate(s, from_attributes=True)
 
-    @app.post("/chat", response_model=ChatOut, summary="对话（等回答完成后返回；不传 thread_id 则开始新会话）")
+    @app.post("/chat", tags=[docs.CHAT], response_model=ChatOut, summary="对话（等回答完成后返回；不传 thread_id 则开始新会话）")
     def chat(body: ChatIn, agent: AgentDep, sessions: Sessions):
         if not body.text.strip():
             raise ValueError("输入不能为空")
@@ -316,16 +323,16 @@ def create_app(
             sessions.touch(thread_id, body.text)
         return ChatOut(thread_id=thread_id, reply=reply)
 
-    @app.get("/chat/sessions", response_model=list[SessionOut], summary="会话列表（最近的在前）")
+    @app.get("/chat/sessions", tags=[docs.CHAT], response_model=list[SessionOut], summary="会话列表（最近的在前）")
     def list_sessions(sessions: Sessions):
         return [session_out(s) for s in sessions.list_sessions()]
 
-    @app.get("/chat/sessions/{thread_id}", response_model=SessionDetail, summary="会话历史")
+    @app.get("/chat/sessions/{thread_id}", tags=[docs.CHAT], response_model=SessionDetail, summary="会话历史")
     def get_session(thread_id: str, sessions: Sessions, agent: AgentDep):
         s = session_out(sessions.get(thread_id))
         return SessionDetail(**s.model_dump(), messages=visible_messages(agent.history_of(thread_id)))
 
-    @app.get("/chat/sessions/{thread_id}/context", response_model=ContextOut, summary="上下文用量")
+    @app.get("/chat/sessions/{thread_id}/context", tags=[docs.CHAT], response_model=ContextOut, summary="上下文用量")
     def get_context(thread_id: str, sessions: Sessions, agent: AgentDep):
         sessions.get(thread_id)
         rows = [r for r in agent.context_store.usage(thread_id=thread_id, limit=20) if r.task_type == "chat"]
@@ -336,7 +343,7 @@ def create_app(
             compacted_turns=memory.data.get("compacted_turns", 0) if memory else 0,
         )
 
-    @app.delete("/chat/sessions/{thread_id}", status_code=204, summary="删除会话")
+    @app.delete("/chat/sessions/{thread_id}", tags=[docs.CHAT], status_code=204, summary="删除会话")
     def delete_session(thread_id: str, sessions: Sessions, agent: AgentDep):
         sessions.delete(thread_id)
         agent.graph.checkpointer.delete_thread(thread_id)
@@ -364,12 +371,12 @@ def create_app(
 
     app.state.created_material = lambda m, is_new: CreatedMaterial(material=summary(app.state.store, m), created=is_new)
 
-    @app.post("/materials", response_model=CreatedMaterial, status_code=201, summary="粘贴文本创建材料")
+    @app.post("/materials", tags=[docs.MATERIALS], response_model=CreatedMaterial, status_code=201, summary="粘贴文本创建材料")
     def add_text(body: MaterialIn, store: Store, response: Response):
         material, is_new = store.add_text(body.title, body.content)
         return created(store, material, is_new, response)
 
-    @app.post("/materials/upload", response_model=CreatedMaterial, status_code=201, summary="上传文件创建材料")
+    @app.post("/materials/upload", tags=[docs.MATERIALS], response_model=CreatedMaterial, status_code=201, summary="上传文件创建材料")
     def upload(
         file: Annotated[UploadFile, File(description="txt/md/docx/pdf/xlsx/csv")], store: Store, response: Response
     ):
@@ -378,12 +385,12 @@ def create_app(
         material, is_new = store.add_file(file.filename, file.file.read())
         return created(store, material, is_new, response)
 
-    @app.get("/materials", response_model=list[MaterialOut], summary="材料列表（不含正文）")
+    @app.get("/materials", tags=[docs.MATERIALS], response_model=list[MaterialOut], summary="材料列表（不含正文）")
     def list_materials(store: Store):
         chunks, sections = store.chunk_counts(), store.section_counts()
         return [summary(store, m, chunks, sections) for m in store.list_materials()]
 
-    @app.get("/materials/{material_id}", response_model=MaterialDetail, summary="材料详情：正文、大纲、解析报告")
+    @app.get("/materials/{material_id}", tags=[docs.MATERIALS], response_model=MaterialDetail, summary="材料详情：正文、大纲、解析报告")
     def get_material(material_id: int, store: Store):
         m = store.get(material_id)
         sections = [SectionOut(index=s.index, level=s.level, title=s.title, path=s.path) for s in store.sections(m.id)]
@@ -391,14 +398,14 @@ def create_app(
             **summary(store, m).model_dump(), content=m.content, sections=sections, parse_report=m.parse_report
         )
 
-    @app.delete("/materials/{material_id}", status_code=204, summary="删除材料")
+    @app.delete("/materials/{material_id}", tags=[docs.MATERIALS], status_code=204, summary="删除材料")
     def delete_material(material_id: int, store: Store):
         store.delete(material_id)
 
     def weekly_out(r: WeeklyReport) -> WeeklyOut:
         return WeeklyOut.model_validate(r, from_attributes=True)
 
-    @app.post("/weekly-reports", response_model=WeeklyOut, status_code=202, summary="提交周报生成任务（后台生成）")
+    @app.post("/weekly-reports", tags=[docs.WEEKLY], response_model=WeeklyOut, status_code=202, summary="提交周报生成任务（后台生成）")
     def create_weekly(body: WeeklyIn, weekly: Weekly, background: BackgroundTasks):
         report = weekly.create(
             body.material_ids, body.brief, body.period_start, body.period_end, body.audience, body.name
@@ -406,23 +413,23 @@ def create_app(
         background.add_task(weekly.generate, report.id)
         return weekly_out(report)
 
-    @app.get("/weekly-reports", response_model=list[WeeklyOut], summary="周报历史")
+    @app.get("/weekly-reports", tags=[docs.WEEKLY], response_model=list[WeeklyOut], summary="周报历史")
     def list_weekly(weekly: Weekly):
         return [weekly_out(r) for r in weekly.list_reports()]
 
-    @app.get("/weekly-reports/{report_id}", response_model=WeeklyDetail, summary="周报详情（轮询看进度）")
+    @app.get("/weekly-reports/{report_id}", tags=[docs.WEEKLY], response_model=WeeklyDetail, summary="周报详情（轮询看进度）")
     def get_weekly(report_id: int, weekly: Weekly):
         return WeeklyDetail.model_validate(weekly.get(report_id), from_attributes=True)
 
-    @app.put("/weekly-reports/{report_id}", response_model=WeeklyDetail, summary="保存修改后的周报正文")
+    @app.put("/weekly-reports/{report_id}", tags=[docs.WEEKLY], response_model=WeeklyDetail, summary="保存修改后的周报正文")
     def update_weekly(report_id: int, body: WeeklyContentIn, weekly: Weekly):
         return WeeklyDetail.model_validate(weekly.update_content(report_id, body.content), from_attributes=True)
 
-    @app.delete("/weekly-reports/{report_id}", status_code=204, summary="删除周报")
+    @app.delete("/weekly-reports/{report_id}", tags=[docs.WEEKLY], status_code=204, summary="删除周报")
     def delete_weekly(report_id: int, weekly: Weekly):
         weekly.delete(report_id)
 
-    @app.get("/weekly-reports/{report_id}/export.md", response_class=PlainTextResponse, summary="导出 Markdown")
+    @app.get("/weekly-reports/{report_id}/export.md", tags=[docs.WEEKLY], response_class=PlainTextResponse, summary="导出 Markdown")
     def export_weekly(report_id: int, weekly: Weekly):
         filename, text = weekly.export_markdown(report_id)
         return PlainTextResponse(
@@ -433,27 +440,27 @@ def create_app(
 
     app.state.mail_connect = mail._connect  # 测试时替换成模拟的 SMTP
 
-    @app.get("/mail/status", response_model=MailStatus, summary="邮件是否已配置")
+    @app.get("/mail/status", tags=[docs.MAIL], response_model=MailStatus, summary="邮件是否已配置")
     def mail_status():
         return MailStatus(configured=mail.configured(), sender=config.SMTP_USER, default_to=config.MAIL_DEFAULT_TO)
 
-    @app.post("/weekly-reports/{report_id}/email", response_model=MailOut, status_code=201, summary="把周报通过邮件发给收件人（失败不自动重试）")
+    @app.post("/weekly-reports/{report_id}/email", tags=[docs.MAIL], response_model=MailOut, status_code=201, summary="把周报通过邮件发给收件人（失败不自动重试）")
     def email_weekly(report_id: int, body: MailIn, weekly: Weekly):
         record = mail.send_weekly(weekly, report_id, body.to, body.cc, connect=app.state.mail_connect)
         return MailOut.model_validate(record, from_attributes=True)
 
-    @app.get("/weekly-reports/{report_id}/email", response_model=list[MailOut], summary="周报的邮件发送记录")
+    @app.get("/weekly-reports/{report_id}/email", tags=[docs.MAIL], response_model=list[MailOut], summary="周报的邮件发送记录")
     def list_emails(report_id: int, weekly: Weekly):
         weekly.get(report_id)
         return [MailOut.model_validate(x, from_attributes=True) for x in mail.sends_of(app.state.store.engine, report_id)]
 
-    @app.get("/notifications", response_model=list[NotificationOut], summary="提醒（文件追踪：周报已准备好、准备失败等）")
+    @app.get("/notifications", tags=[docs.SCHEDULE], response_model=list[NotificationOut], summary="提醒（文件追踪：周报已准备好、准备失败等）")
     def list_notifications(unread_only: bool = True):
         from .tracking.weekly_schedule import notifications
 
         return [NotificationOut.model_validate(n, from_attributes=True) for n in notifications(app.state.store.engine, unread_only)]
 
-    @app.post("/notifications/read", summary="标为已读（不传 ids 表示全部）")
+    @app.post("/notifications/read", tags=[docs.SCHEDULE], summary="标为已读（不传 ids 表示全部）")
     def read_notifications(body: ReadIn):
         from .tracking.weekly_schedule import mark_read
 

@@ -94,3 +94,17 @@ def test_not_found_message(client):
 def test_openapi_docs_are_available(client):
     paths = client.get("/openapi.json").json()["paths"]
     assert {"/materials", "/materials/upload", "/materials/{material_id}"} <= set(paths)
+
+
+def test_every_endpoint_is_in_one_documented_group():
+    """接口文档（/docs）按功能分组：新接口必须标明分组，否则会落进没有说明的“default”。"""
+    from briefly.api_docs import OPENAPI_TAGS
+
+    engine = create_db_engine("sqlite://")
+    spec = create_app(store=MaterialStore(engine), model_factory=lambda: None).openapi()
+    names = {t["name"] for t in OPENAPI_TAGS}
+    for path, operations in spec["paths"].items():
+        for method, op in operations.items():
+            assert len(op.get("tags", [])) == 1 and op["tags"][0] in names, f"{method.upper()} {path} 没有分组"
+    assert [t["name"] for t in spec["tags"]] == [t["name"] for t in OPENAPI_TAGS]
+    engine.dispose()
