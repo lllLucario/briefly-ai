@@ -431,18 +431,9 @@ def create_app(
 
     @app.delete("/materials/{material_id}", tags=[docs.MATERIALS], status_code=204, summary="删除材料（被待办关联时需 force）")
     def delete_material(material_id: int, store: Store, force: bool = False):
-        from .todos.service import ConfirmationRequired, TodoService
-
         if store.get(material_id).source == TRACKED:
             raise ValueError("这是追踪中文档的最新版本，随追踪自动更新；不需要了请停止追踪")
-        todos = TodoService(store.engine, store)
-        linked = todos.todos_of_material(material_id, same_file=False)
-        if linked and not force:
-            names = "、".join(f"「{t.title}」" for t in linked[:5])
-            raise ConfirmationRequired(f"这份材料关联在 {len(linked)} 个待办上（{names}）。删除后这些待办里也看不到它了，确定删除吗？")
-        if linked:
-            todos.forget_material(material_id)
-        store.delete(material_id)
+        store.delete(material_id, force=force)  # 被待办关联时返回 409（confirm），清理规则见 MaterialStore.delete
 
     def weekly_out(r: WeeklyReport) -> WeeklyOut:
         return WeeklyOut.model_validate(r, from_attributes=True)

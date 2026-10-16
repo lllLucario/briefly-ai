@@ -1,10 +1,13 @@
 """业务数据库（SQLAlchemy）。会话记忆由 LangGraph checkpointer 单独存储，不在这里。"""
+import logging
 from pathlib import Path
 
-from sqlalchemy import Engine, StaticPool, create_engine
+from sqlalchemy import Engine, StaticPool, create_engine, event
 from sqlalchemy.orm import DeclarativeBase
 
 from . import config
+
+log = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -28,5 +31,29 @@ def create_db_engine(url: str | None = None) -> Engine:
         else:
             Path(url.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)
     engine = create_engine(url, **kwargs)
+    if engine.dialect.name == "sqlite":
+        event.listen(engine, "connect", _enable_foreign_keys)
     Base.metadata.create_all(engine)
+    if engine.dialect.name == "sqlite":
+        orphans = foreign_key_problems(engine)
+        if orphans:  # 打开约束之前写进去的失效引用：只报告，不自动删（由人判断怎么处理）
+            log.warning("数据库里有 %d 条引用指向不存在的记录：%s", sum(orphans.values()), orphans)
     return engine
+
+
+def foreign_key_problems(engine: Engine) -> dict[str, int]:
+    """SQLite 外键检查：{表名: 引用失效的行数}。"""
+    with engine.connect() as conn:
+        rows = conn.exec_driver_sql("PRAGMA foreign_key_check").all()
+    out: dict[str, int] = {}
+    for row in rows:
+        out[row[0]] = out.get(row[0], 0) + 1
+    return out
+
+
+def _enable_foreign_keys(dbapi_connection, _record) -> None:
+    """SQLite 默认不检查外键：每个连接打开约束，表结构里的 ON DELETE CASCADE / SET NULL 才生效，
+    也不会写进指向不存在记录的引用。"""
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()

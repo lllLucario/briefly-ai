@@ -8,7 +8,7 @@
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from sqlalchemy import Engine, delete, func, or_, select, update
+from sqlalchemy import Engine, func, or_, select, update
 from sqlalchemy.orm import sessionmaker
 
 from ..materials import TRACKED, Material, MaterialNotFound, MaterialStore
@@ -20,7 +20,6 @@ from .models import (
     CREATED,
     DIRECT,
     DONE,
-    MATERIAL_DELETED,
     MATERIAL_LINKED,
     MATERIAL_UNLINKED,
     NOTE,
@@ -375,16 +374,6 @@ class TodoService:
             key = track_key_of(s, material) if material and same_file else None
             ids = s.scalars(select(TodoMaterial.todo_id).where(_same_material(material_id, key))).all()
             return list(s.scalars(select(Todo).where(Todo.id.in_(ids)).order_by(Todo.id)))
-
-    def forget_material(self, material_id: int) -> None:
-        """材料库里删除了材料（用户已确认）：去掉关联，每个待办记一条活动。"""
-        with self._session() as s:
-            material = s.get(Material, material_id)
-            links = list(s.scalars(select(TodoMaterial).where(TodoMaterial.material_id == material_id)))
-            for link in links:
-                s.add(TodoActivity(todo_id=link.todo_id, event_type=MATERIAL_DELETED, material_id=material_id, old_value={"title": material.title if material else ""}))
-            s.execute(delete(TodoMaterial).where(TodoMaterial.material_id == material_id))
-            s.commit()
 
     def materials(self, todo_id: int) -> list[LinkedMaterial]:
         """直接关联的材料，加上来自父待办的共享材料（只读，随当前父子关系变化）。"""

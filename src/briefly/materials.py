@@ -3,7 +3,7 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Engine, ForeignKey, Integer, String, Text, func, or_, select
+from sqlalchemy import JSON, DateTime, Engine, ForeignKey, Integer, String, Text, func, or_, select, update
 from sqlalchemy.orm import Mapped, mapped_column, relationship, sessionmaker
 
 from . import config
@@ -179,11 +179,42 @@ class MaterialStore:
             raise MaterialNotFound(f"材料 {material_id} 不存在")
         return material
 
-    def delete(self, material_id: int) -> None:
+    def delete(self, material_id: int, force: bool = False) -> None:
+        """删除材料及其在本应用里的全部数据（一个事务内完成，不留失效引用）。
+
+        - 关联在待办上：force=False 时拒绝（ConfirmationRequired，说明关联了几个待办）；确认后删除关联，
+          每个待办记一条“材料已删除”的活动，旧活动里的材料编号清空（标题仍在活动内容里）。
+        - 周报：正文和工作项不动；material_ids 里去掉它，记进 options.removed_materials（编号、标题、删除时间）。
+        - 章节、分块随材料删除；追踪版本对它的引用由外键置空。
+        - 飞书导入的材料：只删本地记录，不调用飞书，云端原文件不受影响。
+        """
+        from .todos.models import MATERIAL_DELETED, TodoActivity, TodoMaterial
+        from .todos.service import ConfirmationRequired
+        from .weekly import WeeklyReport
+
         with self._session() as s:
             material = s.get(Material, material_id)
             if material is None:
                 raise MaterialNotFound(f"材料 {material_id} 不存在")
+            links = list(s.scalars(select(TodoMaterial).where(TodoMaterial.material_id == material_id)))
+            todo_ids = list(dict.fromkeys(x.todo_id for x in links))
+            if todo_ids and not force:
+                raise ConfirmationRequired(
+                    f"《{material.title}》关联在 {len(todo_ids)} 个待办上。删除后这些待办里不再有这份材料"
+                    "（待办会记一条“材料已删除”），已生成的周报正文不变。确定删除吗？"
+                )
+            s.execute(update(TodoActivity).where(TodoActivity.material_id == material_id).values(material_id=None))
+            for todo_id in todo_ids:
+                s.add(TodoActivity(todo_id=todo_id, event_type=MATERIAL_DELETED, old_value={"title": material.title}))
+            for link in links:
+                s.delete(link)
+            removed = {"id": material.id, "title": material.title, "removed_at": datetime.now().isoformat(timespec="seconds")}
+            for report in s.scalars(select(WeeklyReport)):
+                if material_id in (report.material_ids or []):
+                    report.material_ids = [i for i in report.material_ids if i != material_id]
+                    options = dict(report.options or {})
+                    options["removed_materials"] = [*options.get("removed_materials", []), removed]
+                    report.options = options
             s.delete(material)
             s.commit()
 

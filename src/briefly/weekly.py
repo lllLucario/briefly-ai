@@ -303,6 +303,8 @@ class WeeklyService:
         started = time.monotonic()
         model = self._model_factory()
         sources, warnings = [], []
+        # 登记之后、生成之前从材料库删除的素材（删除时已从 material_ids 去掉，记在 removed_materials）
+        warnings += [f"材料 {x['id']} 已被删除，未纳入" for x in report.options.get("removed_materials", [])]
         for material_id in report.material_ids:
             try:
                 material = self.store.get(material_id)

@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from briefly import config
 from briefly.api import create_app
 from briefly.tracking import cli as track_cli
-from briefly.tracking.models import DAILY, DONE, FAILED, INTERRUPTED, FileSnapshot, ScanLock, ScanRun, WorkEvidence
+from briefly.tracking.models import DAILY, DONE, FAILED, INTERRUPTED, FileSnapshot, ReportPrep, ScanLock, ScanRun, WorkEvidence
 from briefly.tracking.scheduler import DailyScheduler, latest_due, run_due
 from briefly.tracking.storage import prune
 from tracking_util import env  # noqa: F401
@@ -184,7 +184,10 @@ def test_prune_keeps_referenced_latest_and_baseline_versions(env):
         # v1~v4 是 90 天前的，v5 是现在的；v2 被一条工作记录引用
         for snap in snaps[:4]:
             s.execute(update(FileSnapshot).where(FileSnapshot.id == snap.id).values(captured_at=datetime.now() - timedelta(days=90)))
-        s.add(WorkEvidence(prep_id=1, title="t", source_refs=[{"file_id": f.id, "from_snapshot_id": None, "to_snapshot_id": snaps[1].id}]))
+        prep = ReportPrep(collection_id=c.id, period_start=date.today(), period_end=date.today())
+        s.add(prep)
+        s.flush()
+        s.add(WorkEvidence(prep_id=prep.id, title="t", source_refs=[{"file_id": f.id, "from_snapshot_id": None, "to_snapshot_id": snaps[1].id}]))
         s.commit()
     old_digests = [snap.sha256 for snap in snaps]
 

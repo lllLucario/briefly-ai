@@ -1190,8 +1190,10 @@ $("#mail-weekly").addEventListener("click", async () => {
 function renderWeeklyMeta(r) {
   const g = r.generation || {};
   const evidence = r.options?.evidence_ids || [];
+  const removed = r.options?.removed_materials || [];
   const rows = [
-    ["素材", r.material_ids.length ? r.material_ids.map(materialTitle).join("、") : evidence.length ? "无" : "无（只用简述）"],
+    ["素材", r.material_ids.length ? r.material_ids.map(materialTitle).join("、") : evidence.length || removed.length ? "无" : "无（只用简述）"],
+    ...(removed.length ? [["已删除的素材", removed.map((x) => `《${x.title}》（生成后从材料库删除，正文不受影响）`).join("、")]] : []),
     ...(evidence.length ? [["工作记录", `${evidence.length} 条已确认（${evidence.map((i) => `E${i}`).join("、")}，来自文件追踪）`]] : []),
     ["简述", r.brief || "无"],
     ["读者 / 姓名", `${r.options?.audience || "直属上级"} / ${r.options?.name || "-"}`],

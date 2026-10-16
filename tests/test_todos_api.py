@@ -92,7 +92,7 @@ def test_deleting_linked_material_needs_confirmation():
         t = c.post("/todos", json={"title": "写方案"}).json()
         c.post(f"/todos/{t['id']}/materials", json={"material_id": m["id"]})
         r = c.delete(f"/materials/{m['id']}")
-        assert r.status_code == 409 and "写方案" in r.json()["detail"]
+        assert r.status_code == 409 and r.json()["confirm"] and "1 个待办" in r.json()["detail"]
         assert c.delete(f"/materials/{m['id']}", params={"force": True}).status_code == 204
         assert c.get(f"/todos/{t['id']}").json()["material_list"] == []
         events = [a["event_type"] for a in c.get(f"/todos/{t['id']}/activities").json()]
