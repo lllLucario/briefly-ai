@@ -111,7 +111,9 @@ function uiOpen({ title = "提示", message = "", fields = [], ok = "确定", ca
   $("#ui-message").classList.toggle("hidden", !message);
   $("#ui-fields").innerHTML = fields.map((f, i) => `<label class="stack ui-field">
       <span>${escapeHtml(f.label || "")}${f.required ? ' <span class="danger">*</span>' : ""}</span>
-      ${f.type === "textarea"
+      ${f.type === "select"
+        ? `<select data-ui="${i}">${(f.options || []).map((o) => `<option value="${escapeHtml(String(o.value))}">${escapeHtml(o.label)}</option>`).join("")}</select>`
+        : f.type === "textarea"
         ? `<textarea data-ui="${i}" rows="${f.rows || 3}" placeholder="${escapeHtml(f.placeholder || "")}">${escapeHtml(f.value || "")}</textarea>`
         : `<input data-ui="${i}" type="${f.type || "text"}" value="${escapeHtml(f.value || "")}" placeholder="${escapeHtml(f.placeholder || "")}">`}
       ${f.hint ? `<small class="muted">${escapeHtml(f.hint)}</small>` : ""}</label>`).join("");
@@ -187,7 +189,12 @@ document.querySelectorAll(".tabs button").forEach((btn) => {
 
 // ---------- 材料 ----------
 async function loadMaterials() {
-  state.materials = await api("/materials");
+  const [materials, tracking] = await Promise.all([
+    api("/materials"),
+    api("/tracking/feishu-docs").catch(() => ({})),
+  ]);
+  state.materials = materials;
+  state.feishuTracking = tracking;
   renderMaterialRows();
   renderWeeklyMaterialChecklist();
   if (typeof plans !== "undefined" && plans.id) renderPlanMaterials();
@@ -201,7 +208,7 @@ const FILE_TYPES = { feishu: "飞书文档", bitable: "多维表格", minutes: "
 function renderMaterialRows() {
   const rows = $("#material-rows");
   if (!state.materials.length) {
-    rows.innerHTML = `<tr><td colspan="8" class="muted">还没有材料。可以上传文件或粘贴文字。</td></tr>`;
+    rows.innerHTML = `<tr><td colspan="9" class="muted">还没有材料。可以上传文件、粘贴文字，或从飞书导入。</td></tr>`;
     return;
   }
   rows.innerHTML = state.materials.map((m) => `
@@ -209,6 +216,7 @@ function renderMaterialRows() {
       <td>${m.id}</td>
       <td>${escapeHtml(m.title)} ${m.warnings.length ? `<span class="warn-dot" title="${escapeHtml(m.warnings.join("\n"))}">⚠</span>` : ""}</td>
       <td class="nowrap">${fileIcon(m.file_type || "paste")} ${escapeHtml(FILE_TYPES[m.file_type] || kindName(m.file_type || "paste"))}</td>
+      <td class="track-cell">${trackCell(m)}</td>
       <td>${m.char_count}</td>
       <td>${m.chunk_count} / ${m.section_count}</td>
       <td>${m.structure || "-"}</td>
@@ -217,7 +225,83 @@ function renderMaterialRows() {
     </tr>`).join("");
 }
 
+// ---------- 材料的追踪状态 ----------
+// 材料是导入时内容的副本；飞书文档可以另外开启追踪：周报计划定期检查原文档的修改
+const UNTRACKABLE = {
+  bitable: "多维表格暂不支持追踪，导入的是当时的内容",
+  minutes: "妙记的文字稿不会再变，不需要追踪",
+};
+
+function trackCell(m) {
+  if (m.feishu?.kind !== "docx") {
+    const why = UNTRACKABLE[m.feishu?.kind]
+      || "上传或粘贴的是一份副本，没法回去检查原文件的修改。要追踪本机文件，请在“周报”页的周报计划里添加文件路径";
+    return `<span class="muted" title="${escapeHtml(why)}">不可追踪</span>`;
+  }
+  const entries = state.feishuTracking?.[m.feishu.token] || [];
+  const chips = entries.map((t) => {
+    const paused = t.status === "paused" ? "（已暂停）" : "";
+    if (t.folder) {
+      return `<span class="chip" title="随文件夹“${escapeHtml(t.folder)}”追踪；要停止，请在周报计划里移除整个文件夹">追踪中 · ${escapeHtml(t.plan)}${paused}（随文件夹）</span>`;
+    }
+    return `<span class="chip">追踪中 · ${escapeHtml(t.plan)}${paused}<button type="button" data-untrack="${t.source_id}" data-plan="${escapeHtml(t.plan)}" title="停止追踪（历史版本保留）">✕</button></span>`;
+  }).join("");
+  const free = (typeof plans !== "undefined" ? plans.list : []).filter((p) => !entries.some((t) => t.plan_id === p.id));
+  const add = entries.length && !free.length ? ""
+    : `<button type="button" class="ghost small" data-track="${m.id}" title="加入周报计划：定期检查这篇飞书文档的修改，记录到本周工作里">${entries.length ? "＋" : "开启追踪"}</button>`;
+  return `<span class="track-chips">${chips}${add}</span>`;
+}
+
+// 选一个周报计划；没有计划时提示先新建。返回计划或 null
+async function choosePlan(title, message, exclude = []) {
+  const list = (typeof plans !== "undefined" ? plans.list : []).filter((p) => !exclude.includes(p.id));
+  if (!list.length) {
+    await uiAlert(plans.list.length ? "所有周报计划都已经在追踪了。" : "还没有周报计划。先到“周报”页新建一个，再回来开启追踪。", title);
+    return null;
+  }
+  const r = await uiPrompt({
+    title,
+    message,
+    fields: [{ name: "plan", label: "加入哪个周报计划", type: "select", options: list.map((p) => ({ value: p.id, label: p.name })) }],
+    ok: "开始追踪",
+  });
+  return r ? list.find((p) => String(p.id) === r.plan) : null;
+}
+
+async function trackMaterial(id) {
+  const m = state.materials.find((x) => x.id === id);
+  const tracked = (state.feishuTracking?.[m.feishu.token] || []).map((t) => t.plan_id);
+  const plan = await choosePlan("开启追踪",
+    `追踪《${escapeHtml(m.title)}》：之后每个工作日检查这篇飞书文档有没有修改，变化会记录到周报计划的“本周准备”里。<br>材料库里这份材料不会变，它是导入时的内容。`, tracked);
+  if (!plan) return;
+  const msg = $("#material-msg");
+  showNotice(msg, `正在加入周报计划“${escapeHtml(plan.name)}”并记录初始版本…`);
+  try {
+    const r = await api(`/tracking/collections/${plan.id}/sources`, { method: "POST", json: { paths: [m.feishu.url] } });
+    showNotice(msg, r.added.length ? `已开始追踪《${escapeHtml(m.title)}》（周报计划“${escapeHtml(plan.name)}”）。` : r.messages.map(escapeHtml).join("<br>"), r.added.length ? "" : "warn");
+  } catch (err) { showNotice(msg, escapeHtml(err.message), "error"); }
+  await Promise.all([loadMaterials(), loadPlans()]);
+}
+
+async function untrack(sourceId, plan) {
+  if (!(await uiConfirm(`不再在周报计划“${plan}”里追踪这篇文档？已记录的历史版本会保留，材料也不受影响。`, { title: "停止追踪", ok: "停止追踪", danger: true }))) return;
+  try {
+    await api(`/tracking/sources/${sourceId}/remove`, { method: "POST" });
+  } catch (err) { showNotice($("#material-msg"), escapeHtml(err.message), "error"); }
+  await Promise.all([loadMaterials(), loadPlans()]);
+}
+
 $("#material-rows").addEventListener("click", async (e) => {
+  const track = e.target.closest("[data-track]");
+  if (track) {
+    e.stopPropagation();
+    return trackMaterial(Number(track.dataset.track));
+  }
+  const stop = e.target.closest("[data-untrack]");
+  if (stop) {
+    e.stopPropagation();
+    return untrack(Number(stop.dataset.untrack), stop.dataset.plan);
+  }
   const del = e.target.closest("[data-delete]");
   if (del) {
     e.stopPropagation();
@@ -401,7 +485,6 @@ const pickable = (x) => x.kind === "folder" || x.importable;
 $("#open-drive").addEventListener("click", async () => {
   $("#drive-msg").classList.add("hidden");
   await loadFeishu();
-  renderTrackOptions();
   $("#drive-dialog").showModal();
   if (state.feishu?.user && !state.driveTree[""]) loadDriveFolder("");
   else renderDrive();
@@ -502,9 +585,10 @@ function renderDriveSelection() {
   $("#drive-import").disabled = !n;
   const docs = n - pickedFolders;
   const parts = [docs ? `${docs} 篇` : "", pickedFolders ? `${pickedFolders} 个文件夹` : ""].filter(Boolean).join(" + ");
-  $("#drive-import").textContent = n ? `导入所选（${parts}）` : "导入所选";
+  $("#drive-import").textContent = n ? `导入为材料（${parts}）` : "导入为材料";
   $("#drive-import").title = pickedFolders ? "文件夹会导入其中（含子文件夹）支持的文档，导入前会确认篇数" : "";
   $("#drive-track").disabled = !n;
+  $("#drive-track").textContent = pickedFolders ? `追踪…（含 ${pickedFolders} 个文件夹）` : "追踪…";
 }
 
 function setPick(x, on) {
@@ -620,10 +704,10 @@ $("#drive-import").addEventListener("click", async () => {
       }
       if (jobs.size > IMPORT_FOLDER_LIMIT) {
         renderDriveSelection();
-        return showNotice(msg, `一共 ${jobs.size} 篇文档，超过一次导入的上限 ${IMPORT_FOLDER_LIMIT} 篇。请展开文件夹只勾选需要的文档；需要持续关注整个文件夹，可以用“追踪到周报计划”。`, "warn");
+        return showNotice(msg, `一共 ${jobs.size} 篇文档，超过一次导入的上限 ${IMPORT_FOLDER_LIMIT} 篇。请展开文件夹只勾选需要的文档；需要持续关注整个文件夹，可以用“追踪…”。`, "warn");
       }
       const ok = await uiConfirm(
-        `所选的 ${folderKeys.length} 个文件夹里共有 ${found} 篇可导入的文档${skipped ? `（另有 ${skipped} 个条目类型不支持，会跳过）` : ""}${jobs.size > found ? `，加上单独勾选的，一共 ${jobs.size} 篇` : ""}，每篇成为一份材料。\n\n导入的是现在的内容，之后文档有改动不会自动更新；需要跟踪变化请用“追踪到周报计划”。`,
+        `所选的 ${folderKeys.length} 个文件夹里共有 ${found} 篇可导入的文档${skipped ? `（另有 ${skipped} 个条目类型不支持，会跳过）` : ""}${jobs.size > found ? `，加上单独勾选的，一共 ${jobs.size} 篇` : ""}，每篇成为一份材料。\n\n导入的是现在的内容，之后文档有改动不会自动更新；需要跟踪变化，可以导入后在材料库里开启追踪，或用“追踪…”。`,
         { title: "导入文件夹里的文档", ok: `导入 ${jobs.size} 篇` },
       );
       if (!ok) {
@@ -656,29 +740,24 @@ $("#drive-import").addEventListener("click", async () => {
 });
 
 // 批量追踪：文档、知识库页面、文件夹（整个文件夹）可以追踪；多维表格、妙记只能导入
-function renderTrackOptions() {
-  const list = typeof plans !== "undefined" ? plans.list : [];
-  $("#drive-track").innerHTML = `<option value="">追踪到周报计划…</option>`
-    + list.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("")
-    + (list.length ? "" : `<option value="" disabled>（还没有周报计划，先在“周报”页新建）</option>`);
-}
 
-$("#drive-track").addEventListener("change", async (e) => {
-  const planId = e.target.value;
-  if (!planId) return;
-  const plan = plans.list.find((p) => String(p.id) === planId);
+$("#drive-track").addEventListener("click", async () => {
   const chosen = [...state.driveSelected.entries()].filter(([, x]) => ["docx", "wiki", "folder"].includes(x.kind));
   const skipped = state.driveSelected.size - chosen.length;
   const msg = $("#drive-msg");
-  e.target.value = "";
   if (!chosen.length) {
-    return showNotice(msg, "所选项里没有能追踪的：只有飞书文档、知识库页面和文件夹能追踪，多维表格、妙记请用“导入所选”。", "warn");
+    return showNotice(msg, "所选项里没有能追踪的：只有飞书文档、知识库页面和文件夹能追踪，多维表格、妙记请用“导入为材料”。", "warn");
   }
   const folders = chosen.filter(([, x]) => x.kind === "folder").length;
+  const plan = await choosePlan("追踪所选",
+    `把所选的 ${chosen.length - folders ? `${chosen.length - folders} 篇文档` : ""}${chosen.length - folders && folders ? "和" : ""}${folders ? `${folders} 个文件夹` : ""}加入周报计划，之后每个工作日检查修改，变化记录到“本周准备”里。`
+    + (folders ? "<br>文件夹会整个追踪：以后新放进去的文档也会自动纳入。" : "")
+    + "<br>追踪不会把文档存进材料库；需要拿当前内容来对话或总结，请用“导入为材料”。");
+  if (!plan) return;
   showNotice(msg, `正在加入周报计划“${escapeHtml(plan.name)}”并记录初始版本…${folders ? "（文件夹里的文档较多时需要一会儿）" : ""}`);
   try {
     const names = Object.fromEntries(chosen.map(([, x]) => [x.url, x.name]));
-    const r = await api(`/tracking/collections/${planId}/sources`, { method: "POST", json: { paths: chosen.map(([, x]) => x.url), names } });
+    const r = await api(`/tracking/collections/${plan.id}/sources`, { method: "POST", json: { paths: chosen.map(([, x]) => x.url), names } });
     const addedFolders = r.added.filter((s) => s.kind === "feishu_folder");
     const docsInFolders = addedFolders.reduce((n, s) => n + (s.folder?.docs || 0), 0);
     const lines = [`已加入周报计划“${escapeHtml(plan.name)}”：${r.added.length - addedFolders.length} 篇文档`
@@ -688,7 +767,7 @@ $("#drive-track").addEventListener("change", async (e) => {
     showNotice(msg, lines.join("<br>"), r.messages.length || skipped ? "warn" : "");
     chosen.forEach(([key]) => state.driveSelected.delete(key));
     renderDrive();
-    await loadPlans();
+    await Promise.all([loadPlans(), loadMaterials()]);
   } catch (err) { showNotice(msg, escapeHtml(err.message), "error"); }
 });
 

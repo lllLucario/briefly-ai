@@ -202,6 +202,10 @@ def register(app: FastAPI, model_factory: Callable[[], BaseChatModel], feishu_fa
         folders = svc().feishu_folders(ref)
         return {"added": [_source(x, folders) for x in result.added], "messages": result.messages, "scan": _scan(result.scan)}
 
+    @app.get("/tracking/feishu-docs", tags=[docs.TRACKING], summary="飞书文档被哪些周报计划追踪（材料页显示追踪状态）")
+    def feishu_docs():
+        return svc().feishu_tracking()
+
     @app.post("/tracking/sources/{source_id}/{action}", tags=[docs.TRACKING], summary="暂停 / 恢复 / 移除追踪源")
     def source_action(source_id: int, action: str):
         s = svc()

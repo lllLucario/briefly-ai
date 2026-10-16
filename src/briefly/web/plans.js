@@ -44,6 +44,7 @@ async function loadPlans() {
   try { plans.list = await api("/tracking/collections"); } catch (_) { plans.list = []; }
   renderPlanList();
   renderTrackedSummary();
+  if (state.materials) renderMaterialRows(); // 材料的“追踪”一栏要知道有哪些计划
   if (plans.id && currentPlan()) {  // 计划的文件数、最近检查时间变了：本周准备页跟着刷新
     renderWeekLabel();
     if (plans.sub === "week") renderPrep();
@@ -585,7 +586,7 @@ $("#plan-delete").addEventListener("click", async () => {
   showWeeklyView("empty");
 });
 
-// ---------- 材料页：正在追踪的文件（飞书文档“追踪到周报计划”在 app.js 的云空间弹窗里）
+// ---------- 材料页：正在追踪的文件（飞书文档的追踪入口在 app.js：材料行的“开启追踪”和云空间弹窗的“追踪…”）
 async function renderTrackedSummary() {
   const total = plans.list.reduce((n, p) => n + p.sources, 0);
   $("#tracked-box").classList.toggle("hidden", !total);

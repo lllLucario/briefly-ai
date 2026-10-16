@@ -60,10 +60,12 @@
       <div class="chat-head">
         <h3>材料库</h3>
         <div class="row gap wrap">
-          <button id="open-drive" class="ghost feishu-only hidden">飞书云空间</button>
+          <button id="open-drive" class="ghost feishu-only hidden" title="从自己的飞书云空间挑选文档或文件夹：导入为材料，或加入周报计划追踪">飞书云空间</button>
           <button id="open-add" class="primary">＋ 添加材料</button>
         </div>
       </div>
+      <p class="muted small intro">材料是添加时内容的一份副本，用来对话、总结和生成周报，之后原文件改了也不会变。
+        飞书文档可以另外<b>开启追踪</b>：加入周报计划后，每个工作日检查原文档的修改，记录到“本周准备”里。</p>
       <div id="material-msg" class="notice hidden"></div>
       <details id="tracked-box" class="meta hidden">
         <summary id="tracked-summary">正在追踪的文件</summary>
@@ -71,7 +73,7 @@
       </details>
       <div class="table-wrap">
         <table class="table">
-          <thead><tr><th>编号</th><th>标题</th><th>类型</th><th>字数</th><th>块 / 章节</th><th>结构来源</th><th>添加时间</th><th></th></tr></thead>
+          <thead><tr><th>编号</th><th>标题</th><th>类型</th><th>追踪</th><th>字数</th><th>块 / 章节</th><th>结构来源</th><th>添加时间</th><th></th></tr></thead>
           <tbody id="material-rows"></tbody>
         </table>
       </div>
@@ -251,7 +253,7 @@
     </form>
     <form id="feishu-form" class="add-pane stack hidden">
       <input id="feishu-url" placeholder="粘贴飞书文档、知识库页面、多维表格或妙记链接">
-      <small class="muted">没连接飞书账号时，需要先在文档右上角“…→ 更多 → 添加文档应用”把应用加进来。要从自己的云空间里挑选，用“飞书云空间”。</small>
+      <small class="muted">导入的是现在的内容；飞书文档导入后，可以在材料库的“追踪”一栏开启追踪。没连接飞书账号时，需要先在文档右上角“…→ 更多 → 添加文档应用”把应用加进来。要从自己的云空间里挑选，用“飞书云空间”。</small>
       <div class="row end"><button class="primary">读取飞书内容</button></div>
     </form>
     <div id="add-msg" class="notice hidden"></div>
@@ -276,9 +278,11 @@
         <span id="drive-selected" class="muted">未选择</span>
         <button type="button" id="drive-clear" class="ghost small hidden">清空</button>
         <span class="grow"></span>
-        <select id="drive-track" title="持续追踪所选文档的变化，加入一个周报计划（只支持文档和知识库页面）"></select>
-        <button type="button" id="drive-import" class="primary" disabled>导入所选</button>
+        <button type="button" id="drive-track" class="ghost" disabled title="加入周报计划，之后定期检查修改；不存进材料库">追踪…</button>
+        <button type="button" id="drive-import" class="primary" disabled title="保存现在的内容到材料库，用来对话、总结">导入为材料</button>
       </div>
+      <p class="muted small drive-hint"><b>导入为材料</b>：保存现在的内容，之后不会更新（导入后也可以在材料库里开启追踪）。
+        <b>追踪</b>：加入周报计划，每个工作日检查修改；文件夹会整个追踪，以后新放进去的文档也会纳入。</p>
       <div id="drive-msg" class="notice hidden"></div>
     </div>
   </dialog>

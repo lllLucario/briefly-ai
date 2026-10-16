@@ -72,6 +72,7 @@ class MaterialOut(BaseModel):
     structure: str | None  # 章节来源：font_size / bookmarks / docx_styles / sheets / markdown / rules / none
     warnings: list[str]
     created_at: datetime
+    feishu: dict | None = None  # 从飞书导入的材料：{kind, token, url}，用于开启追踪
 
 
 class MaterialDetail(MaterialOut):
@@ -380,6 +381,9 @@ def create_app(
             structure=m.parse_report.get("structure"),
             warnings=m.parse_report.get("warnings", []),
             created_at=m.created_at,
+            feishu={k: v for k, v in feishu.items() if k in ("kind", "token", "url")}
+            if (feishu := m.parse_report.get("feishu"))
+            else None,
         )
 
     def created(store: MaterialStore, m: Material, is_new: bool, response: Response) -> CreatedMaterial:

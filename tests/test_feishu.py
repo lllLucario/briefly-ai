@@ -525,6 +525,9 @@ def test_api_import_link(api):
     r = client.post("/materials/feishu", json={"url": f"https://abc.feishu.cn/docx/{DOC}"})
     assert r.status_code == 201 and r.json()["material"]["title"] == "项目周记"
     assert r.json()["material"]["source"] == "feishu"
+    feishu = r.json()["material"]["feishu"]  # 材料页据此开启追踪
+    assert (feishu["kind"], feishu["token"]) == ("docx", DOC) and feishu["url"].endswith(DOC)
+    assert client.get("/tracking/feishu-docs").json() == {}
     again = client.post("/materials/feishu", json={"url": f"https://abc.feishu.cn/docx/{DOC}"})
     assert again.status_code == 200 and again.json()["created"] is False
 

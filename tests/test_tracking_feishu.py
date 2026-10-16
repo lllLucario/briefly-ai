@@ -319,3 +319,18 @@ def test_folder_name_from_web_is_used(folder_env):
     c = svc.create_collection("项目A")
     source = svc.add_paths(c.id, [FOLDER_URL], names={FOLDER_URL: "网页带来的名字"}).added[0]
     assert svc.feishu_folders(c.id)[source.id].name == "网页带来的名字"
+
+
+def test_tracking_status_by_document(folder_env):
+    """材料页的“追踪”一栏：每篇飞书文档被哪些周报计划追踪，单独添加的可以停止，随文件夹的标出文件夹名。"""
+    svc, drive = folder_env
+    a, b = svc.create_collection("项目A"), svc.create_collection("项目B")
+    folder = svc.add_paths(a.id, [FOLDER_URL]).added[0]
+    single = svc.add_paths(b.id, ["https://abc.feishu.cn/docx/docA1234567890"]).added[0]
+    status = svc.feishu_tracking()
+    assert status["docB1234567890"] == [
+        {"plan_id": a.id, "plan": "项目A", "source_id": folder.id, "status": "active", "folder": "项目资料"}
+    ]
+    assert {(x["plan"], x["folder"]) for x in status["docA1234567890"]} == {("项目A", "项目资料"), ("项目B", None)}
+    svc.remove_source(single.id)
+    assert [x["plan"] for x in svc.feishu_tracking()["docA1234567890"]] == ["项目A"]

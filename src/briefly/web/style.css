@@ -133,6 +133,10 @@ button:disabled { opacity: .5; cursor: default; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
 .chip { background: var(--accent-soft); color: var(--accent); border-radius: 12px; padding: 1px 10px; font-size: 12px; }
 .chip button { border: none; background: none; padding: 0 0 0 4px; color: inherit; }
+.track-chips { display: inline-flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+.track-cell .chip { white-space: nowrap; }
+.intro { margin: -4px 0 12px; line-height: 1.6; }
+.drive-hint { margin: 6px 0 0; line-height: 1.6; }
 
 .notice {
   margin: 10px 16px 0; padding: 10px 14px; border-radius: 8px;

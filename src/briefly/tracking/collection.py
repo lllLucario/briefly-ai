@@ -356,6 +356,42 @@ class TrackingService:
         with self._session() as s:
             return s.scalar(select(func.max(ScanRun.finished_at)).where(ScanRun.collection_id == c.id, ScanRun.status == DONE))
 
+    def feishu_tracking(self) -> dict[str, list[dict]]:
+        """所有周报计划里飞书文档的追踪情况：{document_id: [{plan_id, plan, source_id, status, folder}]}。
+
+        单独添加的文档 folder 为空；随文件夹追踪的，folder 是文件夹名（不能单独停止，只能移除整个文件夹）。
+        """
+        out: dict[str, list[dict]] = {}
+        with self._session() as s:
+            plans = {c.id: c.name for c in s.scalars(select(TrackingCollection))}
+            sources = list(
+                s.scalars(
+                    select(TrackingSource).where(
+                        TrackingSource.kind.in_([FEISHU, FEISHU_FOLDER]), TrackingSource.status != REMOVED
+                    )
+                )
+            )
+            folders = {x.source_id: x.name for x in s.scalars(select(FeishuFolder))}
+            members = s.execute(
+                select(FeishuFolderMember.source_id, FeishuFolderMember.file_key).where(
+                    FeishuFolderMember.source_id.in_([x.id for x in sources if x.kind == FEISHU_FOLDER])
+                )
+            ).all()
+        by_id = {x.id: x for x in sources}
+
+        def add(key: str, source: TrackingSource, folder: str | None) -> None:
+            out.setdefault(key.rsplit("/", 1)[-1], []).append(
+                {"plan_id": source.collection_id, "plan": plans.get(source.collection_id, ""),
+                 "source_id": source.id, "status": source.status, "folder": folder}
+            )  # fmt: skip
+
+        for x in sources:
+            if x.kind == FEISHU:
+                add(x.path, x, None)
+        for sid, key in members:
+            add(key, by_id[sid], folders.get(sid) or "飞书文件夹")
+        return out
+
     def feishu_folders(self, ref: str | int) -> dict[int, FeishuFolder]:
         """飞书文件夹追踪源的名称与统计：{追踪源编号: FeishuFolder}。"""
         c = self.collection(ref)
