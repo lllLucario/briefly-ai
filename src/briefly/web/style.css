@@ -229,6 +229,41 @@ dialog h3 { margin-top: 0; }
 .file-rows { margin-top: 10px; max-height: 260px; overflow-y: auto; }
 .prep-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0; }
 
+/* 待办 */
+.todo-list li { white-space: normal; }
+.todo-list li.child { padding-left: 28px; }
+.todo-list li .todo-line { display: flex; align-items: center; gap: 6px; }
+.todo-list li .todo-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.todo-list li.done .todo-name { color: var(--muted); text-decoration: line-through; }
+.todo-list li.archived .todo-name { color: var(--muted); }
+.todo-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--line); }
+.todo-dot.doing { background: var(--accent); }
+.todo-dot.done { background: #2a8a4a; }
+.todo-info { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 13px; margin-bottom: 8px; }
+.todo-info dt { color: var(--muted); }
+.todo-info dd { margin: 0; white-space: pre-wrap; }
+.todo-section { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 14px; }
+.section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.section-head h4 { margin: 0; }
+.todo-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 13px; border-bottom: 1px dashed var(--line); flex-wrap: wrap; }
+.todo-row:last-child { border-bottom: none; }
+.todo-row .grow { min-width: 120px; }
+.todo-row a { color: var(--accent); cursor: pointer; }
+.mat-group { margin: 6px 0 2px; font-size: 12px; color: var(--muted); }
+.badge.ok { background: #e8f7ee; color: #2a8a4a; }
+.badge.bad { background: #fdecea; color: var(--danger); }
+.timeline { margin-top: 8px; font-size: 13px; max-height: 360px; overflow-y: auto; }
+.timeline .tl { display: flex; gap: 10px; padding: 3px 0; }
+.timeline .tl time { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.timeline .tl.file { color: var(--muted); }
+.picker-list { max-height: 50vh; }
+.ev-todos { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 6px; font-size: 12px; }
+.ev-todo { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; background: var(--bg); border-radius: 6px; padding: 2px 8px; }
+.ev-todo select { padding: 1px 4px; font-size: 12px; }
+.ev-todo button { padding: 1px 8px; font-size: 12px; }
+.ev-events { font-size: 12px; color: var(--muted); margin: 4px 0 0 0; padding-left: 18px; }
+.todo-refs { margin-top: 12px; font-size: 13px; }
+
 #print-area { display: none; }
 @media print {
   body > *:not(#print-area) { display: none !important; }

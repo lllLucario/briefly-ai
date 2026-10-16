@@ -98,6 +98,16 @@ def event_text(a: TodoActivity) -> str:
     return ""
 
 
+def description_parts(events: list[TodoActivity], todo: Todo) -> list[str]:
+    """记录的描述：周期内发生的事。只是新建的待办写“新建待办”和截止日期；有其他进展时不再写“新建待办”。"""
+    texts = [t for t in (event_text(a) for a in events if a.event_type != CREATED) if t]
+    if texts:
+        return texts
+    created = next((a for a in events if a.event_type == CREATED), None)
+    text = event_text(created) if created else "新建待办"
+    return [text + (f"，截止日期 {todo.due_date.isoformat()}" if todo.due_date else "")]
+
+
 def category_of(events: list[TodoActivity], end_status: str) -> str:
     kinds = {a.event_type for a in events}
     completed = any(a.event_type in (COMPLETED, STATUS_SYNCED, CREATED) and (a.new_value or {}).get("status") == DONE for a in events)
@@ -174,7 +184,7 @@ class TodoEvidence:
                 continue
             parent = all_todos.get(todo.parent_id) if todo.parent_id else None
             end_status = _status_after([a for a in history if a.todo_id == todo_id], todo.status)
-            texts = [t for t in (event_text(a) for a in events) if t]
+            texts = description_parts(events, todo)
             info = _todo_info(todo, parent) | {
                 "status_in_period": end_status,
                 "activity_ids": [a.id for a in events],

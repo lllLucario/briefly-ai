@@ -1,4 +1,4 @@
-// Briefly AI 网页：对话、材料、周报。原生 JS，直接调用同源的 FastAPI 接口。
+// Briefly AI 网页：对话、待办、材料、周报。原生 JS，直接调用同源的 FastAPI 接口。
 "use strict";
 
 const $ = (sel) => document.querySelector(sel);
@@ -26,11 +26,15 @@ async function api(path, options = {}) {
   const resp = await fetch(path, opts);
   if (!resp.ok) {
     let detail = `${resp.status} ${resp.statusText}`;
+    let body = null;
     try {
-      const body = await resp.json();
+      body = await resp.json();
       if (body.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
     } catch (_) { /* 非 JSON 错误 */ }
-    throw new Error(detail);
+    const err = new Error(detail);
+    err.status = resp.status;
+    err.needsConfirm = resp.status === 409 && Boolean(body?.confirm); // 需要用户确认后带 confirm / force 重试
+    throw err;
   }
   return resp.status === 204 ? null : resp.json();
 }
@@ -112,7 +116,7 @@ function uiOpen({ title = "提示", message = "", fields = [], ok = "确定", ca
   $("#ui-fields").innerHTML = fields.map((f, i) => `<label class="stack ui-field">
       <span>${escapeHtml(f.label || "")}${f.required ? ' <span class="danger">*</span>' : ""}</span>
       ${f.type === "select"
-        ? `<select data-ui="${i}">${(f.options || []).map((o) => `<option value="${escapeHtml(String(o.value))}">${escapeHtml(o.label)}</option>`).join("")}</select>`
+        ? `<select data-ui="${i}">${(f.options || []).map((o) => `<option value="${escapeHtml(String(o.value))}" ${String(o.value) === String(f.value ?? "") ? "selected" : ""}>${escapeHtml(o.label)}</option>`).join("")}</select>`
         : f.type === "textarea"
         ? `<textarea data-ui="${i}" rows="${f.rows || 3}" placeholder="${escapeHtml(f.placeholder || "")}">${escapeHtml(f.value || "")}</textarea>`
         : `<input data-ui="${i}" type="${f.type || "text"}" value="${escapeHtml(f.value || "")}" placeholder="${escapeHtml(f.placeholder || "")}">`}
@@ -183,6 +187,7 @@ document.querySelectorAll(".tabs button").forEach((btn) => {
     document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b === btn));
     document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.id === `tab-${btn.dataset.tab}`));
     if (btn.dataset.tab === "materials") loadMaterials();
+    if (btn.dataset.tab === "todos") { loadMaterials(); loadPlans(); loadTodos(); }
     if (btn.dataset.tab === "weekly") { loadMaterials(); loadWeeklyList(); loadPlans(); }
   });
 });
@@ -314,7 +319,14 @@ $("#material-rows").addEventListener("click", async (e) => {
     const id = Number(del.dataset.delete);
     if (!(await uiConfirm(`删除材料 ${materialTitle(id)}？`, { title: "删除材料", ok: "删除", danger: true }))) return;
     try {
-      await api(`/materials/${id}`, { method: "DELETE" });
+      try {
+        await api(`/materials/${id}`, { method: "DELETE" });
+      } catch (err) {
+        // 材料关联在待办上：说明影响，再确认一次
+        if (!err.needsConfirm) throw err;
+        if (!(await uiConfirm(err.message, { title: "删除材料", ok: "仍然删除", danger: true }))) return;
+        await api(`/materials/${id}?force=true`, { method: "DELETE" });
+      }
       if (state.activeMaterial === id) { state.activeMaterial = null; $("#material-detail").classList.add("hidden"); }
       await loadMaterials();
     } catch (err) { showNotice($("#material-msg"), escapeHtml(err.message), "error"); }
@@ -1078,6 +1090,7 @@ async function refreshWeekly() {
   } else warnings.classList.add("hidden");
 
   $("#weekly-preview").innerHTML = done ? renderReport(r.content) : "";
+  renderWeeklyTodos(r);
   $("#feishu-weekly").disabled = !done;
   $("#mail-weekly").disabled = !done;
   if (done && state.mail?.configured) loadMailSends(id);
@@ -1087,6 +1100,22 @@ async function refreshWeekly() {
   $("#weekly-preview").classList.toggle("hide-tags", !$("#show-tags").checked);
   renderWeeklyMeta(r);
   loadWeeklyList();
+}
+
+// 周报关联的待办：生成时保存的快照（当时的标题、状态、层级），之后改待办不影响这里
+const REF_STATUS = { todo: "未开始", doing: "进行中", done: "已完成" };
+function renderWeeklyTodos(r) {
+  const refs = r.options?.todo_refs || [];
+  const box = $("#weekly-todos");
+  box.classList.toggle("hidden", !refs.length);
+  if (!refs.length) return;
+  const groups = {};
+  for (const x of refs) (groups[x.todo.parent_title || x.todo.title] ??= []).push(x);
+  box.innerHTML = `<details class="meta" open><summary>关联的待办（审核时的记录）</summary>${Object.entries(groups).map(([name, xs]) => `<div><b>${escapeHtml(name)}</b>：${xs.map((x) => {
+    const status = x.report_status ? `本次${REF_STATUS[x.report_status]}` : `当时${REF_STATUS[x.todo.status] || ""}`;
+    const who = x.todo.parent_title ? `${escapeHtml(x.todo.title)} · ` : "";
+    return `<span class="badge">${who}${escapeHtml(x.evidence?.title || "")}（E${x.evidence_id} · ${status}${x.relation === "material" ? " · 关联文件" : ""}${x.synced ? " · 已同步" : ""}）</span>`;
+  }).join(" ")}</div>`).join("")}</details>`;
 }
 
 function feishuLinks(exports) {

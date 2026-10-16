@@ -13,6 +13,7 @@
     <div class="brand">Briefly <span>AI</span></div>
     <nav class="tabs">
       <button data-tab="chat" class="active">对话</button>
+      <button data-tab="todos">待办</button>
       <button data-tab="materials">材料</button>
       <button data-tab="weekly">周报</button>
     </nav>
@@ -51,6 +52,72 @@
           <button id="send" class="primary">发送</button>
         </div>
       </form>
+    </section>
+  </main>
+
+  <!-- 待办 -->
+  <main id="tab-todos" class="tab">
+    <aside class="sidebar todo-side">
+      <button id="new-todo" class="primary block">＋ 新建待办</button>
+      <div class="row gap">
+        <select id="todo-filter" class="grow small" title="显示哪些待办">
+          <option value="open">未完成</option>
+          <option value="all">全部</option>
+          <option value="archived">已归档</option>
+        </select>
+      </div>
+      <ul id="todo-list" class="list todo-list"></ul>
+    </aside>
+    <section class="panel grow" id="todo-empty-panel">
+      <div class="empty">选择左侧的待办，或新建一个。<br>
+        待办可以有一层子待办；上传的文件和从材料库选的文件都只在材料库存一份。<br>
+        准备周报时，待办这周的进展和关联文件的修改会出现在周报计划的“本周工作”里，由你确认。</div>
+    </section>
+    <section class="panel grow hidden" id="todo-panel">
+      <div class="chat-head">
+        <h3 id="todo-title"></h3>
+        <div class="row gap wrap">
+          <select id="todo-status" title="状态">
+            <option value="todo">未开始</option><option value="doing">进行中</option><option value="done">已完成</option>
+          </select>
+          <button id="todo-edit" class="ghost">编辑</button>
+          <button id="todo-promote" class="ghost hidden" title="解除父子关系，变成独立待办；编号、材料、活动和历史周报都保留">转为独立待办</button>
+          <button id="todo-archive" class="ghost danger">归档</button>
+          <button id="todo-restore" class="ghost hidden">恢复</button>
+        </div>
+      </div>
+      <div id="todo-msg" class="notice hidden"></div>
+      <div id="todo-info" class="todo-info"></div>
+
+      <div id="todo-children-box" class="todo-section">
+        <div class="section-head"><h4>子待办 <span id="todo-progress" class="muted small"></span></h4>
+          <button id="todo-add-child" class="ghost small">＋ 子待办</button></div>
+        <div id="todo-children"></div>
+      </div>
+
+      <div class="todo-section">
+        <div class="section-head"><h4>材料</h4>
+          <div class="row gap">
+            <label class="button ghost small" title="从本机选文件：存进材料库并关联到这个待办">上传文件<input type="file" id="todo-upload" multiple accept=".txt,.md,.docx,.pdf,.xlsx,.csv" hidden></label>
+            <button id="todo-pick" class="ghost small" title="从材料库里已有的材料（包括导入的飞书文档）中选择">从材料库选择</button>
+          </div></div>
+        <div id="todo-materials"></div>
+        <small class="muted">解除关联不会删除材料。追踪（检查原文件的修改）在“材料”页或周报计划里开启；本机上传的是一份副本，不能追踪原文件。</small>
+      </div>
+
+      <div class="todo-section">
+        <div class="section-head"><h4>进展与活动</h4></div>
+        <form id="todo-note-form" class="row gap">
+          <input id="todo-note" class="grow" maxlength="500" placeholder="简短的进展说明（可选），如：完成竞品数据收集，等待财务提供报价">
+          <button class="ghost">记录</button>
+        </form>
+        <div id="todo-timeline" class="timeline"></div>
+      </div>
+
+      <div class="todo-section">
+        <div class="section-head"><h4>相关周报</h4></div>
+        <div id="todo-reports"></div>
+      </div>
     </section>
   </main>
 
@@ -210,6 +277,7 @@
       <div id="weekly-reminders" class="notice warn hidden"></div>
       <div id="weekly-warnings" class="notice hidden"></div>
       <article id="weekly-preview" class="markdown report"></article>
+      <div id="weekly-todos" class="todo-refs hidden"></div>
       <div id="weekly-editor" class="stack hidden">
         <textarea id="weekly-text" rows="22"></textarea>
         <div class="row gap"><button id="save-weekly" class="primary">保存</button><button id="cancel-edit" class="ghost">取消</button></div>
@@ -303,6 +371,14 @@
     </form>
   </dialog>
 
+  <!-- 待办：从材料库选择 -->
+  <dialog id="todo-picker" class="wide">
+    <div class="dialog-head"><h3>从材料库选择</h3><button type="button" class="ghost small" data-close>✕</button></div>
+    <input id="todo-picker-q" placeholder="按标题搜索" style="width:100%;margin-bottom:8px">
+    <div id="todo-picker-list" class="checklist picker-list"></div>
+    <div class="row gap end"><span id="todo-picker-count" class="muted grow"></span><button id="todo-picker-done" class="primary">关联</button></div>
+  </dialog>
+
   <!-- 选择材料弹窗 -->
   <dialog id="picker">
     <h3>选择对话用的材料</h3>
@@ -320,5 +396,6 @@
   <div id="print-area" class="markdown"></div>
   <script src="/web/app.js"></script>
   <script src="/web/plans.js"></script>
+  <script src="/web/todos.js"></script>
 </body>
 </html>

@@ -11,7 +11,34 @@ const FLAG_TEXT = {
   parse_failed: "解析失败", format_only: "只改了格式", pdf_text: "PDF 可能有提取误差", truncated: "变化过多已截断",
   others: "有他人的修订", mixed: "你和他人都有修订", no_owner: "未设置你在文档里的名字", deleted: "文件被删除",
   extract_failed: "部分变化未能概括", done_downgraded: "没写“完成”，不按已完成算",
+  increment: "审核之后的新进展",
 };
+const TODO_STATUS_TEXT = { todo: "未开始", doing: "进行中", done: "已完成" };
+
+// 记录关联的待办：所属（父 › 子）、现在的状态、本次报告的状态（只影响本次）、同步到待办（需要确认）
+function evidenceTodos(e) {
+  if (!e.todos?.length) return "";
+  const editable = ["PENDING", "CONFIRMED", "REJECTED"].includes(e.review_status);
+  return `<div class="ev-todos">${e.todos.map((t) => {
+    const path = t.parent_title ? `${escapeHtml(t.parent_title)} › ${escapeHtml(t.title)}` : escapeHtml(t.title);
+    const via = t.relation === "material"
+      ? (t.snapshot?.shared_with_children ? "关联文件的修改（父待办的共享材料，不算子待办的进展）" : "关联文件的修改（不代表任务完成）")
+      : "待办本周的记录";
+    const options = [["", "按记录判断"], ...Object.entries(TODO_STATUS_TEXT)].map(([v, label]) => `<option value="${v}" ${(t.report_status || "") === v ? "selected" : ""}>${v ? `本次：${label}` : label}</option>`).join("");
+    const differs = t.report_status && t.report_status !== t.status;
+    const sync = t.synced_at ? `<span class="badge ok">已同步到待办</span>`
+      : differs && editable ? `<button class="ghost" data-sync="${t.todo_id}" title="把本次的状态写回待办（会先确认）">同步到待办</button>` : "";
+    return `<span class="ev-todo" title="${escapeHtml(via)}">待办：<b>${path}</b>${t.archived ? "（已归档）" : ""}
+      <span class="muted">现在${TODO_STATUS_TEXT[t.status] || t.status}</span>
+      ${editable ? `<select data-todo-status="${t.todo_id}" title="本次周报里这项工作的状态；只影响这次周报，不改待办">${options}</select>` : ""}${sync}</span>`;
+  }).join("")}</div>`;
+}
+
+function evidenceEvents(e) {
+  const link = (e.todos || []).find((t) => t.relation === "activity");
+  const events = link?.snapshot?.events || [];
+  return events.length ? `<ul class="ev-events">${events.map((x) => `<li>${fmtTime(x.at)} ${escapeHtml(x.text)}</li>`).join("")}</ul>` : "";
+}
 const FILE_STATUS = { present: "正常", missing: "不在了", unreachable: "无法访问", untracked: "已不追踪" };
 
 function planMsg(html, kind = "") {
@@ -189,9 +216,9 @@ function evidenceHtml(e) {
     <div class="ev-head"><input type="checkbox" data-pick="${e.id}" ${plans.selected.has(e.id) ? "checked" : ""}>
       <b>${escapeHtml(e.title)}${e.user_edited && e.origin !== "manual" ? ' <span class="badge">你改过</span>' : ""}${e.has_update ? ' <span class="badge warn">有新变化，见新的待确认项</span>' : ""}</b>
       <span class="badge">${EV_CATEGORY[e.category] || e.category}</span></div>
-    <div>${escapeHtml(e.description)}</div>
-    <div class="ev-meta">归属：${ATTR_TEXT[e.attribution] || e.attribution}${e.attribution_basis.length && e.origin !== "manual" ? "（" + escapeHtml(e.attribution_basis[0]) + "）" : ""}
-      · 依据：${files ? escapeHtml(files) + " " + versions : "你补充的"} ${flags}</div>
+    <div>${escapeHtml(e.description)}</div>${evidenceEvents(e)}
+    <div class="ev-meta">归属：${e.origin === "todo" ? (e.attribution === "USER_CONFIRMED" ? "你已确认" : "你的待办") : (ATTR_TEXT[e.attribution] || e.attribution)}${e.attribution_basis.length && !["manual", "todo"].includes(e.origin) ? "（" + escapeHtml(e.attribution_basis[0]) + "）" : ""}
+      · 依据：${files ? escapeHtml(files) + " " + versions : e.origin === "todo" ? "你的待办记录" : "你补充的"} ${flags}</div>${evidenceTodos(e)}
     <div class="ev-actions">
       ${e.review_status !== "CONFIRMED" ? `<button class="ghost" data-act="confirm">确认是我的</button>` : ""}
       ${e.review_status !== "REJECTED" ? `<button class="ghost" data-act="exclude">排除</button>` : ""}
@@ -205,11 +232,11 @@ function renderPrep() {
   const box = $("#prep-box");
   const p = plans.prep;
   const plan = currentPlan();
-  if (plan && !plan.sources) {
-    box.innerHTML = `<div class="notice">这个计划还没有追踪的文件。到“追踪的文件”里添加；只想用材料写周报，可以用左侧的“临时周报”。
-      也可以在下面勾选材料、写简述后，先点“准备本周工作”再生成。</div>`;
+  if (plan && !plan.sources && !p) {
+    box.innerHTML = `<div class="notice">这个计划还没有追踪的文件。可以到“追踪的文件”里添加；只用待办也行：点“准备本周工作”，整理待办这周的进展交给你确认。
+      只想用材料写周报，可以用左侧的“临时周报”。</div>`;
   } else if (!p) {
-    box.innerHTML = `<p class="muted">还没有整理这个周期的工作。点“准备本周工作”：检查更新，对比这个周期的文件变化，整理成候选记录交给你确认（会调用模型）。</p>`;
+    box.innerHTML = `<p class="muted">还没有整理这个周期的工作。点“准备本周工作”：检查更新，对比这个周期的文件变化、整理待办的进展，交给你确认（文件变化会调用模型）。</p>`;
   } else {
     const groups = ["PENDING", "CONFIRMED", "REJECTED"].map((s) => [s, p.items.filter((e) => e.review_status === s)]);
     box.innerHTML = `
@@ -221,10 +248,11 @@ function renderPrep() {
       ${p.notes.map((n) => `<div class="notice warn">${escapeHtml(n)}</div>`).join("")}
       ${p.items.length ? `<div class="prep-actions">
         <button class="ghost" id="bulk-confirm">确认所选</button><button class="ghost" id="bulk-exclude">排除所选</button>
-        <button class="ghost" id="bulk-merge">合并所选</button></div>` : `<p class="muted">这个周期没有发现文件变化。</p>`}
+        <button class="ghost" id="bulk-merge">合并所选</button></div>` : `<p class="muted">这个周期没有发现文件变化，待办也没有进展。</p>`}
       ${groups.filter(([, items]) => items.length).map(([s, items]) => `<div class="ev-group"><h5>${EV_STATUS[s]}（${items.length}）</h5>${items.map(evidenceHtml).join("")}</div>`).join("")}
       <button class="ghost" id="add-evidence">＋ 补充文件里没体现的工作</button>`;
   }
+  renderPlanMaterials();
   updateMakeReport();
 }
 
@@ -249,7 +277,17 @@ async function reviewAction(action, ids, note = "") {
   } catch (err) { uiAlert(err.message, "出错了"); }
 }
 
-$("#prep-box").addEventListener("change", (e) => {
+$("#prep-box").addEventListener("change", async (e) => {
+  const sel = e.target.closest("[data-todo-status]");
+  if (sel) {
+    const id = Number(sel.closest("[data-ev]").dataset.ev);
+    try {
+      plans.prep = await api(`/tracking/preps/${plans.prep.id}/evidence/${id}/todos/${sel.dataset.todoStatus}`, { method: "PUT", json: { status: sel.value || null } });
+      renderPrep();
+      loadPlans();
+    } catch (err) { uiAlert(err.message, "出错了"); }
+    return;
+  }
   const cb = e.target.closest("[data-pick]");
   if (cb) cb.checked ? plans.selected.add(Number(cb.dataset.pick)) : plans.selected.delete(Number(cb.dataset.pick));
 });
@@ -265,6 +303,23 @@ $("#prep-box").addEventListener("click", async (e) => {
   if (t.id === "add-evidence") {
     if (!plans.prep) return uiAlert("先点“准备本周工作”，再补充文件里没体现的工作。");
     return openEvidenceDialog("add", null);
+  }
+  if (t.dataset.sync) {
+    const id = Number(t.closest("[data-ev]").dataset.ev);
+    const url = `/tracking/preps/${plans.prep.id}/evidence/${id}/todos/${t.dataset.sync}/sync`;
+    try {
+      await api(url, { method: "POST", json: { confirm: false } });
+    } catch (err) {
+      if (!err.needsConfirm) return uiAlert(err.message, "出错了");
+      if (!(await uiConfirm(err.message, { title: "同步到待办", ok: "同步" }))) return;
+      try {
+        const r = await api(url, { method: "POST", json: { confirm: true } });
+        plans.prep = r;
+        renderPrep();
+        if (r.notices?.length) planMsg(r.notices.map(escapeHtml).join("<br>"), "warn");
+      } catch (err2) { uiAlert(err2.message, "出错了"); }
+    }
+    return;
   }
   if (t.id === "open-weekly") {
     e.preventDefault();
@@ -292,10 +347,19 @@ $("#prep-box").addEventListener("click", async (e) => {
 
 function renderPlanMaterials() {
   const box = $("#plan-materials");
-  box.innerHTML = state.materials.length
-    ? state.materials.map((m) => `<label>${fileIcon(m.file_type || "paste")}<input type="checkbox" value="${m.id}"> ${escapeHtml(m.title)} <span class="muted">（${m.char_count} 字）</span></label>`).join("")
-    : `<p class="muted">材料库是空的。</p>`;
+  const checked = new Set([...box.querySelectorAll("input:checked")].map((i) => Number(i.value)));
+  const suggested = new Set(plans.prep?.todo_material_ids || []);
+  const label = (m) => `<label>${fileIcon(m.file_type || "paste")}<input type="checkbox" value="${m.id}" ${checked.has(m.id) ? "checked" : ""}> ${escapeHtml(m.title)} <span class="muted">（${m.char_count} 字）</span>${suggested.has(m.id) ? ' <span class="badge" title="本周有进展的待办关联了这份材料">本周待办的材料</span>' : ""}</label>`;
+  const hint = suggested.size ? `<div class="row gap"><span class="muted small">本周有进展的待办关联了 ${suggested.size} 份不随追踪更新的材料。</span><button type="button" class="ghost small" id="pick-todo-materials">勾选它们</button></div>` : "";
+  box.innerHTML = state.materials.length ? hint + state.materials.map(label).join("") : `<p class="muted">材料库是空的。</p>`;
 }
+
+// “勾选它们”：把本周有进展的待办关联的材料加进周报素材
+$("#plan-materials").addEventListener("click", (e) => {
+  if (e.target.id !== "pick-todo-materials") return;
+  const ids = new Set(plans.prep?.todo_material_ids || []);
+  document.querySelectorAll("#plan-materials input").forEach((i) => { if (ids.has(Number(i.value))) i.checked = true; });
+});
 
 // 生成周报：清单还没确认时先确认（有待确认的记录时按钮不可点），再用已确认的记录 + 勾选的材料 + 简述生成
 $("#make-report").addEventListener("click", async () => {
