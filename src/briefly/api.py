@@ -1,4 +1,4 @@
-"""FastAPI 后端：对话、材料管理、周报，并在根路径提供网页（src/briefly/web）。
+"""FastAPI 后端：对话、待办、材料与追踪、周报，并在根路径提供网页（src/briefly/web）。
 
 接口函数用 def 而不是 async def：解析文件是耗时的同步操作，FastAPI 会放进线程池执行，不阻塞其他请求。
 """
@@ -7,13 +7,12 @@ import threading
 from collections import defaultdict
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
-from urllib.parse import quote
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile, status
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile, status
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
@@ -28,7 +27,7 @@ from .llm import create_chat_model
 from .materials import TRACKED, Material, MaterialNotFound, MaterialStore
 from .sessions import ChatSession, SessionStore
 from .skills import SKILLS
-from .weekly import WeeklyReport, WeeklyService
+from .weekly.service import WeeklyService
 
 log = logging.getLogger(__name__)
 
@@ -73,7 +72,7 @@ class MaterialOut(BaseModel):
     warnings: list[str]
     created_at: datetime
     feishu: dict | None = None  # 从飞书导入的材料：{kind, token, url}，用于开启追踪
-    tracked: list[dict] = []  # 追踪中文件的最新版本：[{plan_id, plan, file_id, key}]，随追踪更新
+    tracked: dict | None = None  # 追踪中文件的最新版本 {file_id, key}，随追踪更新
 
 
 class MaterialDetail(MaterialOut):
@@ -85,39 +84,6 @@ class MaterialDetail(MaterialOut):
 class CreatedMaterial(BaseModel):
     material: MaterialOut
     created: bool  # False 表示内容相同的材料已存在，返回的是已有的那条
-
-
-class WeeklyIn(BaseModel):
-    material_ids: list[int] = []
-    brief: str = ""  # 用户写的“这周大概做了什么”，既是筛选条件也是来源
-    period_start: date | None = None  # 不填为本周一
-    period_end: date | None = None  # 不填为本周日
-    audience: str | None = None  # 读者，默认直属上级
-    name: str | None = None
-
-
-class WeeklyContentIn(BaseModel):
-    content: str
-
-
-class WeeklyOut(BaseModel):
-    id: int
-    status: str  # pending / running / done / failed
-    period_start: date
-    period_end: date
-    brief: str
-    material_ids: list[int]
-    options: dict
-    error: str
-    created_at: datetime
-    updated_at: datetime
-    plan: dict | None = None  # 来自哪个周报计划 {id, name}；临时周报为空
-
-
-class WeeklyDetail(WeeklyOut):
-    content: str  # 带出处标记〔1-3〕〔简述〕，导出时去掉
-    items: list[dict]  # 工作项及原文，用于查看出处
-    generation: dict  # 生成报告：处理块数、失败、丢弃、未核实数字、调用次数、耗时、警告（warnings）、给用户的提醒（reminders，不进入周报）
 
 
 class SkillOut(BaseModel):
@@ -162,21 +128,6 @@ class ContextOut(BaseModel):
     compacted_turns: int
 
 
-class NotificationOut(BaseModel):
-    id: int
-    kind: str
-    title: str
-    body: str
-    collection_id: int | None
-    prep_id: int | None
-    created_at: datetime
-    read_at: datetime | None
-
-
-class ReadIn(BaseModel):
-    ids: list[int] = []
-
-
 class MailIn(BaseModel):
     to: str  # 收件人，逗号或分号分隔
     cc: str = ""
@@ -197,22 +148,6 @@ class MailStatus(BaseModel):
     configured: bool
     sender: str  # 发件邮箱
     default_to: str  # 默认收件人
-
-
-def plans_of_reports(engine) -> dict[int, dict]:
-    """周报编号 → 生成它的周报计划 {id, name}（周报由某个计划的本周工作生成时）。"""
-    from sqlalchemy import select
-    from sqlalchemy.orm import Session
-
-    from .tracking.models import ReportPrep, TrackingCollection
-
-    with Session(engine) as s:
-        rows = s.execute(
-            select(ReportPrep.weekly_report_id, TrackingCollection.id, TrackingCollection.name)
-            .join(TrackingCollection, TrackingCollection.id == ReportPrep.collection_id)
-            .where(ReportPrep.weekly_report_id.is_not(None))
-        ).all()
-    return {report_id: {"id": cid, "name": name} for report_id, cid, name in rows}
 
 
 def default_agent(store: MaterialStore) -> Agent:
@@ -254,7 +189,7 @@ def create_app(
 ) -> FastAPI:
     """store、model_factory、agent_factory 可注入，便于测试用内存库和假模型。智能体在第一次用到时才创建。
 
-    tracking_scheduler：是否在本进程内启动文件追踪的每日扫描线程（briefly-api 按配置开启，测试默认关闭）；
+    tracking_scheduler：是否在本进程内启动定时线程（每日扫描、每周定时开始；briefly-api 按配置开启，测试默认关闭）；
     开启时若配置了飞书，提醒同时由飞书机器人发送。feishu_factory 创建应用身份的飞书客户端，
     feishu_tokens 是飞书用户授权的令牌存储（默认 data/feishu_user_token.json），测试时注入模拟响应。
     """
@@ -263,15 +198,11 @@ def create_app(
     async def lifespan(app: FastAPI):
         scheduler = None
         if tracking_scheduler:
-            from .tracking.collection import TrackingService
-            from .tracking.scheduler import DailyScheduler
-
             from .feishu.messages import register_channel
+            from .weekly.schedule import BackgroundScheduler
 
             register_channel()
-            scheduler = DailyScheduler(
-                TrackingService(app.state.store.engine, app.state.store, feishu_factory=app.state.feishu_reader)
-            )
+            scheduler = BackgroundScheduler(app.state.weekly)
             scheduler.start()
         app.state.scheduler = scheduler
         yield
@@ -289,7 +220,6 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.store = store or MaterialStore(create_db_engine())
-    app.state.weekly = WeeklyService(app.state.store, model_factory)
     app.state.sessions = SessionStore(app.state.store.engine)
     app.state.agent = None
     agent_lock = threading.Lock()
@@ -367,8 +297,8 @@ def create_app(
         sessions.delete(thread_id)
         agent.graph.checkpointer.delete_thread(thread_id)
 
-    def tracked_versions() -> dict[int, list[dict]]:
-        from .tracking.collection import latest_materials
+    def tracked_versions() -> dict[int, dict]:
+        from .tracking.service import latest_materials
 
         return latest_materials(app.state.store.engine)
 
@@ -393,7 +323,7 @@ def create_app(
             feishu={k: v for k, v in feishu.items() if k in ("kind", "token", "url")}
             if (feishu := m.parse_report.get("feishu"))
             else None,
-            tracked=tracked.get(m.id, []),
+            tracked=tracked.get(m.id),
         )
 
     def created(store: MaterialStore, m: Material, is_new: bool, response: Response) -> CreatedMaterial:
@@ -435,70 +365,21 @@ def create_app(
             raise ValueError("这是追踪中文档的最新版本，随追踪自动更新；不需要了请停止追踪")
         store.delete(material_id, force=force)  # 被待办关联时返回 409（confirm），清理规则见 MaterialStore.delete
 
-    def weekly_out(r: WeeklyReport) -> WeeklyOut:
-        return WeeklyOut.model_validate(r, from_attributes=True)
-
-    @app.post("/weekly-reports", tags=[docs.WEEKLY], response_model=WeeklyOut, status_code=202, summary="提交周报生成任务（后台生成）")
-    def create_weekly(body: WeeklyIn, weekly: Weekly, background: BackgroundTasks):
-        report = weekly.create(
-            body.material_ids, body.brief, body.period_start, body.period_end, body.audience, body.name
-        )
-        background.add_task(weekly.generate, report.id)
-        return weekly_out(report)
-
-    @app.get("/weekly-reports", tags=[docs.WEEKLY], response_model=list[WeeklyOut], summary="周报历史")
-    def list_weekly(weekly: Weekly):
-        plans = plans_of_reports(app.state.store.engine)
-        return [weekly_out(r).model_copy(update={"plan": plans.get(r.id)}) for r in weekly.list_reports()]
-
-    @app.get("/weekly-reports/{report_id}", tags=[docs.WEEKLY], response_model=WeeklyDetail, summary="周报详情（轮询看进度）")
-    def get_weekly(report_id: int, weekly: Weekly):
-        return WeeklyDetail.model_validate(weekly.get(report_id), from_attributes=True)
-
-    @app.put("/weekly-reports/{report_id}", tags=[docs.WEEKLY], response_model=WeeklyDetail, summary="保存修改后的周报正文")
-    def update_weekly(report_id: int, body: WeeklyContentIn, weekly: Weekly):
-        return WeeklyDetail.model_validate(weekly.update_content(report_id, body.content), from_attributes=True)
-
-    @app.delete("/weekly-reports/{report_id}", tags=[docs.WEEKLY], status_code=204, summary="删除周报")
-    def delete_weekly(report_id: int, weekly: Weekly):
-        weekly.delete(report_id)
-
-    @app.get("/weekly-reports/{report_id}/export.md", tags=[docs.WEEKLY], response_class=PlainTextResponse, summary="导出 Markdown")
-    def export_weekly(report_id: int, weekly: Weekly):
-        filename, text = weekly.export_markdown(report_id)
-        return PlainTextResponse(
-            text,
-            media_type="text/markdown; charset=utf-8",
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
-        )
-
     app.state.mail_connect = mail._connect  # 测试时替换成模拟的 SMTP
 
     @app.get("/mail/status", tags=[docs.MAIL], response_model=MailStatus, summary="邮件是否已配置")
     def mail_status():
         return MailStatus(configured=mail.configured(), sender=config.SMTP_USER, default_to=config.MAIL_DEFAULT_TO)
 
-    @app.post("/weekly-reports/{report_id}/email", tags=[docs.MAIL], response_model=MailOut, status_code=201, summary="把周报通过邮件发给收件人（失败不自动重试）")
+    @app.post("/weekly/{report_id}/email", tags=[docs.MAIL], response_model=MailOut, status_code=201, summary="把周报通过邮件发给收件人（失败不自动重试）")
     def email_weekly(report_id: int, body: MailIn, weekly: Weekly):
         record = mail.send_weekly(weekly, report_id, body.to, body.cc, connect=app.state.mail_connect)
         return MailOut.model_validate(record, from_attributes=True)
 
-    @app.get("/weekly-reports/{report_id}/email", tags=[docs.MAIL], response_model=list[MailOut], summary="周报的邮件发送记录")
+    @app.get("/weekly/{report_id}/email", tags=[docs.MAIL], response_model=list[MailOut], summary="周报的邮件发送记录")
     def list_emails(report_id: int, weekly: Weekly):
-        weekly.get(report_id)
+        weekly.report(report_id)
         return [MailOut.model_validate(x, from_attributes=True) for x in mail.sends_of(app.state.store.engine, report_id)]
-
-    @app.get("/notifications", tags=[docs.SCHEDULE], response_model=list[NotificationOut], summary="提醒（文件追踪：周报已准备好、准备失败等）")
-    def list_notifications(unread_only: bool = True):
-        from .tracking.weekly_schedule import notifications
-
-        return [NotificationOut.model_validate(n, from_attributes=True) for n in notifications(app.state.store.engine, unread_only)]
-
-    @app.post("/notifications/read", tags=[docs.SCHEDULE], summary="标为已读（不传 ids 表示全部）")
-    def read_notifications(body: ReadIn):
-        from .tracking.weekly_schedule import mark_read
-
-        return {"marked": mark_read(app.state.store.engine, body.ids or None)}
 
     @app.middleware("http")
     async def revalidate_web(request: Request, call_next):
@@ -511,11 +392,16 @@ def create_app(
     from .feishu.api import register as register_feishu
     from .todos.api import register as register_todos
     from .tracking.api import register as register_tracking
+    from .tracking.service import TrackingService
+    from .weekly.api import register as register_weekly
 
     register_feishu(app, feishu_factory, feishu_tokens)  # 飞书：用户授权、云空间、导入链接、周报写入飞书文档
-    # 文件追踪：集合、扫描、定时、周报准备与审核；飞书文档连接了账号时先用用户身份读取
-    register_tracking(app, model_factory, app.state.feishu_reader)
-    register_todos(app)  # 待办：父子结构、材料关联、活动；周报联动在周报计划的本周准备里
+    # 追踪与周报共用一个追踪服务；飞书文档连接了账号时先用用户身份读取
+    app.state.tracking = TrackingService(app.state.store.engine, app.state.store, feishu_factory=app.state.feishu_reader)
+    app.state.weekly = WeeklyService(app.state.store, model_factory, tracking=app.state.tracking)
+    register_tracking(app)  # 追踪：追踪源、文件、版本与差异、检查更新、材料的追踪开关
+    register_weekly(app)  # 周报：一周一份，审核清单 → 生成；定时、设置、提醒
+    register_todos(app)  # 待办：父子结构、材料关联、活动；进展进入周报的审核清单
 
     @app.get("/", include_in_schema=False)
     def index():

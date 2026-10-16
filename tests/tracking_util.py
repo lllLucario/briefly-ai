@@ -10,7 +10,8 @@ from briefly import config
 from briefly.db import create_db_engine
 from briefly.materials import MaterialStore
 from briefly.tracking.blobs import BlobStore
-from briefly.tracking.collection import TrackingService
+from briefly.tracking.service import TrackingService
+from briefly.weekly.service import WeeklyService
 
 
 class Clock:
@@ -56,9 +57,16 @@ class Env:
         t = self.clock.next()
         os.utime(self.work / rel, (t, t))
 
-    def file(self, collection, name: str):
-        ref = getattr(collection, "id", collection)
-        return next(f for f in self.svc.files(ref) if Path(f.path).name == name)
+    def file(self, name: str):
+        return next(f for f in self.svc.files() if Path(f.path).name == name)
+
+    def weekly(self, model_factory=lambda: None) -> WeeklyService:
+        """共用这个追踪服务的周报服务（测试注入假模型）。"""
+        return WeeklyService(self.store, model_factory, tracking=self.svc)
+
+    def set_owners(self, names: list[str]) -> None:
+        """你在文档里的名字（周报设置）：归属判断用。"""
+        self.weekly().update_settings(owner_names=names)
 
 
 def docx_bytes(paragraphs: list[str], table: list[tuple[str, ...]] | None = None, headings: dict[int, str] | None = None) -> bytes:

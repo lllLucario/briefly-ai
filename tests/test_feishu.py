@@ -11,8 +11,10 @@ from briefly.feishu.docx import MAX_BLOCKS_PER_CALL, blocks_to_markdown, create_
 from briefly.feishu.links import BITABLE, DOCX, WIKI, find_links, parse_link
 from briefly.feishu.service import export_weekly, exports_of, import_link
 from briefly.materials import MaterialStore
-from briefly.weekly import DONE, WeeklyService
+from briefly.weekly.models import DONE
+from briefly.weekly.service import WeeklyService
 from fakes import FakeFeishu, feishu_error
+from weekly_util import draft
 
 DOC = "doxcnAbCdEfGhIjKlMnOpQrStUv"  # 27 位
 API = "/open-apis"
@@ -400,7 +402,7 @@ def test_import_bitable_link(store):
 # ---- 周报写入飞书
 def done_report(store) -> int:
     weekly = WeeklyService(store, model_factory=lambda: None)
-    r = weekly.create([], "支付回调优化", date(2026, 10, 12), date(2026, 10, 18), "", "王五")
+    r = draft(weekly, [], "支付回调优化", date(2026, 10, 12), date(2026, 10, 18), "", "王五")
     weekly._update(r.id, status=DONE, content="【本周完成】\n- 支付回调降到 200ms〔1-1〕\n【下周计划】\n- 上线")
     return weekly, r.id
 
@@ -448,7 +450,7 @@ def test_export_weekly_warns_when_nobody_can_see_it(store, monkeypatch):
 
 def test_export_unfinished_report_is_rejected(store):
     weekly = WeeklyService(store, model_factory=lambda: None)
-    r = weekly.create([], "支付回调优化", date(2026, 10, 12), date(2026, 10, 18), "", "")
+    r = draft(weekly, [], "支付回调优化", date(2026, 10, 12), date(2026, 10, 18), "", "")
     with FakeFeishu().client() as client, pytest.raises(ValueError, match="还没有生成完成"):
         export_weekly(client, weekly, r.id)
 
@@ -555,26 +557,25 @@ def test_api_not_configured(store, monkeypatch):
 def test_api_export_weekly(api, store):
     client, fake_feishu, app = api
     weekly = app.state.weekly
-    r = weekly.create([], "支付回调优化", date(2026, 10, 12), date(2026, 10, 18), "", "")
-    assert client.post(f"/weekly-reports/{r.id}/feishu").status_code == 400  # 还没生成完
+    r = draft(weekly, [], "支付回调优化", date(2026, 10, 12), date(2026, 10, 18), "", "")
+    assert client.post(f"/weekly/{r.id}/feishu").status_code == 400  # 还没生成完
     assert not fake_feishu.calls("POST", f"{API}/docx/v1/documents")
     weekly._update(r.id, status=DONE, content="【本周完成】\n- 完成〔简述〕")
-    out = client.post(f"/weekly-reports/{r.id}/feishu")
+    out = client.post(f"/weekly/{r.id}/feishu")
     assert out.status_code == 201 and out.json()["shared_with"] == "ou_me"
     share = fake_feishu.calls("POST", f"{API}/drive/v1/permissions/{DOC}/members")[0]
     assert FakeFeishu.body(share)["member_type"] == "openid"
-    assert [e["url"] for e in client.get(f"/weekly-reports/{r.id}/feishu").json()] == [out.json()["url"]]
-    assert client.post("/weekly-reports/999/feishu").status_code == 404
+    assert [e["url"] for e in client.get(f"/weekly/{r.id}/feishu").json()] == [out.json()["url"]]
+    assert client.post("/weekly/999/feishu").status_code == 404
 
 
 def test_api_track_feishu_link(api, tmp_path, monkeypatch):
     client, _, _ = api
     monkeypatch.setattr(config, "TRACKING_DIR", str(tmp_path / "store"))
-    c = client.post("/tracking/collections", json={"name": "项目A"}).json()
-    r = client.post(f"/tracking/collections/{c['id']}/sources", json={"paths": [f"https://abc.feishu.cn/docx/{DOC}"]})
+    r = client.post("/tracking/sources", json={"paths": [f"https://abc.feishu.cn/docx/{DOC}"]})
     assert r.status_code in (200, 201), r.text
     assert r.json()["added"][0]["kind"] == "feishu"
-    files = client.get(f"/tracking/collections/{c['id']}/files").json()
+    files = client.get("/tracking/files").json()
     assert files[0]["path"].endswith("/项目周记")
 
 
@@ -583,7 +584,7 @@ def test_notification_is_sent_to_feishu(store, monkeypatch):
     import json
 
     from briefly.feishu.messages import notification_channel
-    from briefly.tracking import weekly_schedule
+    from briefly.weekly import schedule as weekly_schedule
 
     fake_feishu = FakeFeishu({("POST", f"{API}/im/v1/messages"): {"message_id": "om_1"}})
     channel = notification_channel(fake_feishu.client, user="ou_me")
@@ -599,7 +600,7 @@ def test_notification_is_sent_to_feishu(store, monkeypatch):
 
 def test_failed_feishu_send_does_not_break_notification(store, monkeypatch):
     from briefly.feishu.messages import notification_channel
-    from briefly.tracking import weekly_schedule
+    from briefly.weekly import schedule as weekly_schedule
 
     fake_feishu = FakeFeishu({("POST", f"{API}/im/v1/messages"): feishu_error(230013, "no permission")})
     monkeypatch.setattr(weekly_schedule, "CHANNELS", [notification_channel(fake_feishu.client, user="me@example.com")])
@@ -609,7 +610,7 @@ def test_failed_feishu_send_does_not_break_notification(store, monkeypatch):
 
 def test_channel_registered_once_only_when_configured(monkeypatch):
     from briefly.feishu.messages import register_channel
-    from briefly.tracking import weekly_schedule
+    from briefly.weekly import schedule as weekly_schedule
 
     monkeypatch.setattr(weekly_schedule, "CHANNELS", [])
     monkeypatch.setattr(config, "FEISHU_NOTIFY_USER", "")

@@ -6,9 +6,9 @@ from briefly.db import create_db_engine
 from briefly.materials import MaterialStore
 from briefly.tracking.attribution import judge
 from briefly.tracking.blobs import BlobStore
-from briefly.tracking.collection import TrackingService
 from briefly.tracking.diff import Differ
 from briefly.tracking.models import BASELINE, INFERRED, MODIFIED, PRESENT, UNREACHABLE, UNTRACKED
+from briefly.tracking.service import TrackingService
 from fakes import FakeFeishu, feishu_error
 
 DOC = "doxcnAbCdEfGhIjKlMnOpQrStUv"
@@ -55,81 +55,75 @@ def env(tmp_path, monkeypatch):
     engine.dispose()
 
 
-def only_file(svc, c):
-    files = svc.files(c.id)
+def only_file(svc):
+    files = svc.files()
     assert len(files) == 1
     return files[0]
 
 
 def test_add_link_creates_baseline(env):
     svc, doc, _ = env
-    c = svc.create_collection("项目A", ["王五"])
-    result = svc.add_paths(c.id, [URL])
+    result = svc.add_paths([URL])
     assert [s.kind for s in result.added] == ["feishu"] and result.added[0].path == f"feishu://docx/{DOC}"
     assert result.scan.stats["new_snapshots"] == 1
-    f = only_file(svc, c)
+    f = only_file(svc)
     assert f.path.endswith("/周报草稿") and f.status == PRESENT and f.file_type == "feishu"
     snap = svc.snapshots(f.id)[0]
     assert snap.kind == BASELINE and snap.meta["revision_id"] == 1 and snap.meta["last_modified_by"] == "王五"
     material = svc.store.get(snap.material_id)
     assert material.source == "tracked" and "梳理支付回调链路" in material.content
-    assert not svc.changes(c.id)  # Baseline 不算本周期的变化
+    assert not svc.changes()  # Baseline 不算本周期的变化
 
 
 def test_unchanged_revision_is_not_read_again(env):
     svc, doc, _ = env
-    c = svc.create_collection("项目A")
-    svc.add_paths(c.id, [URL])
+    svc.add_paths([URL])
     reads = doc.block_reads
-    stats = svc.scan(c.id).stats
+    stats = svc.scan().stats
     assert stats["stat_skipped"] == 1 and doc.block_reads == reads
 
 
 def test_edit_is_recorded_as_modified_with_diff(env):
     svc, doc, _ = env
-    c = svc.create_collection("项目A")
-    svc.add_paths(c.id, [URL])
+    svc.add_paths([URL])
     doc.revision, doc.paragraphs = 5, doc.paragraphs + ["周三：回调耗时从 1.8 秒降到 200 毫秒"]
-    stats = svc.scan(c.id).stats
+    stats = svc.scan().stats
     assert stats["modified"] == 1
-    change = svc.changes(c.id)[0]
+    change = svc.changes()[0]
     assert change.change_type == MODIFIED and change.details["revision_id"] == 5
-    old, new = svc.snapshots(only_file(svc, c).id)
+    old, new = svc.snapshots(only_file(svc).id)
     result = Differ(svc).diff(old, new)
     assert [h.op for h in result.hunks] == ["added"] and "200 毫秒" in result.hunks[0].new
 
 
 def test_revision_change_without_text_change_keeps_one_version(env):
     svc, doc, _ = env
-    c = svc.create_collection("项目A")
-    svc.add_paths(c.id, [URL])
+    svc.add_paths([URL])
     doc.revision = 2  # 只改了格式或评论
-    stats = svc.scan(c.id).stats
-    assert stats["mtime_only"] == 1 and len(svc.snapshots(only_file(svc, c).id)) == 1
-    assert svc.scan(c.id).stats["stat_skipped"] == 1  # 新版本号已记下，下次不再读取
+    stats = svc.scan().stats
+    assert stats["mtime_only"] == 1 and len(svc.snapshots(only_file(svc).id)) == 1
+    assert svc.scan().stats["stat_skipped"] == 1  # 新版本号已记下，下次不再读取
 
 
 def test_lost_access_is_unreachable_not_deleted(env):
     svc, doc, _ = env
-    c = svc.create_collection("项目A")
-    svc.add_paths(c.id, [URL])
+    svc.add_paths([URL])
     doc.error = feishu_error(1770032, "forBidden", 403)
-    stats = svc.scan(c.id).stats
-    f = only_file(svc, c)
+    stats = svc.scan().stats
+    f = only_file(svc)
     assert stats["unreachable"] == 1 and stats["deleted"] == 0
     assert f.status == UNREACHABLE and "添加文档应用" in f.last_error
-    assert "添加文档应用" in svc.sources(c.id)[0].last_error
+    assert "添加文档应用" in svc.sources()[0].last_error
     doc.error = None
     doc.revision, doc.paragraphs = 3, ["改过的内容"]
-    svc.scan(c.id)
-    assert only_file(svc, c).status == PRESENT and svc.sources(c.id)[0].last_error == ""
+    svc.scan()
+    assert only_file(svc).status == PRESENT and svc.sources()[0].last_error == ""
 
 
 def test_wiki_link_and_duplicates(env):
     svc, _, fake = env
-    c = svc.create_collection("项目A")
-    svc.add_paths(c.id, [f"https://abc.feishu.cn/wiki/wikcnAbCdEfGhIjKlMn"])
-    again = svc.add_paths(c.id, [URL])
+    svc.add_paths([f"https://abc.feishu.cn/wiki/wikcnAbCdEfGhIjKlMn"])
+    again = svc.add_paths([URL])
     assert not again.added and "已在追踪" in again.messages[0]
 
 
@@ -143,40 +137,36 @@ def test_wiki_link_and_duplicates(env):
 def test_unsupported_links_are_not_added(env, url, message):
     svc, _, fake = env
     fake.routes[("GET", f"{API}/bitable/v1/apps/bascnAbCdEfGhIjKl")] = {"app": {"name": "x"}}
-    c = svc.create_collection("项目A")
-    result = svc.add_paths(c.id, [url])
+    result = svc.add_paths([url])
     assert not result.added and message in result.messages[0]
 
 
 def test_inaccessible_link_is_not_added(env):
     svc, doc, _ = env
     doc.error = feishu_error(1770032, "forBidden", 403)
-    c = svc.create_collection("项目A")
-    result = svc.add_paths(c.id, [URL])
+    result = svc.add_paths([URL])
     assert not result.added and "添加文档应用" in result.messages[0]
 
 
 def test_removed_source_marks_file_untracked(env):
     svc, _, _ = env
-    c = svc.create_collection("项目A")
-    source = svc.add_paths(c.id, [URL]).added[0]
+    source = svc.add_paths([URL]).added[0]
     svc.remove_source(source.id)
-    svc.scan(c.id)
-    assert only_file(svc, c).status == UNTRACKED
+    svc.scan()
+    assert only_file(svc).status == UNTRACKED
 
 
 def test_missing_credentials_marks_unreachable(env):
     svc, doc, _ = env
-    c = svc.create_collection("项目A")
-    svc.add_paths(c.id, [URL])
+    svc.add_paths([URL])
     from briefly.feishu import FeishuNotConfigured
 
     def no_client():
         raise FeishuNotConfigured("未配置飞书应用")
 
     svc.scanner.feishu_factory = no_client
-    svc.scan(c.id)
-    assert only_file(svc, c).status == UNREACHABLE
+    svc.scan()
+    assert only_file(svc).status == UNREACHABLE
 
 
 def test_attribution_uses_last_editor():
@@ -245,64 +235,58 @@ def folder_env(tmp_path, monkeypatch):
 FOLDER_URL = "https://abc.feishu.cn/drive/folder/fldcnProject0001"
 
 
-def files_by_doc(svc, c):
-    return {f.path_key.rsplit("/", 1)[-1]: f for f in svc.files(c.id)}
+def files_by_doc(svc):
+    return {f.path_key.rsplit("/", 1)[-1]: f for f in svc.files()}
 
 
 def test_track_whole_folder(folder_env):
     svc, drive = folder_env
-    c = svc.create_collection("项目A")
-    r = svc.add_paths(c.id, [FOLDER_URL])
+    r = svc.add_paths([FOLDER_URL])
     [source] = r.added
     assert (source.kind, source.path, source.recursive) == ("feishu_folder", "feishu://folder/fldcnProject0001", True)
-    files = files_by_doc(svc, c)
+    files = files_by_doc(svc)
     assert set(files) == {"docA1234567890", "docB1234567890"}  # 子文件夹里的也算；多维表格跳过
     assert all(svc.snapshots(f.id)[0].kind == "baseline" for f in files.values())
-    info = svc.feishu_folders(c.id)[source.id]
+    info = svc.feishu_folders()[source.id]
     assert (info.name, info.docs, info.skipped) == ("项目资料", 2, 1)
-    members = svc.folder_members(c.id)
+    members = svc.folder_members()
     assert members["feishu://docx/docB1234567890"] == [(source.id, "子目录/纪要")]
-    assert svc.add_paths(c.id, [FOLDER_URL]).messages[0].endswith("已在追踪（追踪源 1）")
+    assert svc.add_paths([FOLDER_URL]).messages[0].endswith("已在追踪（追踪源 1）")
 
 
 def test_folder_picks_up_new_docs_and_drops_removed_ones(folder_env):
     svc, drive = folder_env
-    c = svc.create_collection("项目A")
-    svc.add_paths(c.id, [FOLDER_URL])
+    svc.add_paths([FOLDER_URL])
     drive.folders["fldcnProject0001"].append(("docC1234567890", "docx", "新文档"))
     drive.docs["docC1234567890"], drive.revisions["docC1234567890"] = ["新写的内容"], 1
     drive.folders["fldcnProject0001"] = [x for x in drive.folders["fldcnProject0001"] if x[0] != "docA1234567890"]  # 移出文件夹
     drive.docs["docB1234567890"].append("补充结论")
     drive.revisions["docB1234567890"] = 2
-    stats = svc.scan(c.id).stats
-    files = files_by_doc(svc, c)
+    stats = svc.scan().stats
+    files = files_by_doc(svc)
     assert files["docC1234567890"].status == "present" and files["docA1234567890"].status == "untracked"
-    changes = {(ch.file_id, ch.change_type) for ch in svc.changes(c.id)}
+    changes = {(ch.file_id, ch.change_type) for ch in svc.changes()}
     assert (files["docC1234567890"].id, "CREATED") in changes and (files["docB1234567890"].id, "MODIFIED") in changes
     assert stats["untracked"] == 1
 
 
 def test_folder_listing_failure_keeps_members(folder_env):
     svc, drive = folder_env
-    c = svc.create_collection("项目A")
-    svc.add_paths(c.id, [FOLDER_URL])
+    svc.add_paths([FOLDER_URL])
     drive.list_error = feishu_error(1061004, "forbidden", 403)
-    svc.scan(c.id)
-    assert all(f.status == "present" for f in svc.files(c.id))  # 没有因为列不出而误标“已不追踪”
-    assert "沿用上次的文档名单" in svc.sources(c.id)[0].last_error
+    svc.scan()
+    assert all(f.status == "present" for f in svc.files())  # 没有因为列不出而误标“已不追踪”
+    assert "沿用上次的文档名单" in svc.sources()[0].last_error
     drive.list_error = None
-    svc.scan(c.id)
-    assert svc.sources(c.id)[0].last_error == ""
+    svc.scan()
+    assert svc.sources()[0].last_error == ""
 
 
-def test_removing_folder_untracks_its_docs_and_delete_cleans_up(folder_env):
+def test_removing_folder_untracks_its_docs(folder_env):
     svc, drive = folder_env
-    c = svc.create_collection("项目A")
-    source = svc.add_paths(c.id, [FOLDER_URL]).added[0]
+    source = svc.add_paths([FOLDER_URL]).added[0]
     svc.remove_source(source.id)
-    assert {f.status for f in svc.files(c.id)} == {"untracked"}
-    svc.delete_collection(c.id)  # 两张文件夹表一起清理，不留孤儿记录
-    assert svc.list_collections() == []
+    assert {f.status for f in svc.files()} == {"untracked"}  # 历史版本保留，不是删除
 
 
 def test_folder_cannot_be_imported_as_material(folder_env):
@@ -316,21 +300,18 @@ def test_folder_cannot_be_imported_as_material(folder_env):
 def test_folder_name_from_web_is_used(folder_env):
     """网页从云空间列表里已知文件夹名，随添加请求带上；不用再调需要额外权限的文件夹元数据接口。"""
     svc, drive = folder_env
-    c = svc.create_collection("项目A")
-    source = svc.add_paths(c.id, [FOLDER_URL], names={FOLDER_URL: "网页带来的名字"}).added[0]
-    assert svc.feishu_folders(c.id)[source.id].name == "网页带来的名字"
+    source = svc.add_paths([FOLDER_URL], names={FOLDER_URL: "网页带来的名字"}).added[0]
+    assert svc.feishu_folders()[source.id].name == "网页带来的名字"
 
 
 def test_tracking_status_by_document(folder_env):
-    """材料页的“追踪”一栏：每篇飞书文档被哪些周报计划追踪，单独添加的可以停止，随文件夹的标出文件夹名。"""
+    """材料页的“追踪”一栏：单独追踪的文档可以停止；随文件夹追踪的标出文件夹名。两者都有时以单独追踪的为准。"""
     svc, drive = folder_env
-    a, b = svc.create_collection("项目A"), svc.create_collection("项目B")
-    folder = svc.add_paths(a.id, [FOLDER_URL]).added[0]
-    single = svc.add_paths(b.id, ["https://abc.feishu.cn/docx/docA1234567890"]).added[0]
+    folder = svc.add_paths([FOLDER_URL]).added[0]
+    single = svc.add_paths(["https://abc.feishu.cn/docx/docA1234567890"]).added[0]
     status = svc.feishu_tracking()
-    assert status["docB1234567890"] == [
-        {"plan_id": a.id, "plan": "项目A", "source_id": folder.id, "status": "active", "folder": "项目资料"}
-    ]
-    assert {(x["plan"], x["folder"]) for x in status["docA1234567890"]} == {("项目A", "项目资料"), ("项目B", None)}
+    assert status["docB1234567890"] == {"source_id": folder.id, "status": "active", "folder": "项目资料"}
+    assert status["docA1234567890"] == {"source_id": single.id, "status": "active", "folder": None}
+    assert len(svc.files()) == 2  # 同一篇文档只追踪一次
     svc.remove_source(single.id)
-    assert [x["plan"] for x in svc.feishu_tracking()["docA1234567890"]] == ["项目A"]
+    assert svc.feishu_tracking()["docA1234567890"]["folder"] == "项目资料"

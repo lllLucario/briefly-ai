@@ -63,8 +63,6 @@ class Todo(Base):
     status: Mapped[str] = mapped_column(String(10), default=TODO)
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("todos.id", ondelete="RESTRICT"), index=True)
     due_date: Mapped[date | None] = mapped_column(Date)
-    # 计入哪个周报计划（只在顶级待办上设置，子待办跟随父待办）；为空表示计入所有周报计划
-    collection_id: Mapped[int | None] = mapped_column(ForeignKey("tracking_collections.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)

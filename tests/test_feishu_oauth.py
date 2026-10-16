@@ -13,6 +13,7 @@ from briefly.feishu.client import FallbackClient, with_user
 from briefly.feishu.drive import list_folder, search
 from briefly.feishu.oauth import FeishuNotAuthorized, UserTokens, _challenge, authorize_url, take_verifier
 from fakes import FakeFeishu, feishu_error
+from weekly_util import draft
 
 API = "/open-apis"
 DOC = "doxcnAbCdEfGhIjKlMnOpQrStUv"
@@ -218,7 +219,7 @@ def test_api_callback_errors(api):
 
 
 def test_export_as_owner_skips_sharing(api, monkeypatch):
-    from briefly.weekly import DONE
+    from briefly.weekly.models import DONE
 
     client, fake, tokens, app = api
     connected_tokens(fake, tokens.path)
@@ -230,9 +231,9 @@ def test_export_as_owner_skips_sharing(api, monkeypatch):
         ("POST", f"{API}/docx/v1/documents/{DOC}/blocks/{DOC}/descendant"): {},
         ("POST", f"{API}/drive/v1/metas/batch_query"): {"metas": [{"doc_token": DOC, "owner_id": "ou_me", "url": f"https://x.feishu.cn/docx/{DOC}"}]},
     }  # fmt: skip
-    r = app.state.weekly.create([], "联调", date(2026, 10, 12), date(2026, 10, 18), "", "")
+    r = draft(app.state.weekly, [], "联调", date(2026, 10, 12), date(2026, 10, 18), "", "")
     app.state.weekly._update(r.id, status=DONE, content="【本周完成】\n- 完成")
-    out = client.post(f"/weekly-reports/{r.id}/feishu").json()
+    out = client.post(f"/weekly/{r.id}/feishu").json()
     assert out["shared_with"] == "你（文档所有者）" and not out["share_error"]
     assert fake.calls("POST", f"{API}/docx/v1/documents")[0].headers["Authorization"] == "Bearer u-0"  # 以用户身份新建
     assert not fake.calls("POST", f"{API}/drive/v1/permissions/{DOC}/members")

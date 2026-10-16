@@ -7,8 +7,10 @@ from langchain_core.messages import AIMessage
 from briefly.db import create_db_engine
 from briefly.materials import MaterialStore
 from briefly.summarize import Source, WorkItem, extract_items, format_items
-from briefly.weekly import WeeklyService, report_check
+from briefly.weekly.engine import report_check
+from briefly.weekly.service import WeeklyService
 from fakes import FunctionModel, structured
+from weekly_util import draft
 
 LOG = (
     "## 周三\n确认上线时间定为 10 月 20 日，上线前需要补齐压测报告。\n"
@@ -91,9 +93,9 @@ def weekly_with(store, reports: list[str], items: list[dict]):
         return structured("Extraction", items=items)
 
     weekly = WeeklyService(store, lambda: FunctionModel(respond=respond, calls=[]))
-    report = weekly.create([material.id], "", date(2026, 10, 12), date(2026, 10, 18))
-    weekly.generate(report.id)
-    return weekly.get(report.id), calls, material
+    report = draft(weekly, [material.id], "", date(2026, 10, 12), date(2026, 10, 18))
+    weekly.run_generation(report.id)
+    return weekly.report(report.id), calls, material
 
 
 BAD = "【本周完成】\n无\n【进行中】\n无\n【问题与风险】\n- 上线前需补齐压测报告〔#1〕\n【下周计划】\n- 下周完成接口测试〔#2〕；测试环境未恢复〔#3〕"

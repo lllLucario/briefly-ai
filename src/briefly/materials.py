@@ -184,13 +184,13 @@ class MaterialStore:
 
         - 关联在待办上：force=False 时拒绝（ConfirmationRequired，说明关联了几个待办）；确认后删除关联，
           每个待办记一条“材料已删除”的活动，旧活动里的材料编号清空（标题仍在活动内容里）。
-        - 周报：正文和工作项不动；material_ids 里去掉它，记进 options.removed_materials（编号、标题、删除时间）。
+        - 周报：正文和工作项不动；本周材料里去掉它，记进 removed_materials（编号、标题、删除时间）。
         - 章节、分块随材料删除；追踪版本对它的引用由外键置空。
         - 飞书导入的材料：只删本地记录，不调用飞书，云端原文件不受影响。
         """
         from .todos.models import MATERIAL_DELETED, TodoActivity, TodoMaterial
         from .todos.service import ConfirmationRequired
-        from .weekly import WeeklyReport
+        from .weekly.models import WeeklyReport
 
         with self._session() as s:
             material = s.get(Material, material_id)
@@ -212,9 +212,7 @@ class MaterialStore:
             for report in s.scalars(select(WeeklyReport)):
                 if material_id in (report.material_ids or []):
                     report.material_ids = [i for i in report.material_ids if i != material_id]
-                    options = dict(report.options or {})
-                    options["removed_materials"] = [*options.get("removed_materials", []), removed]
-                    report.options = options
+                    report.removed_materials = [*(report.removed_materials or []), removed]
             s.delete(material)
             s.commit()
 

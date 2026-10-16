@@ -6,8 +6,9 @@ from sqlalchemy.exc import IntegrityError
 from briefly.db import create_db_engine, foreign_key_problems
 from briefly.materials import MaterialNotFound, MaterialStore
 from briefly.todos.service import ConfirmationRequired, TodoService
-from briefly.weekly import WeeklyService
+from briefly.weekly.service import WeeklyService
 from fakes import fake
+from weekly_util import draft
 
 
 @pytest.fixture
@@ -34,7 +35,7 @@ def test_linked_material_needs_force_and_is_cleaned_up(store):
     todos.link(a.id, m.id)
     todos.link(b.id, m.id)
     weekly = WeeklyService(store, lambda: fake())
-    report = weekly.create([m.id], "简述")
+    report = draft(weekly, [m.id], "简述")
     with pytest.raises(ConfirmationRequired, match="2 个待办"):
         store.delete(m.id)
     assert store.get(m.id) and len(todos.direct_links()) == 2  # 未确认：什么都没动
@@ -46,9 +47,9 @@ def test_linked_material_needs_force_and_is_cleaned_up(store):
         assert acts[-1].event_type == "material_deleted" and acts[-1].old_value == {"title": "方案"}
         assert all(x.material_id is None for x in acts)  # 不留指向已删材料的编号；标题仍在活动内容里
         assert acts[1].event_type == "material_linked" and acts[1].new_value == {"title": "方案"}
-    kept = weekly.get(report.id)
-    assert kept.material_ids == [] and kept.brief == "简述"
-    assert kept.options["removed_materials"][0]["id"] == m.id and kept.options["removed_materials"][0]["title"] == "方案"
+    kept = weekly.report(report.id)
+    assert kept.material_ids == [] and kept.note == "简述"
+    assert kept.removed_materials[0]["id"] == m.id and kept.removed_materials[0]["title"] == "方案"
     assert foreign_key_problems(store.engine) == {}
 
 

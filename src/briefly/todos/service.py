@@ -58,7 +58,7 @@ class LinkedMaterial:
     source: str
     relation: str
     track_key: str | None
-    tracking: list[dict]  # 追踪状态：[{plan_id, plan, file_id, status, last_error}]
+    tracking: dict | None  # 追踪状态：{file_id, status, last_error}；没有追踪时为空
     linked_at: datetime
     from_todo: int  # 关联在哪个待办上（共享材料是父待办）
 
@@ -109,12 +109,6 @@ class TodoService:
         with self._session() as s:
             return list(s.scalars(query))
 
-    def plan_of(self, todo: Todo) -> int | None:
-        """待办计入的周报计划：子待办跟随父待办。"""
-        if todo.parent_id is None:
-            return todo.collection_id
-        return self.get(todo.parent_id).collection_id
-
     def progress(self, todo_id: int) -> tuple[int, int]:
         """(已完成的子待办数, 子待办总数)：只是数量，不代表工作量完成了多少。"""
         kids = self.children(todo_id)
@@ -129,7 +123,6 @@ class TodoService:
         status: str = TODO,
         due_date: date | None = None,
         parent_id: int | None = None,
-        collection_id: int | None = None,
     ) -> Todo:
         title = title.strip()
         if not title:
@@ -138,18 +131,12 @@ class TodoService:
         with self._session() as s:
             if parent_id is not None:
                 parent = self._valid_parent(s, parent_id)
-                if collection_id is not None:
-                    raise ValueError("子待办跟随父待办计入周报计划，不能单独设置")
-                collection_id = None
-            elif collection_id is not None:
-                _check_collection(s, collection_id)
             todo = Todo(
                 title=title[:200],
                 description=description.strip(),
                 status=status,
                 due_date=due_date,
                 parent_id=parent_id,
-                collection_id=collection_id,
                 completed_at=datetime.now() if status == DONE else None,
             )
             s.add(todo)
@@ -167,10 +154,9 @@ class TodoService:
         title=_UNSET,
         description=_UNSET,
         due_date=_UNSET,
-        collection_id=_UNSET,
         parent_id=_UNSET,
     ) -> Todo:
-        """修改标题、说明、截止日期、周报计划，或把没有子待办的顶级待办放到另一个顶级待办下。状态用 set_status。"""
+        """修改标题、说明、截止日期，或把没有子待办的顶级待办放到另一个顶级待办下。状态用 set_status。"""
         with self._session() as s:
             todo = self._active(s, todo_id)
             before = _values(todo)
@@ -190,14 +176,8 @@ class TodoService:
                 if s.scalar(select(func.count()).select_from(Todo).where(Todo.parent_id == todo.id)):
                     raise ValueError("这个待办下面有子待办，不能再放到别的待办下（最多两级）")
                 parent = self._valid_parent(s, parent_id, child_id=todo.id)
-                todo.parent_id, todo.collection_id = parent.id, None
+                todo.parent_id = parent.id
                 s.add(TodoActivity(todo_id=parent.id, event_type=CHILD_ADDED, new_value={"child_id": todo.id, "title": todo.title}))
-            if collection_id is not _UNSET and collection_id != todo.collection_id:
-                if todo.parent_id is not None:
-                    raise ValueError("子待办跟随父待办计入周报计划，不能单独设置")
-                if collection_id is not None:
-                    _check_collection(s, collection_id)
-                todo.collection_id = collection_id
             after = _values(todo)
             changed = {k: v for k, v in after.items() if before.get(k) != v}
             if changed:
@@ -255,7 +235,6 @@ class TodoService:
                 raise ValueError("这已经是独立待办")
             parent = s.get(Todo, todo.parent_id)
             todo.parent_id = None
-            todo.collection_id = parent.collection_id  # 原来跟随父待办计入的周报计划，转为独立后保持不变
             todo.updated_at = datetime.now()
             s.add(TodoActivity(todo_id=todo.id, event_type=PROMOTED, old_value={"parent_id": parent.id, "parent_title": parent.title}, new_value={"parent_id": None}))
             s.add(TodoActivity(todo_id=parent.id, event_type=CHILD_REMOVED, new_value={"child_id": todo.id, "title": todo.title}))
@@ -396,7 +375,7 @@ class TodoService:
                             source=material.source if material else "",
                             relation=relation,
                             track_key=link.track_key,
-                            tracking=tracking.get(link.track_key, []) if link.track_key else [],
+                            tracking=tracking.get(link.track_key) if link.track_key else None,
                             linked_at=link.created_at,
                             from_todo=owner,
                         )
@@ -419,7 +398,7 @@ class TodoService:
 
         文件变化区分 direct（直接关联的材料）和 shared（父待办的共享材料，只是背景，不算这个待办的进展）。
         """
-        from ..tracking.models import FileChange, FileSnapshot, TrackedFile, TrackingCollection
+        from ..tracking.models import FileChange, FileSnapshot, TrackedFile
 
         todo = self.get(todo_id)
         out = [
@@ -435,28 +414,17 @@ class TodoService:
                 if link.track_key:
                     keys.setdefault(link.track_key, "shared")
         if keys:
-            query = (
-                select(FileChange, TrackedFile, TrackingCollection.name)
-                .join(TrackedFile, TrackedFile.id == FileChange.file_id)
-                .join(TrackingCollection, TrackingCollection.id == FileChange.collection_id)
-                .where(TrackedFile.path_key.in_(list(keys)))
-            )
+            query = select(FileChange, TrackedFile).join(TrackedFile, TrackedFile.id == FileChange.file_id).where(TrackedFile.path_key.in_(list(keys)))
             if start is not None:
                 query = query.where(FileChange.detected_at >= start)
             if end is not None:
                 query = query.where(FileChange.detected_at <= end)
             with self._session() as s:
                 rows = s.execute(query).all()
-                versions = {x.id: x.version for x in s.scalars(select(FileSnapshot).where(FileSnapshot.id.in_([i for ch, _, _ in rows for i in (ch.from_snapshot_id, ch.to_snapshot_id) if i])))}
-            seen = set()
-            for ch, f, plan in rows:
-                # 多个周报计划追踪同一个文件时，同一次变化会各记一条：按文件和版本去重
-                marker = (f.path_key, ch.change_type, versions.get(ch.to_snapshot_id), ch.detected_at.replace(second=0, microsecond=0))
-                if marker in seen:
-                    continue
-                seen.add(marker)
+                versions = {x.id: x.version for x in s.scalars(select(FileSnapshot).where(FileSnapshot.id.in_([i for ch, _ in rows for i in (ch.from_snapshot_id, ch.to_snapshot_id) if i])))}
+            for ch, f in rows:
                 out.append(
-                    {"at": ch.detected_at, "kind": "file_change", "change_type": ch.change_type, "path": f.path, "file_id": f.id, "plan": plan,
+                    {"at": ch.detected_at, "kind": "file_change", "change_type": ch.change_type, "path": f.path, "file_id": f.id,
                      "from_version": versions.get(ch.from_snapshot_id), "to_version": versions.get(ch.to_snapshot_id), "relation": keys[f.path_key]}
                 )  # fmt: skip
         out.sort(key=lambda x: x["at"])
@@ -490,19 +458,12 @@ def _same_material(material_id: int, key: str | None):
     return or_(cond, TodoMaterial.track_key == key) if key else cond
 
 
-def _tracking_info(s) -> tuple[dict[str, int], dict[str, list[dict]]]:
-    """追踪键 → 最新版本的材料编号；追踪键 → 各周报计划里的追踪状态。"""
-    from ..tracking.models import TrackedFile, TrackingCollection, latest_versions
+def _tracking_info(s) -> tuple[dict[str, int], dict[str, dict]]:
+    """追踪键 → 最新版本的材料编号；追踪键 → 追踪状态 {file_id, status, last_error}。"""
+    from ..tracking.models import TrackedFile, latest_versions
 
-    latest: dict[str, int] = {}
-    for material_id, _file_id, _plan_id, key in s.execute(latest_versions()):
-        latest.setdefault(key, material_id)
-    plans = {c.id: c.name for c in s.scalars(select(TrackingCollection))}
-    tracking: dict[str, list[dict]] = {}
-    for f in s.scalars(select(TrackedFile).order_by(TrackedFile.id)):
-        tracking.setdefault(f.path_key, []).append(
-            {"plan_id": f.collection_id, "plan": plans.get(f.collection_id, ""), "file_id": f.id, "status": f.status, "last_error": f.last_error}
-        )
+    latest = {key: material_id for material_id, _file_id, key in s.execute(latest_versions())}
+    tracking = {f.path_key: {"file_id": f.id, "status": f.status, "last_error": f.last_error} for f in s.scalars(select(TrackedFile))}
     return latest, tracking
 
 
@@ -513,7 +474,6 @@ def _values(todo: Todo) -> dict:
         "status": todo.status,
         "due_date": todo.due_date.isoformat() if todo.due_date else None,
         "parent_id": todo.parent_id,
-        "collection_id": todo.collection_id,
     }
 
 
@@ -525,9 +485,3 @@ def _check_status(status: str) -> None:
     if status not in STATUS_NAMES:
         raise ValueError(f"状态只能是 {' / '.join(STATUS_NAMES)}（{' / '.join(STATUS_NAMES.values())}）")
 
-
-def _check_collection(s, collection_id: int) -> None:
-    from ..tracking.models import TrackingCollection
-
-    if s.get(TrackingCollection, collection_id) is None:
-        raise TodoNotFound(f"周报计划 {collection_id} 不存在")

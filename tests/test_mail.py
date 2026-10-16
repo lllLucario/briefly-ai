@@ -3,13 +3,16 @@ import smtplib
 from datetime import date
 
 import pytest
+
+from weekly_util import draft
 from fastapi.testclient import TestClient
 
 from briefly import config, mail
 from briefly.api import create_app
 from briefly.db import create_db_engine
 from briefly.materials import MaterialStore
-from briefly.weekly import DONE, WeeklyService
+from briefly.weekly.models import DONE
+from briefly.weekly.service import WeeklyService
 
 
 class FakeSMTP:
@@ -54,7 +57,7 @@ def weekly():
 
 
 def done_report(w: WeeklyService) -> int:
-    r = w.create([], "联调", date(2026, 10, 12), date(2026, 10, 18), "", "王五")
+    r = draft(w, [], "联调", date(2026, 10, 12), date(2026, 10, 18), "", "王五")
     w._update(r.id, status=DONE, content="【本周完成】\n- 支付回调降到 200ms〔1-1〕\n【下周计划】\n- 上线〔简述〕")
     return r.id
 
@@ -107,7 +110,7 @@ def test_rejected_recipient(weekly):
 
 def test_checks_before_sending(weekly, monkeypatch):
     smtp = FakeSMTP()
-    r = weekly.create([], "联调", date(2026, 10, 12), date(2026, 10, 18), "", "")
+    r = draft(weekly, [], "联调", date(2026, 10, 5), date(2026, 10, 11), "", "")  # 另一周，还没生成
     with pytest.raises(ValueError, match="还没有生成完成"):
         mail.send_weekly(weekly, r.id, "mentor@example.com", connect=smtp)
     with pytest.raises(ValueError, match="收件人"):
@@ -127,11 +130,11 @@ def test_api(monkeypatch):
     with TestClient(app) as client:
         assert client.get("/mail/status").json() == {"configured": True, "sender": "me@example.com", "default_to": "mentor@example.com"}
         rid = done_report(app.state.weekly)
-        out = client.post(f"/weekly-reports/{rid}/email", json={"to": "mentor@example.com"})
+        out = client.post(f"/weekly/{rid}/email", json={"to": "mentor@example.com"})
         assert out.status_code == 201 and out.json()["status"] == "sent"
-        assert client.post(f"/weekly-reports/{rid}/email", json={"to": "导师"}).status_code == 400
-        assert [x["to"] for x in client.get(f"/weekly-reports/{rid}/email").json()] == ["mentor@example.com"]
-        assert client.post("/weekly-reports/999/email", json={"to": "a@b.com"}).status_code == 404
+        assert client.post(f"/weekly/{rid}/email", json={"to": "导师"}).status_code == 400
+        assert [x["to"] for x in client.get(f"/weekly/{rid}/email").json()] == ["mentor@example.com"]
+        assert client.post("/weekly/999/email", json={"to": "a@b.com"}).status_code == 404
     assert len(smtp.sent) == 1
     engine.dispose()
 

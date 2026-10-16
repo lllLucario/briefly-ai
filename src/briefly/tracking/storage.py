@@ -8,8 +8,9 @@ from sqlalchemy import Engine, delete, select, update
 from sqlalchemy.orm import sessionmaker
 
 from ..materials import TRACKED, Material
+from ..weekly.models import WorkEvidence
 from .blobs import BlobStore
-from .models import FileChange, FileSnapshot, SnapshotDiff, WorkEvidence
+from .models import FileChange, FileSnapshot, SnapshotDiff
 
 
 def collect_garbage(engine: Engine, blobs: BlobStore) -> int:

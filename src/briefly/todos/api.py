@@ -20,7 +20,6 @@ class TodoIn(BaseModel):
     status: str = TODO  # todo / doing / done
     due_date: date | None = None
     parent_id: int | None = None  # 只能是顶级待办
-    collection_id: int | None = None  # 计入哪个周报计划；为空计入所有计划（子待办跟随父待办）
 
 
 class TodoPatch(BaseModel):
@@ -29,7 +28,6 @@ class TodoPatch(BaseModel):
     title: str | None = None
     description: str | None = None
     due_date: date | None = None
-    collection_id: int | None = None
     parent_id: int | None = None  # 把没有子待办的顶级待办放到另一个顶级待办下
 
 
@@ -57,7 +55,6 @@ def todo_out(t: Todo, svc: TodoService, progress: tuple[int, int] | None = None,
         "status_name": STATUS_NAMES.get(t.status, t.status),
         "parent_id": t.parent_id,
         "due_date": t.due_date,
-        "collection_id": t.collection_id,
         "created_at": t.created_at,
         "updated_at": t.updated_at,
         "completed_at": t.completed_at,
@@ -95,7 +92,6 @@ def register(app: FastAPI) -> None:
         out = todo_out(t, s)
         out["parent"] = None if t.parent_id is None else todo_out(s.get(t.parent_id), s)
         out["children"] = [todo_out(k, s) for k in s.children(t.id)] if t.parent_id is None else []
-        out["plan_id"] = s.plan_of(t)  # 实际计入的周报计划（子待办跟随父待办）
         out["material_list"] = [material_out(m) for m in s.materials(t.id)]
         out["notices"] = notices or []
         return out
@@ -117,14 +113,14 @@ def register(app: FastAPI) -> None:
 
     @app.post("/todos", tags=[docs.TODOS], status_code=201, summary="新建待办（parent_id 指定父待办即为子待办）")
     def create_todo(body: TodoIn):
-        t = svc().create(body.title, body.description, status=body.status, due_date=body.due_date, parent_id=body.parent_id, collection_id=body.collection_id)
+        t = svc().create(body.title, body.description, status=body.status, due_date=body.due_date, parent_id=body.parent_id)
         return detail(t)
 
     @app.get("/todos/{todo_id}", tags=[docs.TODOS], summary="待办详情：父待办、子待办、直接与共享材料（含追踪状态）")
     def get_todo(todo_id: int):
         return detail(svc().get(todo_id))
 
-    @app.put("/todos/{todo_id}", tags=[docs.TODOS], summary="修改标题、说明、截止日期、周报计划、父待办（只改传了的字段）")
+    @app.put("/todos/{todo_id}", tags=[docs.TODOS], summary="修改标题、说明、截止日期、父待办（只改传了的字段）")
     def update_todo(todo_id: int, body: TodoPatch):
         fields = {k: getattr(body, k) for k in body.model_fields_set}
         if "title" in fields and fields["title"] is None:
@@ -191,10 +187,6 @@ def register(app: FastAPI) -> None:
 
         svc().get(todo_id)
         return reports_of_todo(app.state.store.engine, todo_id)
-
-    @app.get("/weekly-reports/{report_id}/todos", tags=[docs.TODOS], summary="周报关联的待办（生成时的快照，不随待办变化）")
-    def report_todos(report_id: int):
-        return app.state.weekly.get(report_id).options.get("todo_refs", [])
 
     @app.get("/todos/{todo_id}/timeline", tags=[docs.TODOS], summary="时间线：活动 + 关联材料的文件变化（区分直接材料与父待办共享材料）")
     def timeline(todo_id: int, start: date | None = None, end: date | None = None):

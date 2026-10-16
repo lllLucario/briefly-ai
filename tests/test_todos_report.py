@@ -1,4 +1,4 @@
-"""待办与周报 Checklist、周报的联动（需求第 9 节阶段 5 的回归流程）。用假模型，不调用真实 API、真实飞书。"""
+"""待办与周报审核清单、周报的联动（需求第 9 节阶段 5 的回归流程）。用假模型，不调用真实 API、真实飞书。"""
 from datetime import timedelta
 
 import pytest
@@ -10,10 +10,9 @@ from briefly.api import create_app
 from briefly.todos.evidence import TodoEvidence
 from briefly.todos.models import DOING, DONE, TodoActivity
 from briefly.todos.service import ConfirmationRequired, TodoService
-from briefly.tracking.models import CONFIRMED, PENDING, SUPERSEDED
-from briefly.tracking.pipeline import generate_report, prepare
-from briefly.tracking.review import ReviewService
-from briefly.weekly import WeeklyService
+from briefly.weekly.models import CONFIRMED, PENDING, SUPERSEDED
+from briefly.weekly.review import ReviewService
+from briefly.weekly.service import WeeklyService
 from test_tracking_evidence import WEEK
 from test_tracking_review import make_model
 from tracking_util import env  # noqa: F401
@@ -24,19 +23,19 @@ LAST_WEEK = (WEEK[0] - timedelta(days=7), WEEK[1] - timedelta(days=7))
 @pytest.fixture
 def ctx(env):
     model = make_model()
-    c = env.svc.create_collection("项目A", ["张三"])
+    env.set_owners(["张三"])
     todos = TodoService(env.svc.engine, env.store)
-    return env, c, todos, model
+    return env, env.weekly(lambda: model), todos, model
 
 
-def run_prepare(env, c, model, period=WEEK):
-    prep, info = prepare(env.svc, c.id, *period, model_factory=lambda: model)
-    review = ReviewService(env.svc, lambda: model)
+def run_prepare(env, model, period=WEEK):
+    prep, info = env.weekly(lambda: model).prepare(period[0])
+    review = env.weekly(lambda: model).review()
     return prep, info, review, review.items(prep.id)
 
 
-def links(env, prep_id):
-    return TodoEvidence(env.svc.engine, env.store).links_for_prep(prep_id)
+def links(env, report_id):
+    return TodoEvidence(env.svc.engine, env.store).links_for_report(report_id)
 
 
 def backdate(env, todo_id, days=7):
@@ -48,8 +47,8 @@ def backdate(env, todo_id, days=7):
 
 def test_parent_and_children_become_checklist_items(ctx):
     """流程 1：父待办 + 多个子待办（不同截止日期、并行推进）→ 每个有活动的待办一条记录，按父待办分组写进周报。"""
-    env, c, todos, model = ctx
-    parent = todos.create("支付改造", collection_id=c.id)
+    env, weekly, todos, model = ctx
+    parent = todos.create("支付改造")
     a = todos.create("接口联调", parent_id=parent.id)
     b = todos.create("压测", parent_id=parent.id)
     todos.set_status(a.id, DOING)
@@ -57,7 +56,7 @@ def test_parent_and_children_become_checklist_items(ctx):
     todos.set_status(a.id, DONE)
     todos.set_status(b.id, DOING)
     todos.add_note(b.id, "压测环境已搭好")
-    prep, info, review, items = run_prepare(env, c, model)
+    prep, info, review, items = run_prepare(env, model)
     by_title = {e.title: e for e in items}
     assert set(by_title) == {"支付改造", "接口联调", "压测"} and len(info.todos.created) == 3
     assert info.build.calls == 0  # 待办记录不调用模型
@@ -69,32 +68,31 @@ def test_parent_and_children_become_checklist_items(ctx):
     assert link["parent_title"] == "支付改造" and link["snapshot"]["status_in_period"] == DONE
 
     review.confirm(prep.id, [e.id for e in items])
-    review.confirm_checklist(prep.id)
-    report = generate_report(env.svc, WeeklyService(env.store, lambda: model), prep.id)
+    report = weekly.generate(prep.id)
     assert report.status == "done", report.error
     groups = {i["point"].split("：")[0]: i["group"] for i in report.items}
     assert groups == {"支付改造": "支付改造", "接口联调": "支付改造", "压测": "支付改造"}  # 写作按顶级待办分组
     assert "所属待办：支付改造" in str(model.calls[-1])
-    refs = {r["todo"]["title"]: r["group"] for r in report.options["todo_refs"]}
+    refs = {r["todo"]["title"]: r["group"] for r in report.inputs["todo_refs"]}
     assert refs["压测"] == "支付改造 › 压测"  # 显示用的完整路径仍保留
 
 
 def test_rerun_is_idempotent_and_reviewed_items_get_increments(ctx):
-    env, c, todos, model = ctx
+    env, weekly, todos, model = ctx
     t = todos.create("调研")
     todos.add_note(t.id, "收集竞品数据")
-    prep, _, review, [first] = run_prepare(env, c, model)
-    _, info, _, items = run_prepare(env, c, model)
+    prep, _, review, [first] = run_prepare(env, model)
+    _, info, _, items = run_prepare(env, model)
     assert info.todos.unchanged == [first.id] and [e.id for e in items] == [first.id]
 
     todos.add_note(t.id, "整理报价")  # 未审核时有新活动：替换旧记录
-    _, info, _, items = run_prepare(env, c, model)
+    _, info, _, items = run_prepare(env, model)
     [second] = items
     assert review.get(first.id).review_status == SUPERSEDED and "整理报价" in second.description and "收集竞品数据" in second.description
 
     review.confirm(prep.id, [second.id])
     todos.add_note(t.id, "等待财务回复")  # 审核后的新活动：只生成增量记录
-    _, info, _, items = run_prepare(env, c, model)
+    _, info, _, items = run_prepare(env, model)
     third = next(e for e in items if e.id not in (second.id,))
     assert review.get(second.id).has_update and third.review_status == PENDING
     assert third.description == "进展：等待财务回复。" and "increment" in third.flags
@@ -102,16 +100,16 @@ def test_rerun_is_idempotent_and_reviewed_items_get_increments(ctx):
 
 def test_linked_tracked_file_change_is_one_item_for_all_todos(ctx):
     """同一份材料的一次变化：只有一条记录，关联到所有直接关联它的待办；文件变化不改待办状态。"""
-    env, c, todos, model = ctx
+    env, weekly, todos, model = ctx
     env.write("方案.md", "# 方案\n原有内容")
-    env.svc.add_paths(c.id, [str(env.work / "方案.md")])
+    env.svc.add_paths([str(env.work / "方案.md")])
     [material] = env.store.list_materials()
     a, b = todos.create("写方案"), todos.create("评审方案")
     todos.set_status(a.id, DONE)
     todos.link(a.id, material.id)
     todos.link(b.id, material.id)
     env.write("方案.md", "# 方案\n原有内容\n补充灰度发布方案")
-    prep, _, _, items = run_prepare(env, c, model)
+    prep, _, _, items = run_prepare(env, model)
     files = [e for e in items if e.origin == "generated"]
     assert len(files) == 1
     assert {x["todo_id"] for x in links(env, prep.id)[files[0].id]} == {a.id, b.id}
@@ -120,10 +118,10 @@ def test_linked_tracked_file_change_is_one_item_for_all_todos(ctx):
 
 def test_parent_shared_material_is_not_counted_for_each_child(ctx):
     """流程 4：子待办能看到父待办的共享材料；父材料的变化只关联父待办，不算每个子待办的进展。"""
-    env, c, todos, model = ctx
+    env, weekly, todos, model = ctx
     env.write("背景.md", "# 背景\n项目目标")
     env.write("接口.md", "# 接口\n登录接口")
-    env.svc.add_paths(c.id, [str(env.work / "背景.md"), str(env.work / "接口.md")])
+    env.svc.add_paths([str(env.work / "背景.md"), str(env.work / "接口.md")])
     by_name = {m.title.replace("\\", "/").rsplit("/", 1)[-1]: m for m in env.store.list_materials()}
     shared, own = by_name["背景.md"], by_name["接口.md"]
     parent = todos.create("项目")
@@ -136,7 +134,7 @@ def test_parent_shared_material_is_not_counted_for_each_child(ctx):
 
     env.write("背景.md", "# 背景\n项目目标\n新增范围说明")
     env.write("接口.md", "# 接口\n登录接口\n支付接口")
-    prep, _, _, items = run_prepare(env, c, model)
+    prep, _, _, items = run_prepare(env, model)
     linked = {e.source_refs[0]["path"].replace("\\", "/").rsplit("/", 1)[-1]: links(env, prep.id).get(e.id, []) for e in items}
     assert [(x["todo_id"], x["relation"]) for x in linked["背景.md"]] == [(parent.id, "material")]
     assert linked["背景.md"][0]["snapshot"]["shared_with_children"]
@@ -146,35 +144,33 @@ def test_parent_shared_material_is_not_counted_for_each_child(ctx):
 
 def test_two_weeks_record_their_own_activity(ctx):
     """流程 6：长期待办跨两个周期，同一编号；每份周报只有自己周期内的活动。"""
-    env, c, todos, model = ctx
+    env, weekly, todos, model = ctx
     t = todos.create("支付改造")
     todos.set_status(t.id, DOING)
     todos.add_note(t.id, "完成方案设计")
     backdate(env, t.id)
     todos.add_note(t.id, "完成接口开发")
-    weekly = WeeklyService(env.store, lambda: model)
     reports = []
     for period in (LAST_WEEK, WEEK):
-        prep, _, review, [item] = run_prepare(env, c, model, period)
+        prep, _, review, [item] = run_prepare(env, model, period)
         review.confirm(prep.id, [item.id])
-        review.confirm_checklist(prep.id)
-        reports.append(generate_report(env.svc, weekly, prep.id))
+        reports.append(weekly.generate(prep.id))
     last, this = (r.items[0]["point"] for r in reports)
     assert "完成方案设计" in last and "完成接口开发" not in last
     assert "完成接口开发" in this and "完成方案设计" not in this
-    assert [r.options["todo_refs"][0]["todo_id"] for r in reports] == [t.id, t.id]
+    assert [r.inputs["todo_refs"][0]["todo_id"] for r in reports] == [t.id, t.id]
     assert len(todos.list()) == 1  # 不复制待办
 
 
 def test_checklist_edits_do_not_touch_the_todo_until_sync_is_confirmed(ctx):
     """流程 7：Checklist 修改本周进度不改待办；本次状态只改本次记录；确认同步后才改待办并记活动。"""
-    env, c, todos, model = ctx
+    env, weekly, todos, model = ctx
     t = todos.create("写方案", "原始说明")
     todos.set_status(t.id, DOING)
-    prep, _, review, [item] = run_prepare(env, c, model)
+    prep, _, review, [item] = run_prepare(env, model)
     review.edit(prep.id, item.id, description="方案初稿完成，等待评审")
     bridge = TodoEvidence(env.svc.engine, env.store)
-    bridge.set_report_status(review, prep.id, item.id, t.id, DONE)
+    bridge.set_report_status(prep.id, item.id, t.id, DONE)
     after = review.get(item.id)
     assert after.category == item.category == "in_progress" and after.description == "方案初稿完成，等待评审"  # 记录本身不变
     fresh = todos.get(t.id)
@@ -186,39 +182,37 @@ def test_checklist_edits_do_not_touch_the_todo_until_sync_is_confirmed(ctx):
     bridge.sync_status(prep.id, item.id, t.id, confirm=True)
     assert todos.get(t.id).status == DONE and todos.get(t.id).completed_at is not None
     last = todos.activities([t.id])[-1]
-    assert last.event_type == "status_synced" and last.new_value["prep_id"] == prep.id
-    _, info, _, items = run_prepare(env, c, model)
+    assert last.event_type == "status_synced" and last.new_value["report_id"] == prep.id
+    _, info, _, items = run_prepare(env, model)
     assert info.todos.created == []  # 本次审核里同步的状态不再生成新记录
 
 
 def test_excluded_item_only_leaves_this_report(ctx):
-    env, c, todos, model = ctx
+    env, weekly, todos, model = ctx
     t = todos.create("整理会议纪要")
     material, _ = env.store.add_text("纪要", "会议纪要内容")
     todos.link(t.id, material.id)
-    prep, _, review, [item] = run_prepare(env, c, model)
+    prep, _, review, [item] = run_prepare(env, model)
     review.exclude(prep.id, [item.id])
     review.add(prep.id, "参加评审会")
-    review.confirm_checklist(prep.id)
-    report = generate_report(env.svc, WeeklyService(env.store, lambda: model), prep.id)
+    report = weekly.generate(prep.id)
     assert "整理会议纪要" not in report.content
     assert todos.get(t.id).archived_at is None and env.store.get(material.id) and todos.materials(t.id)
 
 
 def test_report_history_keeps_the_snapshot_after_restructuring(ctx):
     """转为独立待办、改标题后，旧周报仍按当时的层级和标题显示；待办能查到关联的周报。"""
-    env, c, todos, model = ctx
+    env, weekly, todos, model = ctx
     parent = todos.create("支付改造")
     child = todos.create("接口联调", parent_id=parent.id)
     todos.add_note(child.id, "完成登录接口")
-    prep, _, review, items = run_prepare(env, c, model)
+    prep, _, review, items = run_prepare(env, model)
     review.confirm(prep.id, [e.id for e in items])
-    review.confirm_checklist(prep.id)
-    report = generate_report(env.svc, WeeklyService(env.store, lambda: model), prep.id)
+    report = weekly.generate(prep.id)
     todos.promote(child.id)
     todos.update(child.id, title="接口联调（独立）")
     with TestClient(create_app(env.store, model_factory=lambda: model)) as client:
-        refs = client.get(f"/weekly-reports/{report.id}/todos").json()
+        refs = client.get(f"/weekly/{report.id}/todos").json()
         mine = next(r for r in refs if r["todo_id"] == child.id)
         assert mine["group"] == "支付改造 › 接口联调" and mine["evidence"]["review_status"] == CONFIRMED
         history = client.get(f"/todos/{child.id}/reports").json()
@@ -227,87 +221,76 @@ def test_report_history_keeps_the_snapshot_after_restructuring(ctx):
 
 def test_unlinked_material_changes_still_reach_the_report(ctx):
     """流程 8：没有关联待办的文件变化照原流程进入 Checklist 和周报。"""
-    env, c, todos, model = ctx
+    env, weekly, todos, model = ctx
     env.write("进度.md", "# 进度\n原有内容")
-    env.svc.add_paths(c.id, [str(env.work / "进度.md")])
+    env.svc.add_paths([str(env.work / "进度.md")])
     todos.create("别的事")
     env.write("进度.md", "# 进度\n原有内容\n压测完成 50%")
-    prep, _, review, items = run_prepare(env, c, model)
+    prep, _, review, items = run_prepare(env, model)
     file_item = next(e for e in items if e.origin == "generated")
     assert links(env, prep.id).get(file_item.id) is None
     review.confirm(prep.id, [e.id for e in items])
-    review.confirm_checklist(prep.id)
-    report = generate_report(env.svc, WeeklyService(env.store, lambda: model), prep.id)
+    report = weekly.generate(prep.id)
     assert "压测完成 50%" in report.content
 
 
-def test_todos_of_other_plans_stay_out(ctx):
-    env, c, todos, model = ctx
-    other = env.svc.create_collection("项目B")
-    todos.create("B 的事", collection_id=other.id)
-    todos.create("都计入")
-    _, _, _, items = run_prepare(env, c, model)
-    assert [e.title for e in items] == ["都计入"]
-
-
 def test_merged_items_keep_their_todos(ctx):
-    env, c, todos, model = ctx
+    env, weekly, todos, model = ctx
     a, b = todos.create("A"), todos.create("B")
-    prep, _, review, items = run_prepare(env, c, model)
+    prep, _, review, items = run_prepare(env, model)
     merged = review.merge(prep.id, [e.id for e in items], title="A 和 B")
     TodoEvidence(env.svc.engine, env.store).ensure_links(prep)
     assert {x["todo_id"] for x in links(env, prep.id)[merged.id]} == {a.id, b.id}
 
 
 def test_checklist_api_shows_todos_and_requires_sync_confirmation(ctx):
-    env, c, todos, model = ctx
+    env, weekly, todos, model = ctx
     t = todos.create("写方案")
     todos.set_status(t.id, DOING)
     with TestClient(create_app(env.store, model_factory=lambda: model)) as client:
-        start, end = (d.isoformat() for d in WEEK)
-        prep = client.post(f"/tracking/collections/{c.id}/prepare", json={"start": start, "end": end}).json()
-        assert prep["build"]["from_todos"] == 1
-        [item] = prep["items"]
+        week = client.post("/weekly/prepare", json={"day": WEEK[0].isoformat()}).json()
+        assert week["build"]["from_todos"] == 1
+        [item] = week["checklist_items"]
         assert item["todos"][0]["title"] == "写方案" and item["todos"][0]["status"] == DOING
-        url = f"/tracking/preps/{prep['id']}/evidence/{item['id']}/todos/{t.id}"
+        url = f"/weekly/{week['id']}/items/{item['id']}/todos/{t.id}"
         after = client.put(url, json={"status": "done"}).json()
-        assert after["items"][0]["category"] == "in_progress" and not after["items"][0]["user_edited"]
-        assert after["items"][0]["todos"][0]["report_status"] == "done"
+        assert after["checklist_items"][0]["category"] == "in_progress" and not after["checklist_items"][0]["user_edited"]
+        assert after["checklist_items"][0]["todos"][0]["report_status"] == "done"
         r = client.post(f"{url}/sync", json={})
         assert r.status_code == 409 and r.json()["confirm"]
         assert client.get(f"/todos/{t.id}").json()["status"] == DOING
         synced = client.post(f"{url}/sync", json={"confirm": True}).json()
-        assert synced["items"][0]["todos"][0]["synced_at"] and client.get(f"/todos/{t.id}").json()["status"] == DONE
+        assert synced["checklist_items"][0]["todos"][0]["synced_at"] and client.get(f"/todos/{t.id}").json()["status"] == DONE
 
 
 def test_plan_without_files_can_prepare_from_todos(ctx):
-    env, c, todos, model = ctx
+    env, weekly, todos, model = ctx
     todos.create("只有待办")
-    _, _, _, items = run_prepare(env, c, model)
+    _, _, _, items = run_prepare(env, model)
     assert [e.title for e in items] == ["只有待办"]
 
 
 def test_suggested_materials_are_untracked_copies_of_active_todos(ctx):
-    env, c, todos, model = ctx
+    env, weekly, todos, model = ctx
     t = todos.create("写方案")
     material, _ = env.store.add_text("参考资料", "参考内容")
     todos.link(t.id, material.id)
-    prep, _, _, _ = run_prepare(env, c, model)
+    prep, _, _, _ = run_prepare(env, model)
     assert TodoEvidence(env.svc.engine, env.store).suggested_materials(prep) == [material.id]
 
 
 def test_only_materials_changed_todo_has_no_item(ctx):
-    env, c, todos, model = ctx
+    env, weekly, todos, model = ctx
     t = todos.create("项目")
     backdate(env, t.id)
     material, _ = env.store.add_text("资料", "内容")
     todos.link(t.id, material.id)  # 本周只有材料关联，不算工作
-    _, _, _, items = run_prepare(env, c, model)
+    _, _, _, items = run_prepare(env, model)
     assert items == []
 
 
 def test_activity_window_uses_status_at_period_end(ctx):
-    env, c, todos, model = ctx
+    env, weekly, todos, model = ctx
     t = todos.create("调研")
     todos.set_status(t.id, DONE)
     backdate(env, t.id)
@@ -315,9 +298,9 @@ def test_activity_window_uses_status_at_period_end(ctx):
     with Session(env.svc.engine) as s:
         s.execute(update(TodoActivity).where(TodoActivity.todo_id == t.id, TodoActivity.event_type == "reopened").values(note=""))
         s.commit()
-    prep, _, _, [this_week] = run_prepare(env, c, model)
+    prep, _, _, [this_week] = run_prepare(env, model)
     assert this_week.category == "in_progress" and "重新打开" in this_week.description
-    _, _, _, [last_week] = run_prepare(env, c, model, LAST_WEEK)
+    _, _, _, [last_week] = run_prepare(env, model, LAST_WEEK)
     assert last_week.category == "done"
 
 
@@ -328,7 +311,7 @@ def feishu(tmp_path, monkeypatch):
     from briefly.db import create_db_engine
     from briefly.materials import MaterialStore
     from briefly.tracking.blobs import BlobStore
-    from briefly.tracking.collection import TrackingService
+    from briefly.tracking.service import TrackingService
     from test_tracking_feishu import API, DOC, Doc
     from fakes import FakeFeishu
 
@@ -355,48 +338,47 @@ def test_imported_feishu_doc_shows_existing_tracking_without_new_tracking(feishu
     from test_tracking_feishu import DOC, URL
 
     svc, store, doc = feishu
-    c = svc.create_collection("项目A", ["王五"])
-    svc.add_paths(c.id, [URL])
+    svc.add_paths([URL])
     imported, _ = store.add_text("周报草稿", "# 周报草稿\n周一：梳理支付回调链路", source="feishu", kind="feishu", report={"feishu": {"kind": "docx", "token": DOC, "url": URL}})
     todos = TodoService(svc.engine, store)
     t = todos.create("支付回调优化")
     todos.link(t.id, imported.id)
     [m] = todos.materials(t.id)
-    assert m.track_key == f"feishu://docx/{DOC}" and [(x["plan"], x["status"]) for x in m.tracking] == [("项目A", "present")]
+    assert m.track_key == f"feishu://docx/{DOC}" and m.tracking["status"] == "present"
     assert m.current_id != imported.id  # 打开的是追踪中的最新版本
     with Session(svc.engine) as s:
         assert s.query(TrackingSource).count() == 1  # 关联待办不新建追踪
 
     doc.revision, doc.paragraphs = 2, doc.paragraphs + ["周三：回调耗时降到 200 毫秒"]
     model = make_model()
-    prep, _ = prepare(svc, c.id, *WEEK, model_factory=lambda: model)
+    prep, _ = WeeklyService(svc.store, lambda: model, tracking=svc).prepare(WEEK[0])
     review = ReviewService(svc, lambda: model)
     file_item = next(e for e in review.items(prep.id) if e.origin == "generated")
-    assert [x["todo_id"] for x in TodoEvidence(svc.engine, store).links_for_prep(prep.id)[file_item.id]] == [t.id]
+    assert [x["todo_id"] for x in TodoEvidence(svc.engine, store).links_for_report(prep.id)[file_item.id]] == [t.id]
 
     from fakes import feishu_error
 
     doc.error = feishu_error(1770032, "forBidden", 403)
-    svc.scan(c.id)
+    svc.scan()
     [m] = todos.materials(t.id)
-    assert m.tracking[0]["status"] == "unreachable" and m.tracking[0]["last_error"]
+    assert m.tracking["status"] == "unreachable" and m.tracking["last_error"]
     assert m.current_id is not None  # 无法访问不等于删除：材料仍在
 
     local = tmp_path / "work" / "方案.md"
     local.parent.mkdir()
     local.write_text("# 方案", encoding="utf-8")
-    svc.add_paths(c.id, [str(local.parent)])
+    svc.add_paths([str(local.parent)])
     [version] = [x for x in store.list_materials() if x.title.endswith("方案.md")]
     todos.link(t.id, version.id)
     local.unlink()
-    svc.scan(c.id)
-    statuses = {x.title.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]: x.tracking[0]["status"] for x in todos.materials(t.id)}
+    svc.scan()
+    statuses = {x.title.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]: x.tracking["status"] for x in todos.materials(t.id)}
     assert statuses["方案.md"] == "missing"
 
 
 def test_items_of_the_same_parent_are_written_next_to_each_other(ctx):
     """模型基本按给出的顺序写：同一个父待办的记录在交给模型前排在一起，不被别的工作隔开。"""
-    env, c, todos, model = ctx
+    env, weekly, todos, model = ctx
     a_parent, b = todos.create("支付改造"), todos.create("数据看板")
     backdate(env, a_parent.id), backdate(env, b.id)
     first = todos.create("接口联调", parent_id=a_parent.id)
@@ -404,32 +386,30 @@ def test_items_of_the_same_parent_are_written_next_to_each_other(ctx):
     second = todos.create("压测", parent_id=a_parent.id)
     todos.add_note(first.id, "完成登录接口")
     todos.add_note(second.id, "压测环境搭好")
-    prep, _, review, items = run_prepare(env, c, model)
+    prep, _, review, items = run_prepare(env, model)
     review.confirm(prep.id, [e.id for e in items])
-    review.confirm_checklist(prep.id)
-    report = generate_report(env.svc, WeeklyService(env.store, lambda: model), prep.id)
+    report = weekly.generate(prep.id)
     order = [i["point"].split("：")[0] for i in report.items]
     assert abs(order.index("接口联调") - order.index("压测")) == 1, order
 
 
 def test_report_status_is_kept_apart_from_the_item(ctx):
     """本次状态单独保存：不标“你改过”，不改描述和类别；写周报时按它放栏目并写明状态。"""
-    env, c, todos, model = ctx
+    env, weekly, todos, model = ctx
     a, b = todos.create("写方案"), todos.create("调研")
     todos.set_status(a.id, DOING)
     todos.set_status(b.id, DOING)
-    prep, _, review, items = run_prepare(env, c, model)
+    prep, _, review, items = run_prepare(env, model)
     ids = {e.title: e.id for e in items}
     review.confirm(prep.id, list(ids.values()))
-    review.confirm_checklist(prep.id)
+    weekly.generate(prep.id)
     bridge = TodoEvidence(env.svc.engine, env.store)
-    bridge.set_report_status(review, prep.id, ids["写方案"], a.id, DONE)
-    bridge.set_report_status(review, prep.id, ids["调研"], b.id, "todo")
+    bridge.set_report_status(prep.id, ids["写方案"], a.id, DONE)
+    bridge.set_report_status(prep.id, ids["调研"], b.id, "todo")
     assert not review.get(ids["写方案"]).user_edited and review.get(ids["写方案"]).category == "in_progress"
-    assert review.prep(prep.id).status == "draft"  # 清单确认后有修改：回到待确认
+    assert weekly.report(prep.id).checklist == "draft"  # 清单确认后有修改：回到待确认
     assert [h.action for h in review.history(prep.id)][-3:] == ["todo_status", "reopen", "todo_status"]
-    review.confirm_checklist(prep.id)
-    report = generate_report(env.svc, WeeklyService(env.store, lambda: model), prep.id)
+    report = weekly.generate(prep.id)
     by_title = {i["point"].split("：")[0]: i["category"] for i in report.items}
     assert by_title == {"写方案（已完成）": "done", "调研（未开始）": "other"}  # 未开始不写进下周计划
     assert todos.get(a.id).status == DOING  # 待办不变

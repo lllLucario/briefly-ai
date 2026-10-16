@@ -122,14 +122,14 @@ def register(
         response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
         return app.state.created_material(material, is_new)
 
-    @app.post("/weekly-reports/{report_id}/feishu", tags=[docs.FEISHU], response_model=ExportOut, status_code=201, summary="把周报写成一篇新的飞书文档")
+    @app.post("/weekly/{report_id}/feishu", tags=[docs.FEISHU], response_model=ExportOut, status_code=201, summary="把周报写成一篇新的飞书文档")
     def export_to_feishu(report_id: int):
         app.state.weekly.export_markdown(report_id)  # 不存在、未完成时先报错，不新建空文档
         with reader() as client:
             export = export_weekly(client, app.state.weekly, report_id, me=(tokens.connected() or {}).get("open_id", ""))
         return ExportOut.model_validate(export, from_attributes=True)
 
-    @app.get("/weekly-reports/{report_id}/feishu", tags=[docs.FEISHU], response_model=list[ExportOut], summary="周报写入飞书的记录")
+    @app.get("/weekly/{report_id}/feishu", tags=[docs.FEISHU], response_model=list[ExportOut], summary="周报写入飞书的记录")
     def list_exports(report_id: int):
-        app.state.weekly.get(report_id)
+        app.state.weekly.report(report_id)
         return [ExportOut.model_validate(e, from_attributes=True) for e in exports_of(app.state.store.engine, report_id)]

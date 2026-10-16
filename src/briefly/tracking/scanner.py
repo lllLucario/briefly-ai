@@ -47,6 +47,7 @@ from .models import (
     PRE_REPORT,
     PRESENT,
     RUNNING,
+    SCAN_LOCK,
     UNREACHABLE,
     UNTRACKED,
     FileChange,
@@ -88,7 +89,7 @@ def feishu_key(document_id: str) -> str:
 
 
 class ScanBusy(Exception):
-    """同一集合正在扫描。"""
+    """正在扫描（同一时间只有一个扫描）。"""
 
 
 def path_key(path: str | Path) -> str:
@@ -277,13 +278,13 @@ class Scanner:
         self.owner = uuid.uuid4().hex
 
     # ---- 扫描锁（跨进程）
-    def _acquire(self, collection_id: int) -> bool:
+    def _acquire(self) -> bool:
         now = datetime.now()
         with self._session() as s:
-            s.execute(delete(ScanLock).where(ScanLock.collection_id == collection_id, ScanLock.expires_at < now))
+            s.execute(delete(ScanLock).where(ScanLock.name == SCAN_LOCK, ScanLock.expires_at < now))
             s.add(
                 ScanLock(
-                    collection_id=collection_id,
+                    name=SCAN_LOCK,
                     owner=self.owner,
                     expires_at=now + timedelta(seconds=config.TRACKING_LOCK_SECONDS),
                 )
@@ -295,30 +296,29 @@ class Scanner:
             # 持有锁时不可能有别的扫描在进行：残留的 running 记录来自中断的进程
             s.execute(
                 update(ScanRun)
-                .where(ScanRun.collection_id == collection_id, ScanRun.status == RUNNING)
+                .where(ScanRun.status == RUNNING)
                 .values(status=INTERRUPTED, error="扫描进程中断，未完成", finished_at=now)
             )
             s.commit()
         return True
 
-    def _renew(self, collection_id: int) -> None:
+    def _renew(self) -> None:
         with self._session() as s:
             s.execute(
                 update(ScanLock)
-                .where(ScanLock.collection_id == collection_id, ScanLock.owner == self.owner)
+                .where(ScanLock.name == SCAN_LOCK, ScanLock.owner == self.owner)
                 .values(expires_at=datetime.now() + timedelta(seconds=config.TRACKING_LOCK_SECONDS))
             )
             s.commit()
 
-    def _release(self, collection_id: int) -> None:
+    def _release(self) -> None:
         with self._session() as s:
-            s.execute(delete(ScanLock).where(ScanLock.collection_id == collection_id, ScanLock.owner == self.owner))
+            s.execute(delete(ScanLock).where(ScanLock.name == SCAN_LOCK, ScanLock.owner == self.owner))
             s.commit()
 
     # ---- 扫描
     def scan(
         self,
-        collection_id: int,
         trigger: str,
         *,
         baseline_sources: set[int] | None = None,
@@ -326,13 +326,13 @@ class Scanner:
         attempt: int = 1,
         interrupt_after: int | None = None,
     ) -> ScanResult:
-        """扫描整个集合。baseline_sources：刚注册的追踪源，其中新发现的文件保存为 baseline。
+        """扫描全部追踪源。baseline_sources：刚注册的追踪源，其中新发现的文件保存为 baseline。
 
         interrupt_after 只用于测试：处理这么多个文件后模拟进程中断（抛出 KeyboardInterrupt，不收尾）。
         """
-        if not self._acquire(collection_id):
-            raise ScanBusy("该集合正在扫描，请稍后再试")
-        run = ScanRun(collection_id=collection_id, trigger=trigger, scheduled_for=scheduled_for, attempt=attempt)
+        if not self._acquire():
+            raise ScanBusy("正在检查更新，请稍后再试")
+        run = ScanRun(trigger=trigger, scheduled_for=scheduled_for, attempt=attempt)
         with self._session() as s:
             s.add(run)
             s.commit()
@@ -342,17 +342,17 @@ class Scanner:
             "errors": [], "parse_errors": 0,
         }  # fmt: skip
         try:
-            stats["gap"] = self._coverage_gap(collection_id, run)
-            self._run(collection_id, run, trigger, baseline_sources or set(), stats, interrupt_after)
+            stats["gap"] = self._coverage_gap(run)
+            self._run(run, trigger, baseline_sources or set(), stats, interrupt_after)
         except KeyboardInterrupt:
             raise  # 模拟进程被杀：不收尾，记录保持 running，锁留到过期
         except Exception as e:
             log.exception("扫描失败")
             self._finish(run.id, FAILED, stats, f"{type(e).__name__}: {e}")
-            self._release(collection_id)
+            self._release()
             return ScanResult(run.id, FAILED, stats)
         self._finish(run.id, DONE, stats, "")
-        self._release(collection_id)
+        self._release()
         return ScanResult(run.id, DONE, stats)
 
     def _finish(self, run_id: int, status: str, stats: dict, error: str) -> None:
@@ -364,13 +364,11 @@ class Scanner:
             )
             s.commit()
 
-    def _coverage_gap(self, collection_id: int, run: ScanRun) -> dict | None:
+    def _coverage_gap(self, run: ScanRun) -> dict | None:
         """上次成功扫描到现在之间漏掉的每日扫描日期：这段时间的变化只能合并成一次，如实记下来。"""
         with self._session() as s:
             last = s.scalar(
-                select(func.max(ScanRun.finished_at)).where(
-                    ScanRun.collection_id == collection_id, ScanRun.status == DONE
-                )
+                select(func.max(ScanRun.finished_at)).where(ScanRun.status == DONE)
             )
         if last is None:
             return None
@@ -381,7 +379,6 @@ class Scanner:
 
     def _run(
         self,
-        collection_id: int,
         run: ScanRun,
         trigger: str,
         baseline_sources: set[int],
@@ -389,8 +386,8 @@ class Scanner:
         interrupt_after: int | None,
     ) -> None:
         with self._session() as s:
-            sources = list(s.scalars(select(TrackingSource).where(TrackingSource.collection_id == collection_id)))
-            files = list(s.scalars(select(TrackedFile).where(TrackedFile.collection_id == collection_id)))
+            sources = list(s.scalars(select(TrackingSource)))
+            files = list(s.scalars(select(TrackedFile)))
             attach_members(s, sources)
         active = [x for x in sources if x.status == ACTIVE]
         paused = [x for x in sources if x.status == PAUSED]
@@ -454,7 +451,7 @@ class Scanner:
             self._scan_existing(existing, path, run, trigger, stats)
             processed += 1
             if time.monotonic() - last_renew > 60:
-                self._renew(run.collection_id)
+                self._renew()
                 last_renew = time.monotonic()
 
         # 3. 新文件：先算哈希，与本次消失的文件比对，推断可能的移动或改名
@@ -465,7 +462,7 @@ class Scanner:
                 raise KeyboardInterrupt
             covering = listing.covered_by.get(key, [])
             kind = BASELINE if baseline_sources & set(covering) else FIRST_SEEN
-            self._scan_new(collection_id, key, path, kind, run, stats, vanished, vanished_hash, claimed)
+            self._scan_new(key, path, kind, run, stats, vanished, vanished_hash, claimed)
             processed += 1
 
         # 飞书文档（单独添加的 + 文件夹成员，同一篇只扫一次）：按版本号判断有没有变化，变了才读取全部内容
@@ -478,7 +475,7 @@ class Scanner:
                 if x.kind == FEISHU_FOLDER:
                     for key in sorted(x.members):
                         targets.setdefault(key, _FeishuTarget(key, x, via_folder=True))
-            self._scan_feishu(collection_id, list(targets.values()), by_key, run, trigger, baseline_sources, stats, feishu_client)
+            self._scan_feishu(list(targets.values()), by_key, run, trigger, baseline_sources, stats, feishu_client)
 
         # 4. 确实不在了的文件（没有被认作移动）记 DELETED
         for f in vanished:
@@ -493,7 +490,6 @@ class Scanner:
                 )
                 s.add(
                     FileChange(
-                        collection_id=collection_id,
                         file_id=f.id,
                         scan_run_id=run.id,
                         change_type=DELETED,
@@ -541,7 +537,6 @@ class Scanner:
 
     def _scan_feishu(
         self,
-        collection_id: int,
         targets: list[_FeishuTarget],
         by_key: dict[str, TrackedFile],
         run: ScanRun,
@@ -604,7 +599,6 @@ class Scanner:
                 st = SimpleNamespace(st_size=len(data), st_mtime=float(doc.revision_id or 0))
                 if f is None:
                     f = TrackedFile(
-                        collection_id=collection_id,
                         path=display,
                         path_key=target.path,
                         file_type=FEISHU,
@@ -640,7 +634,6 @@ class Scanner:
                 with self._session() as s:
                     s.add(
                         FileChange(
-                            collection_id=collection_id,
                             file_id=f.id,
                             scan_run_id=run.id,
                             change_type=MODIFIED if latest else CREATED,
@@ -736,7 +729,6 @@ class Scanner:
         with self._session() as s:
             s.add(
                 FileChange(
-                    collection_id=f.collection_id,
                     file_id=f.id,
                     scan_run_id=run.id,
                     change_type=change,
@@ -750,7 +742,6 @@ class Scanner:
 
     def _scan_new(
         self,
-        collection_id: int,
         key: str,
         path: Path,
         kind: str,
@@ -781,7 +772,6 @@ class Scanner:
         candidates.sort(key=lambda f: Path(f.path).name.lower() != path.name.lower())
         moved_from = candidates[0] if candidates else None
         f = TrackedFile(
-            collection_id=collection_id,
             path=str(path),
             path_key=key,
             file_type=path.suffix.lower().lstrip("."),
@@ -808,7 +798,6 @@ class Scanner:
                 )
                 s.add(
                     FileChange(
-                        collection_id=collection_id,
                         file_id=f.id,
                         scan_run_id=run.id,
                         change_type=POSSIBLY_MOVED,
@@ -823,7 +812,6 @@ class Scanner:
             with self._session() as s:
                 s.add(
                     FileChange(
-                        collection_id=collection_id,
                         file_id=f.id,
                         scan_run_id=run.id,
                         change_type=CREATED,
@@ -924,12 +912,12 @@ class Scanner:
         )
         return material.id, ""
 
-    def daily_runs(self, collection_id: int) -> list[ScanRun]:
+    def daily_runs(self) -> list[ScanRun]:
         with self._session() as s:
             return list(
                 s.scalars(
                     select(ScanRun)
-                    .where(ScanRun.collection_id == collection_id, ScanRun.trigger == DAILY)
+                    .where(ScanRun.trigger == DAILY)
                     .order_by(ScanRun.id)
                 )
             )

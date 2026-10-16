@@ -6,21 +6,11 @@ from sqlalchemy import update
 from sqlalchemy.orm import sessionmaker
 
 from briefly import config
-from briefly.tracking.attribution import judge
-from briefly.tracking.evidence import EvidenceBuilder
-from briefly.tracking.models import (
-    ATTRIBUTED,
-    CONFIRMED,
-    INFERRED,
-    MERGED,
-    PENDING,
-    SUPERSEDED,
-    UNKNOWN,
-    FileSnapshot,
-    WorkEvidence,
-)
-from briefly.tracking.pipeline import get_prep, prepare
 from briefly.tokens import estimate_tokens
+from briefly.tracking.attribution import judge
+from briefly.tracking.models import ATTRIBUTED, INFERRED, UNKNOWN, FileSnapshot
+from briefly.weekly.evidence import EvidenceBuilder
+from briefly.weekly.models import CONFIRMED, MERGED, PENDING, SUPERSEDED, WorkEvidence
 from fakes import FunctionModel, structured
 from tracking_util import docx_bytes, docx_with_revisions, env  # noqa: F401
 
@@ -67,25 +57,25 @@ def backdate(env, file_id: int, days: int, versions: list[int] | None = None) ->
         s.commit()
 
 
-def run_prepare(env, c, model=None, scan=True):
+def run_prepare(env, model=None, scan=True):
     model = model or fake_model()
-    prep, info = prepare(env.svc, c.id, *WEEK, scan=scan, model_factory=lambda: model)
+    prep, info = env.weekly(lambda: model).prepare(WEEK[0], scan=scan)
     return prep, info, model
 
 
 def evidence(env, prep, status=None):
     with sessionmaker(env.svc.engine)() as s:
-        rows = s.query(WorkEvidence).filter(WorkEvidence.prep_id == prep.id).order_by(WorkEvidence.id).all()
+        rows = s.query(WorkEvidence).filter(WorkEvidence.report_id == prep.id).order_by(WorkEvidence.id).all()
     return [e for e in rows if status is None or e.review_status == status]
 
 
 def test_takeover_mid_week_only_counts_changes_after_baseline(env):
     env.write("方案.md", "# 方案\n## 背景\n接手前就有的背景说明。")
-    c = env.svc.create_collection("c", ["张三"])
-    env.svc.add_paths(c.id, [str(env.work / "方案.md")])  # 周三接手：立即保存基线
+    env.set_owners(["张三"])
+    env.svc.add_paths([str(env.work / "方案.md")])  # 周三接手：立即保存基线
     env.write("方案.md", "# 方案\n## 背景\n接手前就有的背景说明。\n## 架构\n新增异步队列设计。")
 
-    prep, info, _ = run_prepare(env, c)  # 周五准备周报
+    prep, info, _ = run_prepare(env)  # 周五准备周报
 
     [e] = evidence(env, prep, PENDING)
     ref = e.source_refs[0]
@@ -98,25 +88,23 @@ def test_takeover_mid_week_only_counts_changes_after_baseline(env):
 
 def test_existing_content_without_changes_is_not_new_work(env):
     env.write("旧文档.md", "# 旧文档\n很早以前写好的内容。")
-    c = env.svc.create_collection("c")
-    env.svc.add_paths(c.id, [str(env.work / "旧文档.md")])
-    backdate(env, env.file(c, "旧文档.md").id, 20)  # 上上周开始追踪，本周没改
-    prep, info, model = run_prepare(env, c)
+    env.svc.add_paths([str(env.work / "旧文档.md")])
+    backdate(env, env.file("旧文档.md").id, 20)  # 上上周开始追踪，本周没改
+    prep, info, model = run_prepare(env)
     assert evidence(env, prep) == [] and model.calls == []
 
 
 def test_added_on_thursday_removed_on_friday_is_still_visible(env):
     env.write("计划.md", "# 计划\n上线时间待定。")
-    c = env.svc.create_collection("c")
-    env.svc.add_paths(c.id, [str(env.work / "计划.md")])
-    f = env.file(c, "计划.md")
+    env.svc.add_paths([str(env.work / "计划.md")])
+    f = env.file("计划.md")
     backdate(env, f.id, 20)
     env.write("计划.md", "# 计划\n上线时间待定。\n临时方案：先灰度 10% 流量。")  # 周四
-    env.svc.scan(c.id)
+    env.svc.scan()
     env.write("计划.md", "# 计划\n上线时间待定。")  # 周五删掉
-    env.svc.scan(c.id)
+    env.svc.scan()
 
-    prep, _, _ = run_prepare(env, c, scan=False)
+    prep, _, _ = run_prepare(env, scan=False)
 
     assert [s.version for s in env.svc.snapshots(f.id)] == [1, 2, 3]  # 历史版本都在
     [e] = evidence(env, prep)
@@ -125,33 +113,30 @@ def test_added_on_thursday_removed_on_friday_is_still_visible(env):
 
 def test_first_seen_file_is_flagged(env):
     env.write("d/a.md", "# A")
-    c = env.svc.create_collection("c")
-    env.svc.add_paths(c.id, [str(env.work / "d")])
-    backdate(env, env.file(c, "a.md").id, 20)
+    env.svc.add_paths([str(env.work / "d")])
+    backdate(env, env.file("a.md").id, 20)
     env.write("d/新文件.md", "# 新文件\n周内新建的说明。")
-    prep, _, _ = run_prepare(env, c)
+    prep, _, _ = run_prepare(env)
     [e] = evidence(env, prep)
     assert "first_seen" in e.flags and "无法确认创建时间" in e.source_refs[0]["notes"][0]
 
 
 def test_moved_file_without_content_change_is_not_evidence(env):
     env.write("d/报告.md", "# 报告\n内容")
-    c = env.svc.create_collection("c")
-    env.svc.add_paths(c.id, [str(env.work / "d")])
-    backdate(env, env.file(c, "报告.md").id, 20)
+    env.svc.add_paths([str(env.work / "d")])
+    backdate(env, env.file("报告.md").id, 20)
     (env.work / "d" / "报告.md").rename(env.work / "d" / "报告-改名.md")
-    prep, _, _ = run_prepare(env, c)
+    prep, _, _ = run_prepare(env)
     assert [e for e in evidence(env, prep) if "deleted" not in e.flags] == []
 
 
 def test_repeated_prepare_is_idempotent(env):
     env.write("a.md", "# A\n一")
-    c = env.svc.create_collection("c")
-    env.svc.add_paths(c.id, [str(env.work / "a.md")])
+    env.svc.add_paths([str(env.work / "a.md")])
     env.write("a.md", "# A\n一\n二")
-    prep, info, model = run_prepare(env, c)
+    prep, info, model = run_prepare(env)
     calls = len(model.calls)
-    prep2, info2, model2 = run_prepare(env, c, model=model)
+    prep2, info2, model2 = run_prepare(env, model=model)
     assert prep2.id == prep.id and info2.build.created == [] and info2.build.unchanged == info.build.created
     assert len(model.calls) == calls  # 没有重复调用模型
     assert len(evidence(env, prep)) == 1
@@ -159,14 +144,13 @@ def test_repeated_prepare_is_idempotent(env):
 
 def test_pending_evidence_is_superseded_but_reviewed_is_kept(env):
     env.write("a.md", "# A\n一")
-    c = env.svc.create_collection("c")
-    env.svc.add_paths(c.id, [str(env.work / "a.md")])
+    env.svc.add_paths([str(env.work / "a.md")])
     env.write("a.md", "# A\n一\n二")
-    prep, _, _ = run_prepare(env, c)
+    prep, _, _ = run_prepare(env)
     [first] = evidence(env, prep)
 
     env.write("a.md", "# A\n一\n二\n三")  # 未审核时又有变化：替换
-    run_prepare(env, c)
+    run_prepare(env)
     statuses = {e.id: e.review_status for e in evidence(env, prep)}
     assert statuses[first.id] == SUPERSEDED
     [second] = evidence(env, prep, PENDING)
@@ -176,7 +160,7 @@ def test_pending_evidence_is_superseded_but_reviewed_is_kept(env):
         s.execute(update(WorkEvidence).where(WorkEvidence.id == second.id).values(review_status=CONFIRMED, description="我改过的描述", user_edited=True))
         s.commit()
     env.write("a.md", "# A\n一\n二\n三\n四")
-    run_prepare(env, c)
+    run_prepare(env)
 
     kept = next(e for e in evidence(env, prep) if e.id == second.id)
     assert kept.review_status == CONFIRMED and kept.description == "我改过的描述" and kept.has_update
@@ -189,10 +173,9 @@ def test_pending_evidence_is_superseded_but_reviewed_is_kept(env):
 def test_large_diff_respects_token_budget(env, monkeypatch):
     monkeypatch.setattr(config, "TRACKING_DIFF_BATCH_TOKENS", 150)
     env.write("log.txt", "开头")
-    c = env.svc.create_collection("c")
-    env.svc.add_paths(c.id, [str(env.work / "log.txt")])
+    env.svc.add_paths([str(env.work / "log.txt")])
     env.write("log.txt", "开头\n" + "\n".join(f"第 {i} 项：完成接口 {i} 的联调和自测，记录在案。" for i in range(60)))
-    prep, info, model = run_prepare(env, c)
+    prep, info, model = run_prepare(env)
 
     extract_calls = [m for m in model.calls if "变化记录中，提取" in m[0].content]
     assert len(extract_calls) > 3  # 分成多批
@@ -204,20 +187,18 @@ def test_large_diff_respects_token_budget(env, monkeypatch):
 
 def test_parse_failure_gives_explicit_status_without_model(env):
     env.write("a.docx", docx_bytes(["正文"]))
-    c = env.svc.create_collection("c")
-    env.svc.add_paths(c.id, [str(env.work / "a.docx")])
+    env.svc.add_paths([str(env.work / "a.docx")])
     env.write("a.docx", b"broken file")
-    prep, _, model = run_prepare(env, c)
+    prep, _, model = run_prepare(env)
     [e] = evidence(env, prep)
     assert "parse_failed" in e.flags and "解析失败" in e.description and model.calls == []
 
 
 def test_no_extracted_points_falls_back_to_factual_description(env):
     env.write("a.md", "# A\n## 进度\n接口联调进行中")
-    c = env.svc.create_collection("c")
-    env.svc.add_paths(c.id, [str(env.work / "a.md")])
+    env.svc.add_paths([str(env.work / "a.md")])
     env.write("a.md", "# A\n## 进度\n接口联调进行中，约一半")
-    prep, _, _ = run_prepare(env, c, model=fake_model(items=False))
+    prep, _, _ = run_prepare(env, model=fake_model(items=False))
     [e] = evidence(env, prep)
     assert e.description.startswith("《a.md》修改 1 处") and "请查看变化后补充描述" in e.description
 
@@ -225,11 +206,10 @@ def test_no_extracted_points_falls_back_to_factual_description(env):
 def test_near_duplicate_evidence_is_merged_with_both_sources(env):
     env.write("a.md", "# 方案\n一")
     env.write("b.md", "# 方案\n一")  # 同一内容的两份
-    c = env.svc.create_collection("c")
-    env.svc.add_paths(c.id, [str(env.work / "a.md"), str(env.work / "b.md")])
+    env.svc.add_paths([str(env.work / "a.md"), str(env.work / "b.md")])
     env.write("a.md", "# 方案\n一\n新增灰度发布方案")
     env.write("b.md", "# 方案\n一\n新增灰度发布方案")
-    prep, _, _ = run_prepare(env, c)
+    prep, _, _ = run_prepare(env)
     [kept] = evidence(env, prep, PENDING)
     assert len(kept.source_refs) == 2
     assert len(evidence(env, prep, MERGED)) == 1
@@ -237,7 +217,7 @@ def test_near_duplicate_evidence_is_merged_with_both_sources(env):
 
 def test_done_without_completion_wording_is_downgraded():
     from briefly.tracking.diff import Hunk
-    from briefly.tracking.evidence import guard_done
+    from briefly.weekly.evidence import guard_done
 
     assert guard_done("done", [Hunk("added", "架构", new="新增异步队列设计")]) == ("other", True)
     assert guard_done("done", [Hunk("modified", "进度", old="联调进行中", new="联调已完成")]) == ("done", False)
@@ -247,10 +227,9 @@ def test_done_without_completion_wording_is_downgraded():
 
 def test_deleted_file_becomes_candidate(env):
     env.write("d/a.md", "# A")
-    c = env.svc.create_collection("c")
-    env.svc.add_paths(c.id, [str(env.work / "d")])
+    env.svc.add_paths([str(env.work / "d")])
     (env.work / "d" / "a.md").unlink()
-    prep, _, _ = run_prepare(env, c)
+    prep, _, _ = run_prepare(env)
     [e] = evidence(env, prep)
     assert "deleted" in e.flags and e.attribution == UNKNOWN
 
@@ -258,10 +237,10 @@ def test_deleted_file_becomes_candidate(env):
 # ---- 归属
 def test_attribution_from_word_revisions(env):
     env.write("方案.docx", docx_with_revisions("原有正文", []))
-    c = env.svc.create_collection("c", ["张三"])
-    env.svc.add_paths(c.id, [str(env.work / "方案.docx")])
+    env.set_owners(["张三"])
+    env.svc.add_paths([str(env.work / "方案.docx")])
     env.write("方案.docx", docx_with_revisions("原有正文", [("张三", "补充架构设计")]))
-    prep, _, _ = run_prepare(env, c)
+    prep, _, _ = run_prepare(env)
     [e] = evidence(env, prep)
     assert e.attribution == ATTRIBUTED and "作者均为 张三" in e.attribution_basis[0]
     assert e.review_status == PENDING  # 有证据也要用户确认
@@ -298,10 +277,10 @@ def test_old_revisions_are_not_counted_again():
     assert status == ATTRIBUTED and flags == []  # 李四的修订在基线里就有，不算本次
 
 
-def test_prep_period_validation(env):
-    env.svc.create_collection("c")
-    with pytest.raises(ValueError, match="不能晚于"):
-        get_prep(env.svc, "c", date(2026, 10, 16), date(2026, 10, 12))
-    with pytest.raises(ValueError, match="还没有周报准备"):
-        get_prep(env.svc, "c", create=False)
+def test_week_is_monday_to_sunday(env):
+    weekly = env.weekly()
+    assert weekly.week(date(2026, 10, 16), create=False) is None
+    report = weekly.week(date(2026, 10, 16))
+    assert (report.period_start, report.period_end) == (date(2026, 10, 12), date(2026, 10, 18))
+    assert weekly.week(date(2026, 10, 12)).id == report.id  # 同一周只有一份
     assert EvidenceBuilder  # 模块可导入

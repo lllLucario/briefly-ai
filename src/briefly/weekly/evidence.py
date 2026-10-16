@@ -1,4 +1,4 @@
-"""Evidence Builder：把一个周期内的文件变化整理成候选工作记录（Work Evidence），供用户审核。
+"""文件变化 → 审核清单里的候选工作记录（Work Evidence）：把这一周追踪文件的变化整理出来，供用户审核。
 
 每个文件的比较方式：
 - 基线：周期开始前的最后一个版本；周期内才开始追踪（baseline）的文件用 baseline——只比较接手之后的变化；
@@ -33,24 +33,18 @@ from ..llm import create_chat_model
 from ..skills import read_prompt
 from ..summarize import CATEGORY_NAMES, Source, WorkItem, extract_items
 from ..tokens import estimate_tokens
-from .attribution import judge
-from .diff import ALGO, DiffResult, Differ, Hunk, format_hunk
+from ..tracking.attribution import judge
+from ..tracking.diff import ALGO, DiffResult, Differ, Hunk, format_hunk
+from ..tracking.models import BASELINE, DELETED, UNKNOWN, FileChange, FileSnapshot, TrackedFile
 from .models import (
-    BASELINE,
     CONFIRMED,
-    DELETED,
     MERGED,
     PENDING,
     REJECTED,
     SPLIT,
     SUPERSEDED,
-    UNKNOWN,
     EvidenceReview,
-    FileChange,
-    FileSnapshot,
-    ReportPrep,
-    TrackedFile,
-    TrackingCollection,
+    WeeklyReport,
     WorkEvidence,
 )
 
@@ -92,8 +86,8 @@ class BuildResult:
     max_input_tokens: int = 0
 
 
-def period_bounds(prep: ReportPrep) -> tuple[datetime, datetime]:
-    return datetime.combine(prep.period_start, time.min), datetime.combine(prep.period_end, time.max)
+def period_bounds(report: WeeklyReport) -> tuple[datetime, datetime]:
+    return datetime.combine(report.period_start, time.min), datetime.combine(report.period_end, time.max)
 
 
 def fingerprint(file_id: int, base: FileSnapshot | None, end: FileSnapshot) -> str:
@@ -118,27 +112,22 @@ def batch_hunks(hunks: list[Hunk], budget: int) -> list[str]:
 
 
 class EvidenceBuilder:
-    def __init__(self, svc, model_factory: Callable[[], BaseChatModel] = create_chat_model) -> None:
+    def __init__(self, svc, model_factory: Callable[[], BaseChatModel] = create_chat_model, owner_names: list[str] | None = None) -> None:
+        """svc：TrackingService；owner_names：你在文档里的名字（周报设置），归属判断用。"""
         self.svc = svc
+        self.owner_names = owner_names or []
         self.differ = Differ(svc)
         self._model_factory = model_factory
         self._session = sessionmaker(svc.engine, expire_on_commit=False)
         self.cache = ContextStore(svc.engine)
 
     # ---- 规划：每个文件比较哪两个版本
-    def plans(self, prep: ReportPrep) -> tuple[list[FilePlan], list[str]]:
-        start, end = period_bounds(prep)
+    def plans(self, report: WeeklyReport) -> tuple[list[FilePlan], list[str]]:
+        start, end = period_bounds(report)
         notes = []
         with self._session() as s:
-            files = list(s.scalars(select(TrackedFile).where(TrackedFile.collection_id == prep.collection_id)))
-            snaps = list(
-                s.scalars(
-                    select(FileSnapshot)
-                    .join(TrackedFile, TrackedFile.id == FileSnapshot.file_id)
-                    .where(TrackedFile.collection_id == prep.collection_id)
-                    .order_by(FileSnapshot.file_id, FileSnapshot.version)
-                )
-            )
+            files = list(s.scalars(select(TrackedFile)))
+            snaps = list(s.scalars(select(FileSnapshot).order_by(FileSnapshot.file_id, FileSnapshot.version)))
         by_file: dict[int, list[FileSnapshot]] = {}
         for snap in snaps:
             by_file.setdefault(snap.file_id, []).append(snap)
@@ -190,16 +179,15 @@ class EvidenceBuilder:
         return net or DiffResult("", None, plan.end.id), [], []
 
     # ---- 生成
-    def build(self, prep: ReportPrep) -> BuildResult:
+    def build(self, report: WeeklyReport) -> BuildResult:
         result = BuildResult()
         with self._session() as s:
-            collection = s.get(TrackingCollection, prep.collection_id)
             existing = list(
-                s.scalars(select(WorkEvidence).where(WorkEvidence.prep_id == prep.id, WorkEvidence.origin == "generated"))
+                s.scalars(select(WorkEvidence).where(WorkEvidence.report_id == report.id, WorkEvidence.origin == "generated"))
             )
-        plans, _ = self.plans(prep)
+        plans, _ = self.plans(report)
         model = None
-        period = f"{prep.period_start.isoformat()} 至 {prep.period_end.isoformat()}"
+        period = f"{report.period_start.isoformat()} 至 {report.period_end.isoformat()}"
         for plan in plans:
             fp = fingerprint(plan.file.id, plan.base, plan.end)
             same = next((e for e in existing if e.fingerprint == fp and e.review_status != SUPERSEDED), None)
@@ -240,7 +228,7 @@ class EvidenceBuilder:
                 flags.append("done_downgraded")
             result.calls += calls
             result.max_input_tokens = max(result.max_input_tokens, max_tokens)
-            status, basis, attr_flags = judge(collection.owner_names, plan.base.meta if plan.base else None, plan.end.meta)
+            status, basis, attr_flags = judge(self.owner_names, plan.base.meta if plan.base else None, plan.end.meta)
             flags = list(dict.fromkeys(flags + attr_flags))
             if net.truncated:
                 flags.append("truncated")
@@ -258,7 +246,7 @@ class EvidenceBuilder:
                 "notes": plan.notes + net.notes,
             }
             evidence = WorkEvidence(
-                prep_id=prep.id,
+                report_id=report.id,
                 title=draft.title[:200],
                 description=draft.description,
                 category=draft.category if draft.category in CATEGORY_NAMES else "other",
@@ -282,13 +270,13 @@ class EvidenceBuilder:
                         result.updated_reviewed.append(e.id)
                     elif e.review_status == PENDING:
                         s.execute(update(WorkEvidence).where(WorkEvidence.id == e.id).values(review_status=SUPERSEDED))
-                        s.add(EvidenceReview(evidence_id=e.id, prep_id=prep.id, action="supersede", after={"by": evidence.id}, note="文件有新变化，未审核的候选已替换"))
+                        s.add(EvidenceReview(evidence_id=e.id, report_id=report.id, action="supersede", after={"by": evidence.id}, note="文件有新变化，未审核的候选已替换"))
                         result.superseded.append(e.id)
                 s.commit()
             existing.append(evidence)
             result.created.append(evidence.id)
-        self._deleted_files(prep, existing, result)
-        self._dedupe(prep, result)
+        self._deleted_files(report, existing, result)
+        self._dedupe(report, result)
         return result
 
     def _describe(
@@ -341,14 +329,13 @@ class EvidenceBuilder:
             more = f"等 {len(items)} 项" if len(items) > 5 else ""
             return EvidenceDraft(title=f"修改《{name}》"[:20], description=f"{points}{more}。", category="other"), 1, tokens
 
-    def _deleted_files(self, prep: ReportPrep, existing: list[WorkEvidence], result: BuildResult) -> None:
+    def _deleted_files(self, report: WeeklyReport, existing: list[WorkEvidence], result: BuildResult) -> None:
         """周期内被删除的文件：作为一条待确认的候选（删除文件本身未必是工作，由用户判断）。"""
-        start, end = period_bounds(prep)
+        start, end = period_bounds(report)
         with self._session() as s:
             changes = list(
                 s.scalars(
                     select(FileChange).where(
-                        FileChange.collection_id == prep.collection_id,
                         FileChange.change_type == DELETED,
                         FileChange.detected_at >= start,
                         FileChange.detected_at <= end,
@@ -361,7 +348,7 @@ class EvidenceBuilder:
                 continue
             f = self.svc.file(ch.file_id)
             evidence = WorkEvidence(
-                prep_id=prep.id,
+                report_id=report.id,
                 title=f"删除《{_name(f)}》"[:200],
                 description=f"文件 {f.path} 在本周期内被删除（{ch.detected_at:%m-%d %H:%M} 扫描时发现）。删除本身未必是工作成果，请判断是否保留。",
                 category="other",
@@ -377,7 +364,7 @@ class EvidenceBuilder:
             existing.append(evidence)
             result.created.append(evidence.id)
 
-    def _dedupe(self, prep: ReportPrep, result: BuildResult) -> None:
+    def _dedupe(self, report: WeeklyReport, result: BuildResult) -> None:
         """本次新生成、未审核的候选中，描述高度相似的（如同一内容的 md 和 docx 两份）合并为一条，保留各自的来源。"""
         with self._session() as s:
             fresh = list(s.scalars(select(WorkEvidence).where(WorkEvidence.id.in_(result.created), WorkEvidence.review_status == PENDING)))
@@ -399,7 +386,7 @@ class EvidenceBuilder:
                         a.attribution = UNKNOWN if UNKNOWN in (a.attribution, b.attribution) else a.attribution
                     a.related_ids = [*a.related_ids, b.id]
                     b.review_status, b.related_ids = MERGED, [*b.related_ids, a.id]
-                    s.add(EvidenceReview(evidence_id=b.id, prep_id=prep.id, action="auto_merge", after={"into": a.id}, note="与另一条候选高度相似，自动合并"))
+                    s.add(EvidenceReview(evidence_id=b.id, report_id=report.id, action="auto_merge", after={"into": a.id}, note="与另一条候选高度相似，自动合并"))
                     merged.add(b.id)
             s.commit()
         result.created = [x for x in result.created if x not in merged]

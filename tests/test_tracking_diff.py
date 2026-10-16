@@ -12,16 +12,15 @@ def ops(hunks):
 
 
 def track(env, name, content):
-    """追踪一个文件，返回 (集合, 文件)。"""
+    """追踪一个文件，返回这个文件。"""
     env.write(name, content)
-    c = env.svc.create_collection(f"c-{name}")
-    env.svc.add_paths(c.id, [str(env.work / name)])
-    return c, env.file(c, name.split("/")[-1])
+    env.svc.add_paths([str(env.work / name)])
+    return env.file(name.split("/")[-1])
 
 
-def update(env, c, f, name, content):
+def update(env, f, name, content):
     env.write(name, content)
-    env.svc.scan(c.id)
+    env.svc.scan()
     snaps = env.svc.snapshots(f.id)
     return Differ(env.svc).diff(snaps[-2], snaps[-1])
 
@@ -64,13 +63,13 @@ def test_first_version_is_all_added():
 
 def test_docx_paragraph_and_table_changes(env):
     old = docx_bytes(["项目进展说明", "接口联调进行中"], table=[("任务", "状态"), ("压测", "未开始")], headings={1: "进度"})
-    c, f = track(env, "周报.docx", old)
+    f = track(env, "周报.docx", old)
     new = docx_bytes(
         ["项目进展说明", "接口联调已完成，进入测试", "新增：支付回调超时排查"],
         table=[("任务", "状态"), ("压测", "进行中"), ("回归", "未开始")],
         headings={1: "进度"},
     )
-    result = update(env, c, f, "周报.docx", new)
+    result = update(env, f, "周报.docx", new)
     texts = [format_hunk(h) for h in result.hunks]
     assert any(h.op == "modified" and "联调已完成" in h.new and h.location == "进度" for h in result.hunks)
     assert any(h.op == "added" and "支付回调超时" in h.new for h in result.hunks)
@@ -91,15 +90,15 @@ def test_docx_format_only_change(env):
         doc.save(buf)
         return buf.getvalue()
 
-    c, f = track(env, "a.docx", build(11))
-    result = update(env, c, f, "a.docx", build(16))
+    f = track(env, "a.docx", build(11))
+    result = update(env, f, "a.docx", build(16))
     assert result.hunks == [] and "format_only" in result.flags
 
 
 def test_pdf_text_change_is_located_by_page_and_marked_uncertain(env):
-    c, f = track(env, "spec.pdf", pdf_bytes([["Project plan", "The system uses a queue."], ["Owner is Li.", "Deadline is October."]]))
+    f = track(env, "spec.pdf", pdf_bytes([["Project plan", "The system uses a queue."], ["Owner is Li.", "Deadline is October."]]))
     result = update(
-        env, c, f, "spec.pdf", pdf_bytes([["Project plan", "The system uses a queue."], ["Owner is Wang.", "Deadline is October."]])
+        env, f, "spec.pdf", pdf_bytes([["Project plan", "The system uses a queue."], ["Owner is Wang.", "Deadline is October."]])
     )
     assert [h.op for h in result.hunks] == ["modified"]
     assert result.hunks[0].location.startswith("第 2 页") and "Wang" in result.hunks[0].new
@@ -107,8 +106,8 @@ def test_pdf_text_change_is_located_by_page_and_marked_uncertain(env):
 
 
 def test_pdf_reflow_is_not_a_change(env):
-    c, f = track(env, "a.pdf", pdf_bytes([["The system uses a queue and", "a cache for callbacks."]]))
-    result = update(env, c, f, "a.pdf", pdf_bytes([["The system uses a queue and a", "cache for callbacks."]]))
+    f = track(env, "a.pdf", pdf_bytes([["The system uses a queue and", "a cache for callbacks."]]))
+    result = update(env, f, "a.pdf", pdf_bytes([["The system uses a queue and a", "cache for callbacks."]]))
     assert result.hunks == []
 
 
@@ -152,8 +151,8 @@ def test_csv_without_key_ignores_pure_reordering():
 
 
 def test_diff_is_cached_and_recomputable(env):
-    c, f = track(env, "a.md", "# A\n一")
-    first = update(env, c, f, "a.md", "# A\n一\n二")
+    f = track(env, "a.md", "# A\n一")
+    first = update(env, f, "a.md", "# A\n一\n二")
     snaps = env.svc.snapshots(f.id)
     differ = Differ(env.svc)
     cached = differ.diff(snaps[0], snaps[1])
@@ -163,7 +162,7 @@ def test_diff_is_cached_and_recomputable(env):
 
 
 def test_text_of_reparses_when_material_deleted(env):
-    c, f = track(env, "a.md", "# A\n一")
+    f = track(env, "a.md", "# A\n一")
     snap = env.svc.snapshots(f.id)[0]
     env.store.delete(snap.material_id)
     text, markdown = Differ(env.svc).text_of(snap)
@@ -171,22 +170,22 @@ def test_text_of_reparses_when_material_deleted(env):
 
 
 def test_parse_failure_is_flagged(env):
-    c, f = track(env, "a.docx", docx_bytes(["正文"]))
-    result = update(env, c, f, "a.docx", b"broken")
+    f = track(env, "a.docx", docx_bytes(["正文"]))
+    result = update(env, f, "a.docx", b"broken")
     assert result.hunks == [] and "parse_failed" in result.flags
 
 
 def test_large_diff_is_truncated(env, monkeypatch):
     monkeypatch.setattr(config, "TRACKING_MAX_HUNKS", 5)
-    c, f = track(env, "a.txt", "开头")
-    result = update(env, c, f, "a.txt", "开头\n" + "\n\n".join(f"新段落 {i}" for i in range(20)))
+    f = track(env, "a.txt", "开头")
+    result = update(env, f, "a.txt", "开头\n" + "\n\n".join(f"新段落 {i}" for i in range(20)))
     assert len(result.hunks) <= 5 and result.truncated + len(result.hunks) >= 1
 
 
 def test_cli_diff(env, capsys):
-    c, f = track(env, "a.md", "# A\n一")
+    f = track(env, "a.md", "# A\n一")
     env.write("a.md", "# A\n一\n二")
-    env.svc.scan(c.id)
+    env.svc.scan()
     assert track_cli.main(["diff", str(f.id)], service=env.svc) == 0
     out = capsys.readouterr().out
     assert "v1 → v2" in out and "新增［A］：二" in out

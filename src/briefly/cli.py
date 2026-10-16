@@ -97,11 +97,15 @@ def repl(agent: Agent, skill: str | None) -> None:
 
 
 def main() -> None:
-    if sys.argv[1:2] == ["track"]:  # 文件追踪子命令；与“briefly 文件路径”的用法分开解析
+    if sys.argv[1:2] == ["track"]:  # 追踪文件；子命令与“briefly 文件路径”的用法分开解析
         from .tracking.cli import main as track_main
 
         sys.exit(track_main(sys.argv[2:]))
-    ap = argparse.ArgumentParser(prog="briefly", description="办公 AI Agent（文件追踪见 briefly track -h）")
+    if sys.argv[1:2] == ["weekly"]:  # 周报：整理审核清单、审核、生成、定时
+        from .weekly.cli import main as weekly_main
+
+        sys.exit(weekly_main(sys.argv[2:]))
+    ap = argparse.ArgumentParser(prog="briefly", description="办公 AI Agent（追踪文件见 briefly track -h，周报见 briefly weekly -h）")
     ap.add_argument(
         "input", nargs="?", help="文件路径（txt/md/docx/pdf/xlsx/csv）或飞书文档链接，- 表示标准输入；不填则进入对话模式"
     )

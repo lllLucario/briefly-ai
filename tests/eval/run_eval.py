@@ -22,7 +22,7 @@ from cases import CASES, FIXTURES, REPO, Case  # noqa: E402
 from briefly.agent import Agent  # noqa: E402
 from briefly.db import create_db_engine  # noqa: E402
 from briefly.materials import MaterialStore  # noqa: E402
-from briefly.weekly import WeeklyService  # noqa: E402
+from briefly.weekly.service import WeeklyService  # noqa: E402
 
 
 def _load(store: MaterialStore, name: str) -> int:
@@ -31,32 +31,34 @@ def _load(store: MaterialStore, name: str) -> int:
     return material.id
 
 
-def _evidence(engine, spec: dict) -> tuple[list[int], list[dict]]:
-    """周报用例里已确认的工作记录（如来自待办）：直接写进库，并附所属待办（与周报计划生成周报时相同的格式）。"""
+def _evidence(store: MaterialStore, report_id: int, spec: dict) -> None:
+    """周报用例里已确认的工作记录（如来自待办）：写进这一周的审核清单，并关联到真实的待办（“父 › 子”建成两级待办）。"""
     from sqlalchemy.orm import Session
 
-    from briefly.tracking.models import CONFIRMED, ReportPrep, TrackingCollection, WorkEvidence
+    from briefly.todos.models import ACTIVITY, EvidenceTodoLink
+    from briefly.todos.service import TodoService
+    from briefly.weekly.models import CONFIRMED, WorkEvidence
 
     rows = spec.get("evidence") or []
-    if not rows:
-        return [], []
-    with Session(engine) as s:
-        plan = TrackingCollection(name="实测")
-        s.add(plan)
-        s.flush()
-        prep = ReportPrep(collection_id=plan.id, period_start=date.fromisoformat(spec["period_start"]), period_end=date.fromisoformat(spec["period_end"]))
-        s.add(prep)
-        s.flush()
-        items = [WorkEvidence(prep_id=prep.id, title=x["title"], description=x["description"], category=x["category"], origin="todo", review_status=CONFIRMED) for x in rows]
-        s.add_all(items)
+    todos = TodoService(store.engine, store)
+    parents: dict[str, int] = {}
+    with Session(store.engine) as s:
+        for x in rows:
+            e = WorkEvidence(report_id=report_id, title=x["title"], description=x["description"], category=x["category"], origin="todo", review_status=CONFIRMED)
+            s.add(e)
+            s.flush()
+            if x.get("group"):
+                *parent, title = x["group"].split(" › ")
+                if parent and parent[0] not in parents:
+                    parents[parent[0]] = todos.create(parent[0]).id
+                if not parent and title in parents:
+                    todo_id = parents[title]
+                else:
+                    todo_id = todos.create(title, parent_id=parents[parent[0]] if parent else None).id
+                    if not parent:
+                        parents[title] = todo_id
+                s.add(EvidenceTodoLink(evidence_id=e.id, todo_id=todo_id, relation=ACTIVITY, snapshot={}))
         s.commit()
-        ids = [e.id for e in items]
-    refs = []
-    for i, x in zip(ids, rows):
-        if x.get("group"):
-            *parent, title = x["group"].split(" › ")
-            refs.append({"evidence_id": i, "group": x["group"], "todo": {"title": title, "parent_title": parent[0] if parent else None}})
-    return ids, refs
 
 
 def run_once(case: Case, model_factory) -> dict:
@@ -69,14 +71,11 @@ def run_once(case: Case, model_factory) -> dict:
         if case.weekly:
             spec = case.weekly
             weekly = WeeklyService(store, model_factory)
-            ids = [_load(store, n) for n in spec["materials"]]
-            evidence_ids, todo_refs = _evidence(engine, spec)
-            report = weekly.create(
-                ids, spec["brief"], date.fromisoformat(spec["period_start"]), date.fromisoformat(spec["period_end"]),
-                evidence_ids=evidence_ids, todo_refs=todo_refs,
-            )
-            weekly.generate(report.id)
-            report = weekly.get(report.id)
+            report = weekly.week(date.fromisoformat(spec["period_start"]))
+            weekly.set_materials(report.id, [_load(store, n) for n in spec["materials"]])
+            weekly.set_note(report.id, spec["brief"])
+            _evidence(store, report.id, spec)
+            report = weekly.generate(report.id)
             record["outputs"].append(report.content or report.error)
             record["generation"] = report.generation
             record["checks"] = [{"turn": 1, "name": c.name, "ok": bool(c.fn(report))} for c in case.checks]

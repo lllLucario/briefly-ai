@@ -1,13 +1,13 @@
-"""命令行：briefly track <子命令>。集合可以用编号或名称指定。"""
+"""命令行：briefly track <子命令>。追踪文件：添加、查看版本与变化、检查更新、清理旧版本。周报见 briefly weekly。"""
 import argparse
 import sys
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
 from ..db import create_db_engine
 from ..materials import MaterialStore
-from .collection import AddResult, TrackingService
 from .models import ScanRun
 from .scanner import ScanBusy, ScanResult
+from .service import AddResult, TrackingService
 
 STATUS_TEXT = {"active": "启用", "paused": "已暂停", "removed": "已移除"}
 FILE_STATUS = {
@@ -23,8 +23,8 @@ CHANGE_TEXT = {
     "POSSIBLY_MOVED": "可能移动/改名",
     "UNCHANGED": "未变化",
 }
-KIND_TEXT = {"baseline": "基线", "first_seen": "首次发现", "incremental": "增量", "final": "周报前"}
-TRIGGER_TEXT = {"register": "添加时", "manual": "手动", "daily": "每日", "pre_report": "周报前"}
+KIND_TEXT = {"baseline": "基线", "first_seen": "首次发现", "incremental": "增量", "final": "整理清单前"}
+TRIGGER_TEXT = {"register": "添加时", "manual": "手动", "daily": "每日", "pre_report": "整理清单前"}
 
 
 def _fmt_time(t: datetime | None) -> str:
@@ -61,74 +61,31 @@ def print_add(result: AddResult) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="briefly track", description="文件追踪：记录文件版本与变化，生成候选工作记录")
+    ap = argparse.ArgumentParser(prog="briefly track", description="追踪文件：记录文件版本与变化（周报的审核清单见 briefly weekly）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("create", help="创建追踪集合")
-    p.add_argument("name")
-    p.add_argument("--owner", action="append", default=[], help="你在文档中的署名（Word 修订作者等），可多次指定")
-    sub.add_parser("list", help="列出集合")
-    p = sub.add_parser("delete", help="删除集合（不影响原文件）")
-    p.add_argument("collection")
-    p.add_argument("-y", "--yes", action="store_true", help="不再确认")
-    p = sub.add_parser("owner", help="设置你在文档中的署名")
-    p.add_argument("collection")
-    p.add_argument("names", nargs="+")
-
     p = sub.add_parser("add", help="添加文件或文件夹（可多个），立即采集基线")
-    p.add_argument("collection")
     p.add_argument("paths", nargs="+", help="文件、文件夹，或飞书文档链接（需先把应用添加为文档协作者）")
     p.add_argument("--no-recursive", action="store_true", help="文件夹只追踪第一层")
     p = sub.add_parser("sources", help="列出追踪源")
-    p.add_argument("collection")
     p.add_argument("--all", action="store_true", help="包括已移除的")
     for name, text in [("pause", "暂停追踪源"), ("resume", "恢复追踪源"), ("remove", "移除追踪源（不删除文件和历史版本）")]:
         p = sub.add_parser(name, help=text)
         p.add_argument("source_id", type=int)
 
-    p = sub.add_parser("files", help="列出被追踪的文件")
-    p.add_argument("collection")
+    sub.add_parser("files", help="列出被追踪的文件")
     p = sub.add_parser("history", help="查看一个文件的版本")
     p.add_argument("file_id", type=int)
-    p = sub.add_parser("scan", help="手动扫描")
-    p.add_argument("collection")
-    p = sub.add_parser("scans", help="扫描记录")
-    p.add_argument("collection")
+    sub.add_parser("scan", help="检查更新（手动扫描）")
+    sub.add_parser("scans", help="扫描记录")
     p = sub.add_parser("changes", help="文件级变化记录")
-    p.add_argument("collection")
     p.add_argument("--days", type=int, default=7, help="最近几天，默认 7")
     p = sub.add_parser("diff", help="比较一个文件的两个版本（默认：上一版本与最新版本）")
     p.add_argument("file_id", type=int)
     p.add_argument("--from", dest="from_version", type=int)
     p.add_argument("--to", dest="to_version", type=int)
 
-    p = sub.add_parser("prepare", help="周报准备：最终扫描 + 生成候选工作记录")
-    p.add_argument("collection")
-    p.add_argument("--start", type=date.fromisoformat, help="周期开始（默认本周一）")
-    p.add_argument("--end", type=date.fromisoformat, help="周期结束（默认本周日）")
-    p.add_argument("--no-scan", action="store_true", help="不做最终扫描（只用已有版本）")
-    p = sub.add_parser("review", help="审核候选工作记录（交互）")
-    p.add_argument("collection")
-    p.add_argument("--start", type=date.fromisoformat)
-    p.add_argument("--end", type=date.fromisoformat)
-    p = sub.add_parser("report", help="用已确认的工作记录生成周报草稿")
-    p.add_argument("collection")
-    p.add_argument("--start", type=date.fromisoformat)
-    p.add_argument("--end", type=date.fromisoformat)
-    p.add_argument("--brief", default="", help="补充说明（可选）")
-    p.add_argument("--audience", help="读者，默认直属上级")
-    p.add_argument("--name", help="姓名")
-    p.add_argument("-o", "--output", help="周报写入文件（Markdown，去掉出处标记）")
-
-    p = sub.add_parser("schedule", help="每周定时准备周报：设置、查看或关闭（不带参数时查看）")
-    p.add_argument("collection")
-    p.add_argument("--weekday", help="星期几：1–7（周一为 1）或“周五”")
-    p.add_argument("--time", help="时间 HH:MM，例如 16:30")
-    p.add_argument("--off", action="store_true", help="关闭定时准备")
-    p = sub.add_parser("inbox", help="查看提醒（周报已准备好、准备失败等）")
-    p.add_argument("--all", action="store_true", help="包括已读的")
-    sub.add_parser("run-due", help="执行到期的每日扫描和每周定时准备（供系统计划任务调用）")
-    p = sub.add_parser("prune", help="清理旧版本（保护被证据、周报引用的版本和每个文件的最新版本）")
+    p = sub.add_parser("prune", help="清理旧版本（保护被审核清单引用的版本和每个文件的最新版本）")
     p.add_argument("--keep-days", type=int, default=60)
     return ap
 
@@ -138,10 +95,6 @@ def main(argv: list[str] | None = None, service: TrackingService | None = None) 
     if service is None:
         engine = create_db_engine()
         service = TrackingService(engine, MaterialStore(engine))
-        if args.cmd == "run-due":
-            from ..feishu.messages import register_channel
-
-            register_channel()  # 配置了飞书时，定时准备的提醒同时发到飞书
     try:
         return _dispatch(args, service) or 0
     except (ValueError, ScanBusy) as e:
@@ -151,39 +104,10 @@ def main(argv: list[str] | None = None, service: TrackingService | None = None) 
 
 def _dispatch(args, svc: TrackingService) -> int | None:
     cmd = args.cmd
-    if cmd == "create":
-        c = svc.create_collection(args.name, args.owner)
-        owners = f"，署名：{'、'.join(c.owner_names)}" if c.owner_names else "（未设置署名，归属需要你逐条确认）"
-        print(f"已创建集合 {c.id}「{c.name}」{owners}")
-    elif cmd == "list":
-        collections = svc.list_collections()
-        if not collections:
-            print("（还没有集合，用 briefly track create <名称> 创建）")
-        from .weekly_schedule import ScheduleService, describe, notifications
-
-        schedules = ScheduleService(svc)
-        for c in collections:
-            n_sources, n_files = len(svc.sources(c.id)), len(svc.files(c.id))
-            schedule = schedules.get(c.id)
-            when = f"，定时准备：{describe(schedule)}" if schedule else ""
-            print(f"  {c.id}. {c.name}：{n_sources} 个追踪源，{n_files} 个文件，署名 {('、'.join(c.owner_names)) or '未设置'}{when}")
-        unread = notifications(svc.engine)
-        if unread:
-            print(f"有 {len(unread)} 条未读提醒：briefly track inbox")
-    elif cmd == "delete":
-        c = svc.collection(args.collection)
-        if not args.yes and input(f"删除集合「{c.name}」及其全部版本和候选记录？原文件不受影响。(y/N) ").strip().lower() != "y":
-            print("已取消")
-            return None
-        svc.delete_collection(c.id)
-        print(f"已删除集合「{c.name}」")
-    elif cmd == "owner":
-        c = svc.set_owners(args.collection, args.names)
-        print(f"集合「{c.name}」的署名：{'、'.join(c.owner_names)}")
-    elif cmd == "add":
-        print_add(svc.add_paths(args.collection, args.paths, recursive=not args.no_recursive))
+    if cmd == "add":
+        print_add(svc.add_paths(args.paths, recursive=not args.no_recursive))
     elif cmd == "sources":
-        for x in svc.sources(args.collection, include_removed=args.all):
+        for x in svc.sources(include_removed=args.all):
             kind = {"folder": "文件夹", "feishu": "飞书文档"}.get(x.kind, "文件")
             extra = "" if x.kind != "folder" or x.recursive else "（仅第一层）"
             problem = f"  ⚠ {x.last_error}" if x.last_error else ""
@@ -196,8 +120,8 @@ def _dispatch(args, svc: TrackingService) -> int | None:
         print(f"追踪源 {x.id} 已恢复：{x.path}")
         print_scan(scan)
     elif cmd == "files":
-        counts = svc.snapshot_counts(args.collection)
-        for f in svc.files(args.collection):
+        counts = svc.snapshot_counts()
+        for f in svc.files():
             note = f"  （{f.last_error}）" if f.last_error else ""
             moved = f"  可能由文件 {f.moved_from_id} 移动而来" if f.moved_from_id else ""
             print(f"  {f.id}. [{FILE_STATUS.get(f.status, f.status)}] {f.path}  {counts.get(f.id, 0)} 个版本{moved}{note}")
@@ -213,24 +137,25 @@ def _dispatch(args, svc: TrackingService) -> int | None:
                 f"文件修改时间 {mtime}，{snap.size} 字节，{snap.sha256[:10]}{gap}{parse}"
             )
     elif cmd == "scan":
-        print_scan(svc.scan(args.collection))
+        print_scan(svc.scan())
     elif cmd == "scans":
-        for r in svc.scans(args.collection):
+        for r in svc.scans():
             print(_scan_line(r))
     elif cmd == "changes":
         since = datetime.now() - timedelta(days=args.days)
-        files = {f.id: f for f in svc.files(args.collection)}
-        for ch in svc.changes(args.collection, since):
+        files = {f.id: f for f in svc.files()}
+        for ch in svc.changes(since):
             f = files.get(ch.file_id)
             basis = ch.details.get("basis")
             basis = f"  依据：{'；'.join(basis) if isinstance(basis, list) else basis}" if basis else ""
             print(f"  {_fmt_time(ch.detected_at)} {CHANGE_TEXT.get(ch.change_type, ch.change_type)} 文件 {ch.file_id} {f.path if f else ''}{basis}")
     elif cmd == "diff":
         print_diff(svc, args.file_id, args.from_version, args.to_version)
-    else:
-        from . import cli_review
+    elif cmd == "prune":
+        from .storage import prune
 
-        return cli_review.dispatch(args, svc)
+        report = prune(svc.engine, svc.blobs, keep_days=args.keep_days)
+        print(f"清理了 {report['snapshots']} 个旧版本、{report['blobs']} 个不再引用的文件，保护了 {report['protected']} 个仍被引用的版本")
     return None
 
 

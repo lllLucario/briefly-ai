@@ -10,8 +10,9 @@ from briefly.conflicts import CONTEXT, SUPERSEDED, UNRESOLVED, classify, detect_
 from briefly.db import create_db_engine
 from briefly.materials import MaterialStore
 from briefly.summarize import WorkItem
-from briefly.weekly import WeeklyService
+from briefly.weekly.service import WeeklyService
 from fakes import FunctionModel, structured
+from weekly_util import draft
 
 A = "项目A：交付时间为 10 月 20 日。"
 B = "项目A 项目：交付时间为 10 月 25 日。"
@@ -95,9 +96,9 @@ def weekly_run(store, reports, merge=None):
         return structured("Extraction", items=[{"category": "other", "point": f"项目A 交付时间为 {value}", "quote": quote, "subject": "项目A", "attribute": "date", "value": value}])
 
     weekly = WeeklyService(store, lambda: FunctionModel(respond=respond, calls=[]))
-    report = weekly.create([a.id, b.id], "", date(2026, 10, 12), date(2026, 10, 18))
-    weekly.generate(report.id)
-    return weekly.get(report.id), calls
+    report = draft(weekly, [a.id, b.id], "", date(2026, 10, 12), date(2026, 10, 18))
+    weekly.run_generation(report.id)
+    return weekly.report(report.id), calls
 
 
 ONE = "【本周完成】\n- 项目A 预计 10 月 25 日交付〔#2〕"

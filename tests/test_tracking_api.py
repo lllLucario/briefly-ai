@@ -1,11 +1,22 @@
-"""文件追踪接口（网页“追踪”页使用）。用假模型，不调用真实 API。"""
+"""追踪与周报的接口（网页用的）：添加追踪、检查更新、文件版本与差异、一周的审核清单、本周材料与说明、生成、历史版本。
+
+用假模型，不调用真实 API。
+"""
+from datetime import datetime, timedelta
+
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import sessionmaker
 
 from briefly.api import create_app
-from briefly.tracking.models import ScanLock
+from briefly.tracking.models import SCAN_LOCK, ScanLock
 from test_tracking_evidence import WEEK
 from test_tracking_review import make_model
 from tracking_util import env  # noqa: F401
+
+
+def wait_done(client, report_id: int) -> dict:
+    """生成在后台执行；TestClient 里后台任务随请求一起跑完，这里直接取结果。"""
+    return client.get(f"/weekly/{report_id}").json()
 
 
 def test_full_flow_through_api(env):
@@ -13,79 +24,78 @@ def test_full_flow_through_api(env):
     env.write("进度.md", "# 进度\n原有内容")
     model = make_model()
     with TestClient(create_app(env.store, model_factory=lambda: model)) as client:
-        assert client.post("/tracking/collections", json={"name": "项目A", "owner_names": ["张三"]}).status_code == 201
-        added = client.post("/tracking/collections/项目A/sources", json={"paths": [str(env.work / "项目"), str(env.work / "进度.md")]}).json()
+        client.put("/weekly-settings", json={"owner_names": ["张三"], "audience": "导师", "author": "王五"})
+        added = client.post("/tracking/sources", json={"paths": [str(env.work / "项目"), str(env.work / "进度.md")]}).json()
         assert len(added["added"]) == 2 and added["scan"]["stats"]["new_snapshots"] == 2
-        [c] = client.get("/tracking/collections").json()
-        assert (c["sources"], c["files"], c["schedule"]) == (2, 2, None)
+        summary = client.get("/tracking/summary").json()
+        assert (summary["sources"], summary["files"]) == (2, 2) and summary["last_scan"]
 
         env.write("项目/方案.md", "# 方案\n原有内容\n补充灰度发布方案")
         env.write("进度.md", "# 进度\n原有内容\n李四整理的会议纪要")
-        assert client.post("/tracking/collections/项目A/scan").json()["stats"]["modified"] == 2
-        assert [f["versions"] for f in client.get("/tracking/collections/项目A/files").json()] == [2, 2]
+        assert client.post("/tracking/scan").json()["stats"]["modified"] == 2
+        assert [f["versions"] for f in client.get("/tracking/files").json()] == [2, 2]
 
-        schedule = client.put("/tracking/collections/项目A/schedule", json={"weekday": 4, "time": "16:30"}).json()
-        assert schedule["text"] == "每周五 16:30"
-        assert client.get("/tracking/collections/项目A/schedule").json()["schedule"]["enabled"]
+        empty = client.get("/weekly/week", params={"day": WEEK[0].isoformat()}).json()
+        assert empty["id"] is None and empty["period_start"] == WEEK[0].isoformat()  # 还没开始：空的一周
+        week = client.post("/weekly/prepare", json={"day": WEEK[0].isoformat()}).json()
+        assert week["counts"]["PENDING"] == 2 and week["build"]["created"] == 2
+        ids = {e["source_refs"][0]["path"].replace("\\", "/").rsplit("/", 1)[-1]: e["id"] for e in week["checklist_items"]}
+        rid = week["id"]
 
-        start, end = (d.isoformat() for d in WEEK)
-        assert client.get("/tracking/collections/项目A/prep", params={"start": start, "end": end}).json() is None
-        prep = client.post("/tracking/collections/项目A/prepare", json={"start": start, "end": end}).json()
-        assert prep["counts"]["PENDING"] == 2 and prep["build"]["created"] == 2
-        ids = {e["source_refs"][0]["path"].replace("\\", "/").rsplit("/", 1)[-1]: e["id"] for e in prep["items"]}
-
-        sources = client.get(f"/tracking/evidence/{ids['方案.md']}/sources").json()
+        sources = client.get(f"/weekly/items/{ids['方案.md']}/sources").json()
         assert sources[0]["versions"] == "v1 → v2" and any("灰度" in h for h in sources[0]["hunks"])
-        pid = prep["id"]
-        assert client.post(f"/tracking/preps/{pid}/confirm").status_code == 400  # 还有待确认的
-        client.post(f"/tracking/preps/{pid}/review", json={"action": "confirm", "ids": [ids["方案.md"]]})
-        client.post(f"/tracking/preps/{pid}/review", json={"action": "exclude", "ids": [ids["进度.md"]], "note": "李四的工作"})
-        edited = client.put(f"/tracking/preps/{pid}/evidence/{ids['方案.md']}", json={"description": "编写灰度发布方案"}).json()
-        assert edited["user_edited"] and edited["review_status"] == "CONFIRMED"
-        manual = client.post(f"/tracking/preps/{pid}/evidence", json={"title": "参加评审会", "description": "确认上线时间", "category": "done"}).json()
-        assert manual["review_status"] == "CONFIRMED"
-        confirmed = client.post(f"/tracking/preps/{pid}/confirm").json()
-        assert confirmed["status"] == "confirmed" and confirmed["counts"] == {"PENDING": 0, "CONFIRMED": 2, "REJECTED": 1}
-        assert [h["action"] for h in client.get(f"/tracking/preps/{pid}/history").json()][-1] == "confirm_checklist"
+        assert client.post(f"/weekly/{rid}/generate", json={}).status_code == 400  # 还有待确认的
+        client.post(f"/weekly/{rid}/review", json={"action": "confirm", "ids": [ids["方案.md"]]})
+        client.post(f"/weekly/{rid}/review", json={"action": "exclude", "ids": [ids["进度.md"]], "note": "李四的工作"})
+        client.put(f"/weekly/{rid}/items/{ids['方案.md']}", json={"description": "编写灰度发布方案"})
+        added = client.post(f"/weekly/{rid}/items", json={"title": "参加评审会", "description": "确认上线时间", "category": "done"}).json()
+        assert added["counts"] == {"PENDING": 0, "CONFIRMED": 2, "REJECTED": 1}
+        material = client.post("/materials", json={"title": "周会纪要", "content": "评审会确认上线时间为 10 月 20 日。"}).json()["material"]
+        client.put(f"/weekly/{rid}/materials", json={"material_ids": [material["id"]]})
+        client.put(f"/weekly/{rid}/note", json={"note": "这周主要做支付改造"})
 
-        report = client.post(f"/tracking/preps/{pid}/report", json={}).json()
-        assert report["status"] == "done", report
-        weekly = client.get(f"/weekly-reports/{report['weekly_report_id']}").json()
-        assert "编写灰度发布方案" in weekly["content"] and "李四" not in weekly["content"]
+        started = client.post(f"/weekly/{rid}/generate", json={})
+        assert started.status_code == 202
+        done = wait_done(client, rid)
+        assert done["status"] == "done" and done["checklist"] == "confirmed"
+        assert "编写灰度发布方案" in done["content"] and "李四" not in done["content"]
+        assert done["inputs"]["audience"] == "导师" and done["inputs"]["name"] == "王五"  # 默认读者、署名
+        assert done["material_ids"] == [material["id"]] and done["note"] == "这周主要做支付改造"
+        assert [h["action"] for h in client.get(f"/weekly/{rid}/history").json()][-1] == "generate"
+
+        # 手动修改、重新生成：旧正文存为历史版本，可以恢复
+        client.put(f"/weekly/{rid}/content", json={"content": "我改过的周报"})
+        client.post(f"/weekly/{rid}/generate", json={})
+        versions = client.get(f"/weekly/{rid}/versions").json()
+        assert [v["reason"] for v in versions] == ["regenerate", "edit"] and versions[0]["content"] == "我改过的周报"
+        restored = client.post(f"/weekly/{rid}/versions/{versions[0]['id']}/restore").json()
+        assert restored["content"] == "我改过的周报"
+        assert client.get(f"/weekly/{rid}/export.md").text == "我改过的周报\n"
+        assert [r["id"] for r in client.get("/weekly").json()] == [rid]  # 同一周只有一份
 
 
 def test_errors_are_readable(env):
     model = make_model()
     with TestClient(create_app(env.store, model_factory=lambda: model)) as client:
-        assert client.get("/tracking/collections/不存在/files").status_code == 404
-        client.post("/tracking/collections", json={"name": "c"})
-        assert client.post("/tracking/collections", json={"name": "c"}).status_code == 400
-        assert client.put("/tracking/collections/c/schedule", json={"weekday": 4, "time": "25:00"}).status_code == 400
-        assert client.post("/tracking/sources/1/fly").status_code in (400, 404)
-        from datetime import datetime, timedelta
-
-        from sqlalchemy.orm import sessionmaker
-
-        with sessionmaker(env.svc.engine)() as s:  # 另一个进程正在扫描
-            s.add(ScanLock(collection_id=1, owner="other", expires_at=datetime.now() + timedelta(minutes=5)))
+        assert client.get("/weekly/999").status_code == 404
+        assert client.get("/tracking/files/999/versions").status_code == 404
+        assert client.post("/tracking/sources/999/pause").status_code == 404
+        week = client.post("/weekly/week", json={}).json()
+        r = client.post(f"/weekly/{week['id']}/generate", json={})
+        assert r.status_code == 400 and "无法生成" in r.json()["detail"]
+        with sessionmaker(env.svc.engine)() as s:
+            s.add(ScanLock(name=SCAN_LOCK, owner="other", expires_at=datetime.now() + timedelta(minutes=5)))
             s.commit()
-        assert client.post("/tracking/collections/c/scan").status_code == 409
+        assert client.post("/tracking/scan").status_code == 409
 
 
-def test_plan_view_endpoints(env):
-    """网页“周报计划”用到的接口：默认设置、本周待确认数、文件类型与最近变化、版本历史与差异、周报带上材料、周报列表标出计划。"""
+def test_file_versions_and_diff(env):
     env.write("项目/方案.md", "# 方案\n原有内容")
-    model = make_model()
-    with TestClient(create_app(env.store, model_factory=lambda: model)) as client:
-        client.post("/tracking/collections", json={"name": "项目A"})
-        client.post("/tracking/collections/项目A/sources", json={"paths": [str(env.work / "项目")]})
-        assert client.put("/tracking/collections/项目A/settings", json={"audience": "导师", "author": "王五"}).json() == {"audience": "导师", "author": "王五"}
-        [c] = client.get("/tracking/collections").json()
-        assert c["settings"] == {"audience": "导师", "author": "王五"} and c["this_week"] is None and c["last_scan"]
-
+    with TestClient(create_app(env.store, model_factory=make_model)) as client:
+        client.post("/tracking/sources", json={"paths": [str(env.work / "项目")]})
         env.write("项目/方案.md", "# 方案\n原有内容\n补充灰度发布方案")
-        client.post("/tracking/collections/项目A/scan")
-        [f] = client.get("/tracking/collections/项目A/files").json()
+        client.post("/tracking/scan")
+        [f] = client.get("/tracking/files").json()
         assert f["file_type"] == "md" and f["last_change"] and f["versions"] == 2
         versions = client.get(f"/tracking/files/{f['id']}/versions").json()
         assert [v["version"] for v in versions] == [2, 1] and versions[1]["kind"] == "初始版本"
@@ -93,37 +103,25 @@ def test_plan_view_endpoints(env):
         assert diff["from_version"] == 1 and any("灰度" in h for h in diff["hunks"])
         assert client.get(f"/tracking/files/{f['id']}/diff", params={"version": 9}).status_code == 404
 
-        start, end = (d.isoformat() for d in WEEK)
-        prep = client.post("/tracking/collections/项目A/prepare", json={"start": start, "end": end}).json()
-        material = client.post("/materials", json={"title": "周会纪要", "content": "评审会确认上线时间为 10 月 20 日。"}).json()["material"]
-        client.post(f"/tracking/preps/{prep['id']}/review", json={"action": "confirm", "ids": [e["id"] for e in prep["items"]]})
-        client.post(f"/tracking/preps/{prep['id']}/confirm")
-        report = client.post(f"/tracking/preps/{prep['id']}/report", json={"material_ids": [material["id"]], "audience": "导师", "name": "王五"}).json()
-        weekly = client.get(f"/weekly-reports/{report['weekly_report_id']}").json()
-        assert weekly["material_ids"] == [material["id"]] and weekly["options"]["name"] == "王五"
-        listed = {r["id"]: r["plan"] for r in client.get("/weekly-reports").json()}
-        assert listed[report["weekly_report_id"]]["name"] == "项目A"
-
-        env.write("项目/方案.md", "# 方案\n原有内容\n补充灰度发布方案\n本周新增压测结论")
-        current = client.post("/tracking/collections/项目A/prepare", json={}).json()  # 不传日期：本周
-        assert client.get("/tracking/collections").json()[0]["this_week"] == {"id": current["id"], "status": "draft", "pending": current["counts"]["PENDING"]}
-
-        client.delete("/tracking/collections/项目A")  # 删除计划时默认设置一起删除，不报外键错误
-        assert client.get("/tracking/collections").json() == []
-
 
 def test_tracked_files_show_latest_version_in_material_list(env):
-    """材料库列出追踪中文件的最新版本并标明属于哪个计划；它随追踪更新，不能在材料库里删除。"""
+    """材料库列出追踪中文件的最新版本；它随追踪更新，不能在材料库里删除。"""
     env.write("进度.md", "# 进度\n原有内容")
     with TestClient(create_app(env.store, model_factory=make_model)) as client:
-        client.post("/tracking/collections", json={"name": "项目A"})
-        client.post("/tracking/collections/项目A/sources", json={"paths": [str(env.work / "进度.md")]})
+        client.post("/tracking/sources", json={"paths": [str(env.work / "进度.md")]})
         [m] = client.get("/materials").json()
-        assert m["source"] == "tracked" and [t["plan"] for t in m["tracked"]] == ["项目A"]
+        assert m["source"] == "tracked" and m["tracked"]["file_id"]
         r = client.delete(f"/materials/{m['id']}")
         assert r.status_code == 400 and "停止追踪" in r.json()["detail"]
 
         env.write("进度.md", "# 进度\n原有内容\n新增一行")
-        client.post("/tracking/collections/项目A/scan")
+        client.post("/tracking/scan")
         [latest] = client.get("/materials").json()
         assert latest["id"] != m["id"] and "新增一行" in client.get(f"/materials/{latest['id']}").json()["content"]
+
+
+def test_only_imported_feishu_docs_can_be_tracked_from_materials(env):
+    with TestClient(create_app(env.store, model_factory=make_model)) as client:
+        m = client.post("/materials", json={"title": "笔记", "content": "粘贴的内容"}).json()["material"]
+        r = client.post(f"/materials/{m['id']}/track")
+        assert r.status_code == 400 and "飞书文档" in r.json()["detail"]

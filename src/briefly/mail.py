@@ -108,9 +108,9 @@ def send_weekly(
     to, cc = parse_addresses(to), parse_addresses(cc)
     if not to:
         raise ValueError("请填写收件人")
-    report = weekly.get(report_id)
+    report = weekly.report(report_id)
     filename, text = weekly.export_markdown(report_id)  # 未完成的周报在这里报错
-    name = (report.options or {}).get("name")
+    name = (report.inputs or {}).get("name")
     subject = f"{name + ' ' if name else ''}周报 {report.period_start:%m.%d}–{report.period_end:%m.%d}"
     msg = build_message(subject, text, to, cc, (filename, text))
     record = MailSend(report_id=report_id, to=", ".join(to), cc=", ".join(cc), subject=subject, message_id=msg["Message-ID"])

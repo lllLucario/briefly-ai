@@ -8,8 +8,9 @@ from briefly.agent import Agent
 from briefly.db import create_db_engine
 from briefly.materials import MaterialStore
 from briefly.output_check import RETRY_HINT, find_internal_terms
-from briefly.weekly import WeeklyService
+from briefly.weekly.service import WeeklyService
 from fakes import FunctionModel, structured
+from weekly_util import draft
 
 
 @pytest.fixture
@@ -131,9 +132,9 @@ def test_weekly_report_warns_about_internal_terms(store):
 
     model = FunctionModel(respond=respond, calls=[])
     weekly = WeeklyService(store, lambda: model)
-    report = weekly.create([m.id], "")
-    weekly.generate(report.id)
-    done = weekly.get(report.id)
+    report = draft(weekly, [m.id], "")
+    weekly.run_generation(report.id)
+    done = weekly.report(report.id)
     assert any("程序内部的处理信息：第 2 块" in w for w in done.generation["warnings"])
     assert "〔1-1〕" in done.content  # 正常的出处标记不算
 

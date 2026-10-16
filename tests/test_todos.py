@@ -7,7 +7,7 @@ from sqlalchemy.exc import DatabaseError, IntegrityError
 
 from briefly.db import create_db_engine
 from briefly.materials import MaterialStore
-from briefly.todos.models import DOING, DONE, TODO, Todo
+from briefly.todos.models import DOING, DONE, TODO
 from briefly.todos.service import ConfirmationRequired, TodoNotFound, TodoService
 from tracking_util import env  # noqa: F401
 
@@ -52,8 +52,6 @@ def test_children_two_levels_only(todos):
         todos.update(loose.id, parent_id=loose.id)
     with pytest.raises(ValueError, match="先转为独立待办"):
         todos.update(b.id, parent_id=loose.id)
-    with pytest.raises(ValueError, match="跟随父待办"):
-        todos.update(a.id, collection_id=1)
 
 
 def test_database_rejects_third_level_and_self_parent(todos):
@@ -131,15 +129,6 @@ def test_promote_keeps_id_materials_and_history(todos):
     todos.create("新的子任务", parent_id=child.id)  # 转为独立后可以有子待办
 
 
-def test_promote_keeps_parent_plan(env):
-    c = env.svc.create_collection("项目A")
-    todos = TodoService(env.svc.engine, env.store)
-    parent = todos.create("项目", collection_id=c.id)
-    child = todos.create("子任务", parent_id=parent.id)
-    assert todos.plan_of(child) == c.id
-    assert todos.promote(child.id).collection_id == c.id
-
-
 def test_archive_never_cascades_silently(todos):
     material, _ = todos.store.add_text("方案", "方案内容")
     parent = todos.create("项目")
@@ -198,19 +187,18 @@ def test_notes_and_time_window(todos):
 def test_tracked_file_link_follows_latest_version(env):
     """关联追踪中文件的某个版本：显示时换成最新版本，追踪状态可见；时间线引用文件变化（不复制内容）。"""
     env.write("方案.md", "# 方案\n第一版")
-    c = env.svc.create_collection("项目A")
-    env.svc.add_paths(c.id, [str(env.work / "方案.md")])
+    env.svc.add_paths([str(env.work / "方案.md")])
     todos = TodoService(env.svc.engine, env.store)
     t = todos.create("写方案")
     [v1] = env.store.list_materials()
     todos.link(t.id, v1.id)
     env.write("方案.md", "# 方案\n第一版\n第二版补充")
-    env.svc.scan(c.id)
+    env.svc.scan()
     [v2] = env.store.list_materials()
     assert v2.id != v1.id
     [m] = todos.materials(t.id)
     assert (m.material_id, m.current_id) == (v1.id, v2.id)
-    assert m.tracking[0]["plan"] == "项目A" and m.tracking[0]["status"] == "present"
+    assert m.tracking["status"] == "present" and m.tracking["file_id"]
     _, new = todos.link(t.id, v2.id)  # 同一个文件的新版本：不重复关联
     assert not new and len(todos.direct_links([t.id])) == 1
     changes = [x for x in todos.timeline(t.id) if x["kind"] == "file_change"]

@@ -99,10 +99,10 @@ def export_weekly(client: FeishuClient, weekly, report_id: int, me: str = "") ->
 
     me：已连接飞书账号时用户的 open_id。文档以用户身份新建时用户就是所有者，不用再加协作者。
     """
-    report = weekly.get(report_id)
+    report = weekly.report(report_id)
     _, text = weekly.export_markdown(report_id)
     text = _SECTION.sub(lambda m: f"## {m.group(1)}" + (f"\n\n{m.group(2).strip()}" if m.group(2).strip() else ""), text)
-    name = (report.options or {}).get("name")
+    name = (report.inputs or {}).get("name")
     title = f"{name + ' ' if name else ''}周报 {report.period_start:%m.%d}–{report.period_end:%m.%d}"
     document_id = create_document(client, title, text, config.FEISHU_FOLDER_TOKEN)
     shared, error = "", ""

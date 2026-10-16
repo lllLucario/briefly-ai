@@ -26,7 +26,7 @@ def send_text(client: FeishuClient, user: str, text: str, message_uuid: str = ""
 
 
 def notification_channel(client_factory=client_from_config, user: str | None = None):
-    """返回登记到 weekly_schedule.CHANNELS 的发送函数；未配置凭证或接收人时返回 None。"""
+    """返回登记到 weekly.schedule.CHANNELS 的发送函数；未配置凭证或接收人时返回 None。"""
     user = user if user is not None else config.FEISHU_NOTIFY_USER
     if not user or (client_factory is client_from_config and not configured()):
         return None
@@ -42,12 +42,12 @@ def notification_channel(client_factory=client_from_config, user: str | None = N
 
 def register_channel() -> bool:
     """把飞书提醒登记为提醒渠道（重复调用只登记一次）。返回是否已登记。"""
-    from ..tracking import weekly_schedule
+    from ..weekly.schedule import CHANNELS
 
-    if any(getattr(c, "feishu", False) for c in weekly_schedule.CHANNELS):
+    if any(getattr(c, "feishu", False) for c in CHANNELS):
         return True
     channel = notification_channel()
     if channel is None:
         return False
-    weekly_schedule.CHANNELS.append(channel)
+    CHANNELS.append(channel)
     return True

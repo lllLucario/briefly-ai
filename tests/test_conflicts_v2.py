@@ -18,8 +18,10 @@ from briefly.conflicts import (
 from briefly.db import create_db_engine
 from briefly.materials import MaterialStore
 from briefly.summarize import WorkItem
-from briefly.weekly import REMINDER_HEADING, WeeklyService
+from briefly.weekly.engine import REMINDER_HEADING
+from briefly.weekly.service import WeeklyService
 from fakes import FunctionModel, structured
+from weekly_util import draft
 
 PROMPTS = Path(__file__).resolve().parents[1] / "src" / "briefly" / "prompts"
 
@@ -126,9 +128,9 @@ def weekly_run(store, brief, reports):
         ])
 
     weekly = WeeklyService(store, lambda: FunctionModel(respond=respond, calls=[]))
-    report = weekly.create([m.id], brief, date(2026, 10, 12), date(2026, 10, 18))
-    weekly.generate(report.id)
-    return weekly.get(report.id), calls, extract_users
+    report = draft(weekly, [m.id], brief, date(2026, 10, 12), date(2026, 10, 18))
+    weekly.run_generation(report.id)
+    return weekly.report(report.id), calls, extract_users
 
 
 @pytest.fixture

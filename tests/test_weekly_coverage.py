@@ -7,8 +7,10 @@ from langchain_core.messages import AIMessage
 from briefly.db import create_db_engine
 from briefly.materials import MaterialStore
 from briefly.summarize import Source, WorkItem, _cache_key, _extract_messages, extract_items, format_items, map_omissions
-from briefly.weekly import WEEKLY_PURPOSE, WeeklyService, fact_trace, report_check
+from briefly.weekly.engine import WEEKLY_PURPOSE, fact_trace, report_check
+from briefly.weekly.service import WeeklyService
 from fakes import FunctionModel, structured
+from weekly_util import draft
 
 TEXT = "本周完成用户登录模块，修复 Token 过期问题，并新增 3 个权限校验测试。\n支付回调耗时从 1.8 秒降到 200 毫秒。\n参加组内例会。"
 LOGIN = {"category": "done", "point": "完成用户登录模块", "quote": "本周完成用户登录模块，修复 Token 过期问题，并新增 3 个权限校验测试。", "importance": "high"}
@@ -90,9 +92,9 @@ def weekly_with(store, reports, items):
         return structured("Extraction", items=list(items))
 
     weekly = WeeklyService(store, lambda: FunctionModel(respond=respond, calls=[]))
-    report = weekly.create([material.id], "", date(2026, 10, 12), date(2026, 10, 18))
-    weekly.generate(report.id)
-    return weekly.get(report.id), calls, material
+    report = draft(weekly, [material.id], "", date(2026, 10, 12), date(2026, 10, 18))
+    weekly.run_generation(report.id)
+    return weekly.report(report.id), calls, material
 
 
 PARTIAL = "【本周完成】\n- 完成用户登录模块，修复 Token 过期问题，新增 3 个权限校验测试〔#1〕\n- 支付回调耗时降到 200 毫秒〔#2〕"
