@@ -311,6 +311,8 @@ dialog.wide { width: min(760px, 94vw); }
 .drive-list li.selectable, .drive-list li.folder { cursor: pointer; }
 .drive-list li.selectable:hover, .drive-list li.folder:hover { background-color: var(--bg); }
 .drive-list li.selected { background-color: var(--accent-soft); }
+.drive-list li.inherited:not(.folder) { cursor: default; }
+.drive-list li.inherited input[disabled] { cursor: not-allowed; }
 .drive-list li .kind { min-width: 0; }
 .drive-list li .pick-gap { width: 13px; flex: none; }
 .dialog-foot { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }

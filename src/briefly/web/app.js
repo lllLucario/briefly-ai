@@ -392,6 +392,7 @@ state.driveSelected = new Map(); // 选择键（文档用链接，文件夹用 f
 state.driveTree = {}; // 文件夹 token（根目录是 ""）→ {items, open, loading, error}
 state.driveSearch = "";
 state.driveIndex = {}; // 选择键 → 条目（当前显示的行）
+state.driveInherited = new Set(); // 当前显示的行里，随上层文件夹一起选中的选择键
 
 const folderUrl = (token) => `https://feishu.cn/drive/folder/${token}`;
 const pickKey = (x) => (x.kind === "folder" ? `folder:${x.token}` : x.url);
@@ -433,18 +434,20 @@ function driveTime(x) {
   return x.modified ? fmtTime(new Date(x.modified * 1000).toISOString()) : escapeHtml(x.owner || "");
 }
 
-function driveRow(x, depth) {
+// inherited：上层文件夹已选中，这一行随文件夹一起追踪，显示为选中且不能单独取消
+function driveRow(x, depth, inherited = false) {
   const key = pickKey(x);
   state.driveIndex[key] = x;
-  const picked = state.driveSelected.has(key);
+  if (inherited && pickable(x)) state.driveInherited.add(key);
+  const picked = inherited || state.driveSelected.has(key);
   const isFolder = x.kind === "folder";
   const node = isFolder ? state.driveTree[x.token] : null;
   const open = node?.open;
-  const cls = [isFolder ? "folder" : "", pickable(x) ? "selectable" : "disabled", picked ? "selected" : ""].join(" ");
+  const cls = [isFolder ? "folder" : "", pickable(x) ? "selectable" : "disabled", picked ? "selected" : "", inherited ? "inherited" : ""].join(" ");
   const kindText = isFolder ? "" : x.importable ? x.kind_name : `${x.kind_name}（不支持）`;
   return `<li class="${cls}" data-key="${escapeHtml(key)}" style="--depth:${depth}">
     <span class="twisty">${isFolder ? (open ? "▾" : "▸") : ""}</span>
-    ${pickable(x) ? `<input type="checkbox" data-pick ${picked ? "checked" : ""}>` : `<span class="pick-gap"></span>`}
+    ${pickable(x) ? `<input type="checkbox" data-pick ${picked ? "checked" : ""} ${inherited ? `disabled title="已随上层文件夹选中"` : ""}>` : `<span class="pick-gap"></span>`}
     ${fileIcon(x.kind === "docx" ? "feishu" : x.kind)}
     <span class="name" title="${escapeHtml(x.name)}">${escapeHtml(x.name)}</span>
     <span class="kind">${escapeHtml(kindText)}</span>
@@ -452,15 +455,15 @@ function driveRow(x, depth) {
   </li>`;
 }
 
-function driveRows(items, depth) {
+function driveRows(items, depth, inherited = false) {
   return items.map((x) => {
-    let html = driveRow(x, depth);
+    let html = driveRow(x, depth, inherited);
     const node = x.kind === "folder" ? state.driveTree[x.token] : null;
     if (node?.open) {
       if (node.loading) html += `<li class="muted" style="--depth:${depth + 1}"><span class="twisty"></span>加载中…</li>`;
       else if (node.error) html += `<li class="danger" style="--depth:${depth + 1}"><span class="twisty"></span>${escapeHtml(node.error)}</li>`;
       else if (!node.items.length) html += `<li class="muted" style="--depth:${depth + 1}"><span class="twisty"></span>（空文件夹）</li>`;
-      else html += driveRows(node.items, depth + 1);
+      else html += driveRows(node.items, depth + 1, inherited || state.driveSelected.has(pickKey(x)));
     }
     return html;
   }).join("");
@@ -468,6 +471,7 @@ function driveRows(items, depth) {
 
 function renderDrive() {
   state.driveIndex = {};
+  state.driveInherited = new Set();
   const root = state.driveSearch ? state.driveTree.search : state.driveTree[""];
   $("#drive-path").innerHTML = state.driveSearch ? `搜索“${escapeHtml(state.driveSearch)}”` : "我的空间";
   $("#drive-back").classList.toggle("hidden", !state.driveSearch);
@@ -479,7 +483,8 @@ function renderDrive() {
 }
 
 function renderDriveSelection() {
-  const visible = Object.values(state.driveIndex).filter(pickable);
+  const visible = Object.entries(state.driveIndex)
+    .filter(([key, x]) => pickable(x) && !state.driveInherited.has(key)).map(([, x]) => x);
   const pickedHere = visible.filter((x) => state.driveSelected.has(pickKey(x))).length;
   const all = $("#drive-all");
   all.disabled = !visible.length;
@@ -507,16 +512,30 @@ function setPick(x, on) {
   else state.driveSelected.delete(key);
 }
 
+// 选中的文件夹已覆盖其中所有内容：去掉已加载的子项里单独选中的，避免重复
+function dropCovered() {
+  const drop = (token) => (state.driveTree[token]?.items || []).forEach((x) => {
+    state.driveSelected.delete(pickKey(x));
+    if (x.kind === "folder") drop(x.token);
+  });
+  [...state.driveSelected.keys()].filter((k) => k.startsWith("folder:")).forEach((k) => drop(k.slice(7)));
+}
+
 $("#drive-list").addEventListener("click", (e) => {
   const li = e.target.closest("li[data-key]");
   if (!li) return;
   const x = state.driveIndex[li.dataset.key];
   const box = e.target.closest("[data-pick]");
-  if (box) {
-    setPick(x, box.checked); // 勾选框：只选中，文件夹不展开
+  const inherited = state.driveInherited.has(li.dataset.key);
+  if (box && x.kind === "folder") {
+    setPick(x, box.checked); // 文件夹的勾选框：只选中不展开；子项的显示随之变化，整体重画
+    dropCovered();
+    return renderDrive();
+  } else if (box) {
+    setPick(x, box.checked);
   } else if (x.kind === "folder") {
     return toggleDriveFolder(x.token); // 点文件夹这一行：原地展开 / 收起
-  } else if (x.importable) {
+  } else if (x.importable && !inherited) {
     setPick(x, !state.driveSelected.has(pickKey(x))); // 点文档这一行：勾选
   } else {
     return;
@@ -527,7 +546,10 @@ $("#drive-list").addEventListener("click", (e) => {
 });
 
 $("#drive-all").addEventListener("change", (e) => {
-  Object.values(state.driveIndex).filter(pickable).forEach((x) => setPick(x, e.target.checked));
+  Object.entries(state.driveIndex)
+    .filter(([key, x]) => pickable(x) && !state.driveInherited.has(key))
+    .forEach(([, x]) => setPick(x, e.target.checked));
+  dropCovered();
   renderDrive();
 });
 
