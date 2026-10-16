@@ -209,11 +209,33 @@ async function showMaterialDetail(id) {
   }
 }
 
+// ---------- 添加材料（弹窗：上传文件 / 粘贴文字 / 飞书链接）
+function showAddPane(name) {
+  document.querySelectorAll("#add-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.add === name));
+  $("#add-upload").classList.toggle("hidden", name !== "upload");
+  $("#paste-form").classList.toggle("hidden", name !== "paste");
+  $("#feishu-form").classList.toggle("hidden", name !== "link");
+}
+
+$("#open-add").addEventListener("click", () => {
+  $("#add-msg").classList.add("hidden");
+  showAddPane("upload");
+  $("#add-dialog").showModal();
+});
+
+$("#add-tabs").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-add]");
+  if (b) showAddPane(b.dataset.add);
+});
+
+// 弹窗右上角的 ✕
+document.querySelectorAll("dialog [data-close]").forEach((b) => b.addEventListener("click", () => b.closest("dialog").close()));
+
 async function uploadFiles(files) {
-  const msg = $("#material-msg");
+  const msg = $("#add-msg");
   const results = [];
-  for (const file of files) {
-    showNotice(msg, `正在解析 ${escapeHtml(file.name)}…（PDF、Word 可能需要几秒）`);
+  for (const [i, file] of files.entries()) {
+    showNotice(msg, `正在解析 ${escapeHtml(file.name)}（${i + 1}/${files.length}）…PDF、Word 可能需要几秒`);
     const form = new FormData();
     form.append("file", file);
     try {
@@ -236,7 +258,7 @@ drop.addEventListener("drop", (e) => uploadFiles([...e.dataTransfer.files]));
 
 $("#paste-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const msg = $("#material-msg");
+  const msg = $("#add-msg");
   try {
     const r = await api("/materials", { method: "POST", json: { title: $("#paste-title").value.trim(), content: $("#paste-content").value } });
     showNotice(msg, `${r.created ? "已保存" : "内容相同的材料已存在"}：${escapeHtml(r.material.title)}（${r.material.char_count} 字）`);
@@ -246,10 +268,29 @@ $("#paste-form").addEventListener("submit", async (e) => {
   } catch (err) { showNotice(msg, escapeHtml(err.message), "error"); }
 });
 
-// 飞书：配置了应用凭证才显示相关入口
+function importedText(r) {
+  const warn = r.material.warnings.length ? `（${r.material.warnings.map(escapeHtml).join("；")}）` : "";
+  return `${r.created ? "已导入" : "内容没有变化，已存在"}：${escapeHtml(r.material.title)}（${r.material.char_count} 字）${warn}`;
+}
+
+$("#feishu-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const msg = $("#add-msg");
+  const url = $("#feishu-url").value.trim();
+  if (!url) return;
+  showNotice(msg, "正在读取飞书内容…");
+  try {
+    showNotice(msg, importedText(await api("/materials/feishu", { method: "POST", json: { url } })));
+    $("#feishu-url").value = "";
+    await loadMaterials();
+  } catch (err) { showNotice(msg, escapeHtml(err.message), "error"); }
+});
+
+// ---------- 飞书（配置了应用凭证才显示相关入口）
 async function loadFeishu() {
   try { state.feishu = await api("/feishu/status"); } catch (_) { state.feishu = null; }
   document.querySelectorAll(".feishu-only").forEach((el) => el.classList.toggle("hidden", !state.feishu?.configured));
+  $("#open-drive").innerHTML = `${fileIcon("feishu")} 飞书云空间`;
   renderFeishuAccount();
 }
 
@@ -260,15 +301,14 @@ function renderFeishuAccount() {
   $("#feishu-browser").classList.toggle("hidden", !user);
   if (user) {
     const missing = user.missing_scopes || [];
-    box.innerHTML = `<div class="row gap wrap"><span>已连接：<b>${escapeHtml(user.name || user.open_id)}</b></span>
-      <button class="ghost danger" id="feishu-logout">断开</button></div>`
+    box.innerHTML = `<div class="row gap wrap"><span class="muted">已连接：<b>${escapeHtml(user.name || user.open_id)}</b></span>
+      <button class="ghost small danger" id="feishu-logout">断开</button></div>`
       + (missing.length ? `<div class="notice warn">权限有更新，请重新连接飞书以授权：${missing.map(escapeHtml).join("、")}
         <a class="button" href="/feishu/oauth/login">重新连接</a></div>` : "");
-    if (!state.drivePath) openDriveFolder("", "我的空间", true);
   } else {
     box.innerHTML = `<div class="row gap wrap"><a class="button primary" href="/feishu/oauth/login">连接飞书</a>
-      <small class="muted">用你的飞书账号授权后，可以浏览和搜索自己的云文档直接导入</small></div>
-      <small class="muted">首次使用需在开发者后台“安全设置 → 重定向 URL”登记：${escapeHtml(state.feishu?.redirect_uri || "")}</small>`;
+      <small class="muted">用你的飞书账号授权后，可以浏览和搜索自己的云文档，勾选后一次导入</small></div>
+      <small class="muted">首次使用需在开发者后台“安全设置 → 重定向 URL”登记：<code>${escapeHtml(state.feishu?.redirect_uri || "")}</code></small>`;
     state.drivePath = null;
   }
 }
@@ -280,8 +320,22 @@ $("#feishu-account").addEventListener("click", async (e) => {
   await loadFeishu();
 });
 
+// ---------- 飞书云空间（弹窗）：浏览文件夹、搜索、跨文件夹多选，批量导入或追踪
+state.driveSelected = new Map(); // url → {name, kind}，切换文件夹、搜索时保留
+state.driveItems = [];
+state.driveSearch = "";
+
+$("#open-drive").addEventListener("click", async () => {
+  $("#drive-msg").classList.add("hidden");
+  await loadFeishu();
+  renderTrackOptions();
+  $("#drive-dialog").showModal();
+  if (state.feishu?.user && !state.drivePath) openDriveFolder("", "我的空间", true);
+});
+
 async function openDriveFolder(token, name, reset = false) {
-  if (reset) state.drivePath = [];
+  state.driveSearch = "";
+  if (reset || !state.drivePath) state.drivePath = [];
   const at = state.drivePath.findIndex((x) => x.token === token);
   if (at >= 0) state.drivePath = state.drivePath.slice(0, at + 1);
   else state.drivePath.push({ token, name });
@@ -289,89 +343,189 @@ async function openDriveFolder(token, name, reset = false) {
   await showDriveItems(() => api(`/feishu/drive/files?folder=${encodeURIComponent(token)}`));
 }
 
-function renderDrivePath(label) {
-  $("#drive-path").innerHTML = label
-    ? `<a data-crumb="">我的空间</a> / ${escapeHtml(label)}`
-    : state.drivePath.map((x) => `<a data-crumb="${escapeHtml(x.token)}">${escapeHtml(x.name)}</a>`).join(" / ");
+function renderDrivePath() {
+  const path = state.drivePath || [];
+  $("#drive-path").innerHTML = path.map((x, i) => (i === path.length - 1 && !state.driveSearch
+    ? `<b>${escapeHtml(x.name)}</b>` : `<a data-crumb="${escapeHtml(x.token)}">${escapeHtml(x.name)}</a>`)).join(" / ")
+    + (state.driveSearch ? ` / <b>搜索“${escapeHtml(state.driveSearch)}”</b>` : "");
+  // 搜索结果里“返回”回到搜索前的文件夹；文件夹里返回上一级；根目录不能再返回
+  $("#drive-back").disabled = !state.driveSearch && path.length <= 1;
 }
 
-async function showDriveItems(load) {
-  const list = $("#drive-list");
-  list.innerHTML = `<li class="muted">加载中…</li>`;
-  try {
-    const items = await load();
-    list.innerHTML = items.length ? items.map((x) => `
-      <li class="${x.kind === "folder" ? "folder" : x.importable ? "" : "disabled"}">
-        <span class="kind">${fileIcon(x.kind === "docx" ? "feishu" : x.kind)}</span>
-        <span class="name" ${x.kind === "folder" ? `data-folder="${escapeHtml(x.token)}"` : ""} title="${escapeHtml(x.name)}">${escapeHtml(x.name)}</span>
-        <small class="muted">${x.modified ? fmtTime(new Date(x.modified * 1000).toISOString()) : escapeHtml(x.owner || "")}</small>
-        ${x.importable ? `<button class="ghost" data-import="${escapeHtml(x.url)}">导入</button>` : ""}
-        ${["docx", "wiki"].includes(x.kind) ? trackPicker(x.url) : ""}
-      </li>`).join("") : `<li class="muted">没有内容</li>`;
-  } catch (err) {
-    list.innerHTML = `<li class="danger">${escapeHtml(err.message)}</li>`;
-    if (err.message.includes("连接飞书")) loadFeishu(); // 授权失效：回到“连接飞书”
+$("#drive-back").addEventListener("click", () => {
+  const path = state.drivePath || [];
+  if (state.driveSearch) {
+    $("#drive-q").value = "";
+    const last = path[path.length - 1] || { token: "", name: "我的空间" };
+    return openDriveFolder(last.token, last.name);
   }
-}
+  if (path.length > 1) {
+    const parent = path[path.length - 2];
+    openDriveFolder(parent.token, parent.name);
+  }
+});
 
 $("#drive-path").addEventListener("click", (e) => {
   const a = e.target.closest("[data-crumb]");
   if (!a) return;
-  const token = a.dataset.crumb;
-  const item = (state.drivePath || []).find((x) => x.token === token);
-  if (token === "" && !item) openDriveFolder("", "我的空间", true);
-  else openDriveFolder(token, item?.name || "", false);
+  const item = (state.drivePath || []).find((x) => x.token === a.dataset.crumb);
+  openDriveFolder(a.dataset.crumb, item?.name || "我的空间");
 });
 
 $("#drive-search").addEventListener("submit", (e) => {
   e.preventDefault();
   const q = $("#drive-q").value.trim();
   if (!q) return openDriveFolder("", "我的空间", true);
-  renderDrivePath(`搜索“${q}”`);
+  state.driveSearch = q;
+  renderDrivePath();
   showDriveItems(() => api(`/feishu/drive/search?q=${encodeURIComponent(q)}`));
 });
 
-$("#drive-list").addEventListener("click", async (e) => {
-  const folder = e.target.closest("[data-folder]");
-  if (folder) return openDriveFolder(folder.dataset.folder, folder.textContent.trim());
-  const btn = e.target.closest("[data-import]");
-  if (!btn) return;
-  const msg = $("#material-msg");
-  btn.disabled = true;
-  showNotice(msg, "正在读取飞书内容…");
+function driveTime(x) {
+  return x.modified ? fmtTime(new Date(x.modified * 1000).toISOString()) : escapeHtml(x.owner || "");
+}
+
+async function showDriveItems(load) {
+  const list = $("#drive-list");
+  list.innerHTML = `<li class="muted">加载中…</li>`;
+  $("#drive-count").textContent = "";
   try {
-    const r = await api("/materials/feishu", { method: "POST", json: { url: btn.dataset.import } });
-    const warn = r.material.warnings.length ? `<br>${r.material.warnings.map(escapeHtml).join("<br>")}` : "";
-    showNotice(msg, `${r.created ? "已导入" : "内容没有变化，材料已存在"}：${escapeHtml(r.material.title)}（${r.material.char_count} 字）${warn}`);
-    await loadMaterials();
-  } catch (err) { showNotice(msg, escapeHtml(err.message), "error"); }
-  finally { btn.disabled = false; }
+    state.driveItems = await load();
+  } catch (err) {
+    state.driveItems = [];
+    list.innerHTML = `<li class="danger">${escapeHtml(err.message)}</li>`;
+    if (err.message.includes("连接飞书")) loadFeishu(); // 授权失效：回到“连接飞书”
+    return renderDriveSelection();
+  }
+  const items = state.driveItems;
+  list.innerHTML = items.length ? items.map((x, i) => {
+    const picked = state.driveSelected.has(x.url);
+    const cls = x.kind === "folder" ? "folder" : x.importable ? (picked ? "selectable selected" : "selectable") : "disabled";
+    return `<li class="${cls}" data-i="${i}">
+      ${x.importable ? `<input type="checkbox" data-pick="${i}" ${picked ? "checked" : ""}>` : `<span class="pick-gap"></span>`}
+      ${fileIcon(x.kind === "docx" ? "feishu" : x.kind)}
+      <span class="name" title="${escapeHtml(x.name)}">${escapeHtml(x.name)}</span>
+      <span class="kind">${escapeHtml(x.kind === "folder" ? "" : x.importable ? x.kind_name : x.kind_name + "（不支持）")}</span>
+      <small class="muted">${driveTime(x)}</small>
+      ${x.kind === "folder" ? `<span class="muted">›</span>` : ""}
+    </li>`;
+  }).join("") : `<li class="muted">${state.driveSearch ? "没有搜到结果" : "这个文件夹是空的"}</li>`;
+  const folders = items.filter((x) => x.kind === "folder").length;
+  const importable = items.filter((x) => x.importable).length;
+  $("#drive-count").textContent = items.length ? `${folders ? folders + " 个文件夹，" : ""}${importable} 个可导入` : "";
+  renderDriveSelection();
+}
+
+function renderDriveSelection() {
+  const importable = state.driveItems.filter((x) => x.importable);
+  const all = $("#drive-all");
+  const pickedHere = importable.filter((x) => state.driveSelected.has(x.url)).length;
+  all.disabled = !importable.length;
+  all.checked = Boolean(importable.length) && pickedHere === importable.length;
+  all.indeterminate = pickedHere > 0 && pickedHere < importable.length;
+  const n = state.driveSelected.size;
+  $("#drive-selected").textContent = n ? `已选 ${n} 项${n > pickedHere ? `（其中 ${n - pickedHere} 项在别的文件夹）` : ""}` : "未选择";
+  $("#drive-clear").classList.toggle("hidden", !n);
+  $("#drive-import").disabled = !n;
+  $("#drive-import").textContent = n ? `导入所选（${n}）` : "导入所选";
+  $("#drive-track").disabled = !n;
+}
+
+function togglePick(i, on) {
+  const x = state.driveItems[i];
+  if (!x?.importable) return;
+  if (on ?? !state.driveSelected.has(x.url)) state.driveSelected.set(x.url, { name: x.name, kind: x.kind });
+  else state.driveSelected.delete(x.url);
+  const li = $(`#drive-list li[data-i="${i}"]`);
+  li.classList.toggle("selected", state.driveSelected.has(x.url));
+  li.querySelector("input").checked = state.driveSelected.has(x.url);
+}
+
+$("#drive-list").addEventListener("click", (e) => {
+  const li = e.target.closest("li[data-i]");
+  if (!li) return;
+  const x = state.driveItems[Number(li.dataset.i)];
+  if (x.kind === "folder") return openDriveFolder(x.token, x.name);
+  if (!x.importable) return;
+  // 点整行也能勾选；直接点勾选框时由浏览器切换，这里同步状态
+  const box = e.target.closest("[data-pick]");
+  togglePick(Number(li.dataset.i), box ? box.checked : undefined);
+  renderDriveSelection();
 });
 
-// 授权回调后回到本页：显示结果并切到“材料”页
+$("#drive-all").addEventListener("change", (e) => {
+  state.driveItems.forEach((x, i) => x.importable && togglePick(i, e.target.checked));
+  renderDriveSelection();
+});
+
+$("#drive-clear").addEventListener("click", () => {
+  state.driveSelected.clear();
+  document.querySelectorAll("#drive-list li.selected").forEach((li) => { li.classList.remove("selected"); li.querySelector("input").checked = false; });
+  renderDriveSelection();
+});
+
+// 批量导入：逐个读取（同时读太多会触发飞书限频），完成后取消勾选成功的项
+$("#drive-import").addEventListener("click", async () => {
+  const msg = $("#drive-msg");
+  const entries = [...state.driveSelected.entries()];
+  const btn = $("#drive-import");
+  btn.disabled = true;
+  const results = [];
+  for (const [i, [url, info]] of entries.entries()) {
+    showNotice(msg, `正在导入 ${i + 1}/${entries.length}：${escapeHtml(info.name)}…`);
+    try {
+      results.push(importedText(await api("/materials/feishu", { method: "POST", json: { url } })));
+      state.driveSelected.delete(url);
+    } catch (err) {
+      results.push(`<span class="danger">${escapeHtml(info.name)}：${escapeHtml(err.message)}</span>`);
+    }
+  }
+  const failed = state.driveSelected.size;
+  showNotice(msg, results.join("<br>"), failed ? "warn" : "");
+  await loadMaterials();
+  showDriveItems(() => Promise.resolve(state.driveItems));
+});
+
+// 批量追踪：只有文档和知识库页面能追踪（多维表格、妙记只能导入当前内容）
+function renderTrackOptions() {
+  const list = typeof plans !== "undefined" ? plans.list : [];
+  $("#drive-track").innerHTML = `<option value="">追踪到周报计划…</option>`
+    + list.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("")
+    + (list.length ? "" : `<option value="" disabled>（还没有周报计划，先在“周报”页新建）</option>`);
+}
+
+$("#drive-track").addEventListener("change", async (e) => {
+  const planId = e.target.value;
+  if (!planId) return;
+  const plan = plans.list.find((p) => String(p.id) === planId);
+  const urls = [...state.driveSelected.entries()].filter(([, x]) => ["docx", "wiki"].includes(x.kind)).map(([url]) => url);
+  const skipped = state.driveSelected.size - urls.length;
+  const msg = $("#drive-msg");
+  if (!urls.length) {
+    e.target.value = "";
+    return showNotice(msg, "所选项里没有能追踪的文档：只有飞书文档和知识库页面能追踪，多维表格、妙记请用“导入所选”。", "warn");
+  }
+  showNotice(msg, `正在加入周报计划“${escapeHtml(plan.name)}”并记录初始版本…`);
+  try {
+    const r = await api(`/tracking/collections/${planId}/sources`, { method: "POST", json: { paths: urls } });
+    const lines = [`已加入周报计划“${escapeHtml(plan.name)}”：${r.added.length} 篇，之后每个工作日自动检查更新。`, ...r.messages.map(escapeHtml)];
+    if (skipped) lines.push(`另有 ${skipped} 项不是文档（多维表格、妙记等），没有加入追踪。`);
+    showNotice(msg, lines.join("<br>"), r.messages.length || skipped ? "warn" : "");
+    await loadPlans();
+  } catch (err) { showNotice(msg, escapeHtml(err.message), "error"); }
+  e.target.value = "";
+});
+
+// 授权回调后回到本页：显示结果，连接成功直接打开云空间
 function handleFeishuRedirect() {
   const params = new URLSearchParams(location.search);
   if (!params.has("feishu") && !params.has("feishu_error")) return;
   document.querySelector('.tabs button[data-tab="materials"]').click();
-  if (params.has("feishu_error")) showNotice($("#material-msg"), `连接飞书失败：${escapeHtml(params.get("feishu_error"))}`, "error");
-  else showNotice($("#material-msg"), `已连接飞书账号：${escapeHtml(params.get("name") || "")}`);
   history.replaceState(null, "", "/");
+  if (params.has("feishu_error")) return showNotice($("#material-msg"), `连接飞书失败：${escapeHtml(params.get("feishu_error"))}`, "error");
+  showNotice($("#material-msg"), `已连接飞书账号：${escapeHtml(params.get("name") || "")}`);
+  $("#open-drive").click();
 }
-
-$("#feishu-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const msg = $("#material-msg");
-  const url = $("#feishu-url").value.trim();
-  if (!url) return;
-  showNotice(msg, "正在读取飞书内容…");
-  try {
-    const r = await api("/materials/feishu", { method: "POST", json: { url } });
-    const warn = r.material.warnings.length ? `<br>${r.material.warnings.map(escapeHtml).join("<br>")}` : "";
-    showNotice(msg, `${r.created ? "已读取" : "内容没有变化，材料已存在"}：${escapeHtml(r.material.title)}（${r.material.char_count} 字）${warn}`);
-    $("#feishu-url").value = "";
-    await loadMaterials();
-  } catch (err) { showNotice(msg, escapeHtml(err.message), "error"); }
-});
 
 // ---------- 对话 ----------
 async function loadSkills() {

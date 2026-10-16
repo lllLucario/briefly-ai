@@ -56,29 +56,12 @@
 
   <!-- 材料 -->
   <main id="tab-materials" class="tab">
-    <section class="panel narrow">
-      <h3>添加材料</h3>
-      <label class="drop" id="drop">
-        <input type="file" id="file" multiple accept=".txt,.md,.docx,.pdf,.xlsx,.csv">
-        <span>点击或拖入文件<br><small>txt / md / docx / pdf / xlsx / csv，单个不超过 10MB</small></span>
-      </label>
-      <form id="paste-form" class="stack">
-        <input id="paste-title" placeholder="标题（可不填）">
-        <textarea id="paste-content" rows="8" placeholder="粘贴文字内容"></textarea>
-        <button class="primary">保存为材料</button>
-      </form>
-      <form id="feishu-form" class="stack feishu-only hidden">
-        <input id="feishu-url" placeholder="粘贴飞书文档、知识库页面、多维表格或妙记链接">
-        <button class="primary">读取飞书内容</button>
-        <small class="muted">没连接飞书账号时，需要先在文档右上角“…→ 更多 → 添加文档应用”把应用加进来</small>
-      </form>
-      <div id="feishu-drive" class="stack feishu-only hidden">
-        <h3>飞书云空间</h3>
-        <div id="feishu-account" class="stack"></div>
-        <div id="feishu-browser" class="stack hidden">
-          <form id="drive-search" class="row gap"><input id="drive-q" placeholder="搜索云文档、知识库（30 字以内）"><button class="ghost">搜索</button></form>
-          <div id="drive-path" class="crumbs"></div>
-          <ul id="drive-list" class="drive-list"></ul>
+    <section class="panel grow">
+      <div class="chat-head">
+        <h3>材料库</h3>
+        <div class="row gap wrap">
+          <button id="open-drive" class="ghost feishu-only hidden">飞书云空间</button>
+          <button id="open-add" class="primary">＋ 添加材料</button>
         </div>
       </div>
       <div id="material-msg" class="notice hidden"></div>
@@ -86,9 +69,6 @@
         <summary id="tracked-summary">正在追踪的文件</summary>
         <div id="tracked-list"></div>
       </details>
-    </section>
-    <section class="panel grow">
-      <h3>材料库</h3>
       <div class="table-wrap">
         <table class="table">
           <thead><tr><th>编号</th><th>标题</th><th>类型</th><th>字数</th><th>块 / 章节</th><th>结构来源</th><th>添加时间</th><th></th></tr></thead>
@@ -235,6 +215,59 @@
       <details id="weekly-meta" class="meta"><summary>生成信息</summary><div id="weekly-meta-body"></div></details>
     </section>
   </main>
+
+  <!-- 添加材料 -->
+  <dialog id="add-dialog" class="wide">
+    <div class="dialog-head"><h3>添加材料</h3><button type="button" class="ghost small" data-close>✕</button></div>
+    <nav class="subtabs" id="add-tabs">
+      <button data-add="upload" class="active">上传文件</button>
+      <button data-add="paste">粘贴文字</button>
+      <button data-add="link" class="feishu-only hidden">飞书链接</button>
+    </nav>
+    <div id="add-upload" class="add-pane">
+      <label class="drop" id="drop">
+        <input type="file" id="file" multiple accept=".txt,.md,.docx,.pdf,.xlsx,.csv">
+        <span>点击或拖入文件（可多选）<br><small>txt / md / docx / pdf / xlsx / csv，单个不超过 10MB</small></span>
+      </label>
+    </div>
+    <form id="paste-form" class="add-pane stack hidden">
+      <input id="paste-title" placeholder="标题（可不填）">
+      <textarea id="paste-content" rows="10" placeholder="粘贴文字内容"></textarea>
+      <div class="row end"><button class="primary">保存为材料</button></div>
+    </form>
+    <form id="feishu-form" class="add-pane stack hidden">
+      <input id="feishu-url" placeholder="粘贴飞书文档、知识库页面、多维表格或妙记链接">
+      <small class="muted">没连接飞书账号时，需要先在文档右上角“…→ 更多 → 添加文档应用”把应用加进来。要从自己的云空间里挑选，用“飞书云空间”。</small>
+      <div class="row end"><button class="primary">读取飞书内容</button></div>
+    </form>
+    <div id="add-msg" class="notice hidden"></div>
+  </dialog>
+
+  <!-- 飞书云空间 -->
+  <dialog id="drive-dialog" class="wide">
+    <div class="dialog-head"><h3>飞书云空间</h3><button type="button" class="ghost small" data-close>✕</button></div>
+    <div id="feishu-account" class="stack"></div>
+    <div id="feishu-browser" class="stack hidden">
+      <form id="drive-search" class="row gap"><input id="drive-q" placeholder="搜索云文档、知识库（30 字以内）" style="flex:1"><button class="ghost">搜索</button></form>
+      <div class="row gap drive-nav">
+        <button type="button" id="drive-back" class="ghost small">← 返回上一级</button>
+        <div id="drive-path" class="crumbs grow"></div>
+      </div>
+      <div class="drive-head">
+        <label class="toggle"><input type="checkbox" id="drive-all"> 全选</label>
+        <span id="drive-count" class="muted"></span>
+      </div>
+      <ul id="drive-list" class="drive-list"></ul>
+      <div class="row gap wrap dialog-foot">
+        <span id="drive-selected" class="muted">未选择</span>
+        <button type="button" id="drive-clear" class="ghost small hidden">清空</button>
+        <span class="grow"></span>
+        <select id="drive-track" title="持续追踪所选文档的变化，加入一个周报计划（只支持文档和知识库页面）"></select>
+        <button type="button" id="drive-import" class="primary" disabled>导入所选</button>
+      </div>
+      <div id="drive-msg" class="notice hidden"></div>
+    </div>
+  </dialog>
 
   <!-- 编辑工作记录 -->
   <dialog id="evidence-dialog">

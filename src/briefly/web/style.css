@@ -296,3 +296,22 @@ button.small { padding: 2px 8px; }
 .versions { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
 .version-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 #diff-box .content-box { max-height: 320px; overflow: auto; }
+
+/* 弹窗：添加材料、飞书云空间 */
+dialog.wide { width: min(760px, 94vw); }
+.dialog-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.dialog-head h3 { margin: 0; }
+#add-tabs { margin-bottom: 12px; width: fit-content; }
+.add-pane .drop { margin-bottom: 0; padding: 40px 22px; }
+#add-msg, #drive-msg { margin-top: 12px; max-height: 160px; overflow-y: auto; }
+.drive-nav { min-height: 30px; }
+.drive-nav button:disabled { opacity: .45; cursor: default; }
+.drive-head { display: flex; align-items: center; justify-content: space-between; padding: 0 10px; font-size: 13px; }
+#drive-dialog .drive-list { max-height: min(52vh, 460px); }
+.drive-list li.selectable, .drive-list li.folder { cursor: pointer; }
+.drive-list li.selectable:hover, .drive-list li.folder:hover { background: var(--bg); }
+.drive-list li.selected { background: var(--accent-soft); }
+.drive-list li .kind { min-width: 0; }
+.drive-list li .pick-gap { width: 13px; flex: none; }
+.dialog-foot { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+#open-drive .ficon { margin-right: 2px; }

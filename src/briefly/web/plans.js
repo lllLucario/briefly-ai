@@ -565,7 +565,7 @@ $("#plan-delete").addEventListener("click", async () => {
   showWeeklyView("empty");
 });
 
-// ---------- 材料页：正在追踪的文件、飞书文档的“追踪到…”
+// ---------- 材料页：正在追踪的文件（飞书文档“追踪到周报计划”在 app.js 的云空间弹窗里）
 async function renderTrackedSummary() {
   const total = plans.list.reduce((n, p) => n + p.sources, 0);
   $("#tracked-box").classList.toggle("hidden", !total);
@@ -591,26 +591,6 @@ $("#tracked-list").addEventListener("click", (e) => {
   if (!a) return;
   e.preventDefault();
   gotoPlan(a.dataset.gotoPlan);
-});
-
-function trackPicker(url) {
-  if (!plans.list.length) return "";
-  return `<select class="track-pick small" data-track="${escapeHtml(url)}" title="持续追踪这篇文档的变化，加入一个周报计划">
-    <option value="">追踪到…</option>${plans.list.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("")}</select>`;
-}
-
-document.addEventListener("change", async (e) => {
-  const sel = e.target.closest("select[data-track]");
-  if (!sel || !sel.value) return;
-  const plan = plans.list.find((p) => String(p.id) === sel.value);
-  try {
-    const r = await api(`/tracking/collections/${sel.value}/sources`, { method: "POST", json: { paths: [sel.dataset.track] } });
-    const msg = r.added.length ? `已加入周报计划“${escapeHtml(plan.name)}”，记录了初始版本，之后每个工作日自动检查更新。`
-      : r.messages.map(escapeHtml).join("<br>");
-    showNotice($("#material-msg"), msg, r.added.length ? "" : "warn");
-    await loadPlans();
-  } catch (err) { showNotice($("#material-msg"), escapeHtml(err.message), "error"); }
-  sel.value = "";
 });
 
 loadPlans();
