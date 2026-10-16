@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from .. import config
 from ..feishu.links import looks_like_feishu
 from ..materials import MaterialNotFound, MaterialStore
+from ..todos.models import EvidenceTodoLink, Todo
 from .blobs import BlobStore
 from .models import (
     ACTIVE,
@@ -140,6 +141,9 @@ class TrackingService:
             s.execute(delete(WeeklySchedule).where(WeeklySchedule.collection_id == c.id))
             s.execute(delete(Notification).where(Notification.collection_id == c.id))
             s.execute(delete(EvidenceReview).where(EvidenceReview.prep_id.in_(prep_ids)))
+            evidence_ids = select(WorkEvidence.id).where(WorkEvidence.prep_id.in_(prep_ids))
+            s.execute(delete(EvidenceTodoLink).where(EvidenceTodoLink.evidence_id.in_(evidence_ids)))
+            s.execute(update(Todo).where(Todo.collection_id == c.id).values(collection_id=None))  # 待办改为计入所有计划
             s.execute(delete(WorkEvidence).where(WorkEvidence.prep_id.in_(prep_ids)))
             s.execute(delete(ReportPrep).where(ReportPrep.collection_id == c.id))
             s.execute(delete(FileChange).where(FileChange.collection_id == c.id))
