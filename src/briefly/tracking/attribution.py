@@ -93,7 +93,7 @@ def judge(owner_names: list[str], before: dict | None, after: dict) -> tuple[str
     flags: list[str] = []
     if not owners:
         flags.append("no_owner")
-        basis.append("未设置你在文档里的名字（网页：周报计划 → 设置；命令行：briefly track owner），无法用作者信息判断")
+        basis.append("未设置你在文档里的名字（网页：周报设置；命令行：briefly weekly settings --owner），无法用作者信息判断")
 
     old = {_key(r) for r in (before or {}).get("revisions", [])}
     new = [r for r in after.get("revisions", []) if _key(r) not in old and r.get("type") != "format"]

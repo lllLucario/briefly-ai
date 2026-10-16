@@ -298,23 +298,28 @@ dialog h3 { margin-top: 0; }
 button.small, select.small, .small { font-size: 12px; }
 button.small { padding: 2px 8px; }
 
-/* 周报页左栏：周报计划 + 周报历史 */
+/* 周报页：左栏是本周 + 周报历史 + 设置；右侧一周的清单、材料、说明、正文，右下角“现在生成” */
 .weekly-side .side-head { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
-.weekly-side .list { flex: none; max-height: 40vh; }
-.weekly-side .list:last-child { flex: 1; max-height: none; }
-.plan-list li .row { white-space: nowrap; }
+.weekly-side #week-current { flex: none; }
+.weekly-side #week-current li { white-space: normal; }
 .count-badge { background: var(--danger); color: #fff; border-radius: 9px; min-width: 18px; padding: 0 5px; font-size: 11px; text-align: center; line-height: 18px; }
+.week-panel { display: flex; flex-direction: column; padding-bottom: 0; }
+.week-section { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 12px; }
+.week-section:first-of-type { border-top: none; margin-top: 0; }
+.week-section h4 { margin: 0; }
+#week-note { width: 100%; }
+.week-foot {
+  position: sticky; bottom: 0; margin-top: auto; padding: 10px 0 14px; background: var(--panel);
+  display: flex; align-items: center; justify-content: flex-end; gap: 12px; border-top: 1px solid var(--line);
+}
+.week-foot #week-go { padding: 8px 22px; font-size: 15px; }
 
-/* 周报计划：子栏目 */
+/* 子栏目切换（材料页：材料库 / 追踪的文件） */
 .subtabs { display: flex; gap: 4px; background: var(--bg); padding: 3px; border-radius: 8px; }
 .subtabs button { border: none; background: transparent; padding: 4px 12px; }
 .subtabs button.active { background: var(--panel); color: var(--accent); box-shadow: 0 1px 2px rgba(0, 0, 0, .08); }
 .plan-bar { margin-bottom: 6px; }
-.period-pick { margin-bottom: 10px; }
-.plan-extra { margin-top: 16px; padding-top: 12px; border-top: 1px dashed var(--line); }
-.plan-extra h4 { margin: 0; }
-#plan-settings h4 { margin: 14px 0 4px; }
-#plan-materials label { display: flex; align-items: center; gap: 6px; }
+#settings-dialog h4 { margin: 10px 0 0; }
 
 /* 文件树：每一级缩进 18px，并画一条竖线，看得出文件属于哪个文件夹 */
 .tree { border: 1px solid var(--line); border-radius: 8px; padding: 4px 0; margin-bottom: 10px; }

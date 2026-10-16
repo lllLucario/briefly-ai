@@ -35,7 +35,7 @@ ACTIVITY, MATERIAL = "activity", "material"
 
 # 活动类型
 CREATED = "created"
-UPDATED = "updated"  # 标题、说明、截止日期、周报计划
+UPDATED = "updated"  # 标题、说明、截止日期、父待办
 STATUS = "status"
 COMPLETED = "completed"
 REOPENED = "reopened"

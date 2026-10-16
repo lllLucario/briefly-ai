@@ -7,9 +7,6 @@ const state = {
   picked: new Set(), // 对话中选用的材料编号
   materials: [],
   skills: [],
-  weeklyId: null,
-  weeklyTimer: null,
-  weeklyReport: null,
   activeMaterial: null,
   feishu: null, // 飞书配置状态（/feishu/status）
   mail: null, // 邮件配置状态（/mail/status）
@@ -186,9 +183,9 @@ document.querySelectorAll(".tabs button").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b === btn));
     document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.id === `tab-${btn.dataset.tab}`));
-    if (btn.dataset.tab === "materials") loadMaterials();
-    if (btn.dataset.tab === "todos") { loadMaterials(); loadPlans(); loadTodos(); }
-    if (btn.dataset.tab === "weekly") { loadMaterials(); loadWeeklyList(); loadPlans(); }
+    if (btn.dataset.tab === "materials") { loadMaterials(); loadTrackingSummary(); }
+    if (btn.dataset.tab === "todos") { loadMaterials(); loadTodos(); }
+    if (btn.dataset.tab === "weekly") { loadMaterials(); loadWeekly(); }
   });
 });
 
@@ -201,8 +198,6 @@ async function loadMaterials() {
   state.materials = materials;
   state.feishuTracking = tracking;
   renderMaterialRows();
-  renderWeeklyMaterialChecklist();
-  if (typeof plans !== "undefined" && plans.id) renderPlanMaterials();
   // 已删除的材料从对话选择中去掉
   for (const id of [...state.picked]) if (!state.materials.some((m) => m.id === id)) state.picked.delete(id);
   renderPicked();
@@ -219,7 +214,7 @@ function renderMaterialRows() {
   rows.innerHTML = state.materials.map((m) => `
     <tr class="clickable ${state.activeMaterial === m.id ? "active" : ""}" data-id="${m.id}">
       <td>${m.id}</td>
-      <td>${escapeHtml(m.title)} ${m.warnings.length ? `<span class="warn-dot" title="${escapeHtml(m.warnings.join("\n"))}">⚠</span>` : ""}${m.source === "tracked" ? ` <span class="badge" title="随追踪自动更新为最新内容；以前的版本在周报计划里查看">最新版本</span>` : ""}</td>
+      <td>${escapeHtml(m.title)} ${m.warnings.length ? `<span class="warn-dot" title="${escapeHtml(m.warnings.join("\n"))}">⚠</span>` : ""}${m.source === "tracked" ? ` <span class="badge" title="随追踪自动更新为最新内容；以前的版本在“追踪的文件”里查看">最新版本</span>` : ""}</td>
       <td class="nowrap">${fileIcon(m.file_type || "paste")} ${escapeHtml(FILE_TYPES[m.file_type] || kindName(m.file_type || "paste"))}</td>
       <td class="track-cell">${trackCell(m)}</td>
       <td>${m.char_count}</td>
@@ -231,75 +226,50 @@ function renderMaterialRows() {
 }
 
 // ---------- 材料的追踪状态 ----------
-// 材料是导入时内容的副本；飞书文档可以另外开启追踪：周报计划定期检查原文档的修改
+// 材料是导入时内容的副本；飞书文档可以另外开启追踪：每个工作日检查原文档的修改，变化进入周报的审核清单
 const UNTRACKABLE = {
   bitable: "多维表格暂不支持追踪，导入的是当时的内容",
   minutes: "妙记的文字稿不会再变，不需要追踪",
 };
 
 function trackCell(m) {
-  // 追踪版本本身没有飞书导入信息：从追踪记录的路径（feishu://docx/<id>）取文档编号
-  const feishuKey = m.tracked.find((t) => t.key.startsWith("feishu://docx/"))?.key;
-  if (feishuKey && !m.feishu) m = { ...m, feishu: { kind: "docx", token: feishuKey.split("/").pop(), url: `https://feishu.cn/docx/${feishuKey.split("/").pop()}` } };
-  if (m.feishu?.kind !== "docx" && m.tracked.length) {
-    return `<span class="track-chips">${m.tracked.map((t) => `<span class="chip" title="本机文件：在“周报”页的周报计划里管理">追踪中 · ${escapeHtml(t.plan)}</span>`).join("")}</span>`;
+  if (m.tracked) {  // 追踪中文件的最新版本（本机文件或飞书文档）
+    const token = m.tracked.key.startsWith("feishu://docx/") ? m.tracked.key.split("/").pop() : null;
+    const entry = token ? state.feishuTracking?.[token] : null;
+    if (entry && !entry.folder) {
+      return `<span class="chip">追踪中${entry.status === "paused" ? "（已暂停）" : ""}<button type="button" data-untrack="${entry.source_id}" title="停止追踪（历史版本保留）">✕</button></span>`;
+    }
+    const why = entry?.folder ? `随飞书文件夹“${entry.folder}”追踪；要停止，请在“追踪的文件”里移除整个文件夹` : "在“追踪的文件”里管理";
+    return `<span class="chip" title="${escapeHtml(why)}">追踪中${entry?.folder ? "（随文件夹）" : ""}</span>`;
   }
   if (m.feishu?.kind !== "docx") {
     const why = UNTRACKABLE[m.feishu?.kind]
-      || "上传或粘贴的是一份副本，没法回去检查原文件的修改。要追踪本机文件，请在“周报”页的周报计划里添加文件路径";
+      || "上传或粘贴的是一份副本，没法回去检查原文件的修改。要追踪本机文件，请在“追踪的文件”里添加文件路径";
     return `<span class="muted" title="${escapeHtml(why)}">不可追踪</span>`;
   }
-  const entries = state.feishuTracking?.[m.feishu.token] || [];
-  const chips = entries.map((t) => {
-    const paused = t.status === "paused" ? "（已暂停）" : "";
-    if (t.folder) {
-      return `<span class="chip" title="随文件夹“${escapeHtml(t.folder)}”追踪；要停止，请在周报计划里移除整个文件夹">追踪中 · ${escapeHtml(t.plan)}${paused}（随文件夹）</span>`;
-    }
-    return `<span class="chip">追踪中 · ${escapeHtml(t.plan)}${paused}<button type="button" data-untrack="${t.source_id}" data-plan="${escapeHtml(t.plan)}" title="停止追踪（历史版本保留）">✕</button></span>`;
-  }).join("");
-  const free = (typeof plans !== "undefined" ? plans.list : []).filter((p) => !entries.some((t) => t.plan_id === p.id));
-  const add = entries.length && !free.length ? ""
-    : `<button type="button" class="ghost small" data-track="${m.id}" title="加入周报计划：定期检查这篇飞书文档的修改，记录到本周工作里">${entries.length ? "＋" : "开启追踪"}</button>`;
-  return `<span class="track-chips">${chips}${add}</span>`;
-}
-
-// 选一个周报计划；没有计划时提示先新建。返回计划或 null
-async function choosePlan(title, message, exclude = []) {
-  const list = (typeof plans !== "undefined" ? plans.list : []).filter((p) => !exclude.includes(p.id));
-  if (!list.length) {
-    await uiAlert(plans.list.length ? "所有周报计划都已经在追踪了。" : "还没有周报计划。先到“周报”页新建一个，再回来开启追踪。", title);
-    return null;
-  }
-  const r = await uiPrompt({
-    title,
-    message,
-    fields: [{ name: "plan", label: "加入哪个周报计划", type: "select", options: list.map((p) => ({ value: p.id, label: p.name })) }],
-    ok: "开始追踪",
-  });
-  return r ? list.find((p) => String(p.id) === r.plan) : null;
+  const entry = state.feishuTracking?.[m.feishu.token];
+  if (entry) return `<span class="chip" title="${entry.folder ? `随飞书文件夹“${escapeHtml(entry.folder)}”追踪` : "这篇文档的最新版本在材料库里单独一行"}">追踪中</span>`;
+  return `<button type="button" class="ghost small" data-track="${m.id}" title="每个工作日检查这篇飞书文档的修改，变化进入周报的审核清单">开启追踪</button>`;
 }
 
 async function trackMaterial(id) {
   const m = state.materials.find((x) => x.id === id);
-  const tracked = (state.feishuTracking?.[m.feishu.token] || []).map((t) => t.plan_id);
-  const plan = await choosePlan("开启追踪",
-    `追踪《${escapeHtml(m.title)}》：之后每个工作日检查这篇飞书文档有没有修改，变化会记录到周报计划的“本周准备”里。<br>材料库里这份材料不会变，它是导入时的内容。`, tracked);
-  if (!plan) return;
   const msg = $("#material-msg");
-  showNotice(msg, `正在加入周报计划“${escapeHtml(plan.name)}”并记录初始版本…`);
+  showNotice(msg, `正在开启追踪并记录《${escapeHtml(m.title)}》的初始版本…`);
   try {
-    const r = await api(`/tracking/collections/${plan.id}/sources`, { method: "POST", json: { paths: [m.feishu.url] } });
-    showNotice(msg, r.added.length ? `已开始追踪《${escapeHtml(m.title)}》（周报计划“${escapeHtml(plan.name)}”）。` : r.messages.map(escapeHtml).join("<br>"), r.added.length ? "" : "warn");
+    const r = await api(`/materials/${id}/track`, { method: "POST" });
+    showNotice(msg, r.added.length ? `已开始追踪《${escapeHtml(m.title)}》：每个工作日检查修改，变化进入周报的审核清单。材料库里会多一行它的最新版本，原来这份是导入时的内容。`
+      : r.messages.map(escapeHtml).join("<br>"), r.added.length ? "" : "warn");
   } catch (err) { showNotice(msg, escapeHtml(err.message), "error"); }
-  await Promise.all([loadMaterials(), loadPlans()]);
+  await loadMaterials();
 }
 
-async function untrack(sourceId, plan) {
-  if (!(await uiConfirm(`不再在周报计划“${plan}”里追踪这篇文档？已记录的历史版本会保留，材料也不受影响。`, { title: "停止追踪", ok: "停止追踪", danger: true }))) return;
+async function untrack(sourceId) {
+  if (!(await uiConfirm("不再追踪这篇文档？已记录的历史版本会保留，材料也不受影响。", { title: "停止追踪", ok: "停止追踪", danger: true }))) return;
   try {
     await api(`/tracking/sources/${sourceId}/remove`, { method: "POST" });
   } catch (err) { showNotice($("#material-msg"), escapeHtml(err.message), "error"); }
-  await Promise.all([loadMaterials(), loadPlans()]);
+  await loadMaterials();
 }
 
 $("#material-rows").addEventListener("click", async (e) => {
@@ -311,7 +281,7 @@ $("#material-rows").addEventListener("click", async (e) => {
   const stop = e.target.closest("[data-untrack]");
   if (stop) {
     e.stopPropagation();
-    return untrack(Number(stop.dataset.untrack), stop.dataset.plan);
+    return untrack(Number(stop.dataset.untrack));
   }
   const del = e.target.closest("[data-delete]");
   if (del) {
@@ -452,6 +422,12 @@ $("#feishu-form").addEventListener("submit", async (e) => {
     await loadMaterials();
   } catch (err) { showNotice(msg, escapeHtml(err.message), "error"); }
 });
+
+// ---------- 邮件（配置了 SMTP 才显示“发送邮件”；发送只由用户手动操作）
+async function loadMail() {
+  try { state.mail = await api("/mail/status"); } catch (_) { state.mail = null; }
+  document.querySelectorAll(".mail-only").forEach((el) => el.classList.toggle("hidden", !state.mail?.configured));
+}
 
 // ---------- 飞书（配置了应用凭证才显示相关入口）
 async function loadFeishu() {
@@ -606,7 +582,7 @@ function renderDriveSelection() {
   $("#drive-import").textContent = n ? `导入为材料（${parts}）` : "导入为材料";
   $("#drive-import").title = pickedFolders ? "文件夹会导入其中（含子文件夹）支持的文档，导入前会确认篇数" : "";
   $("#drive-track").disabled = !n;
-  $("#drive-track").textContent = pickedFolders ? `追踪…（含 ${pickedFolders} 个文件夹）` : "追踪…";
+  $("#drive-track").textContent = pickedFolders ? `追踪（含 ${pickedFolders} 个文件夹）` : "追踪";
 }
 
 function setPick(x, on) {
@@ -722,10 +698,10 @@ $("#drive-import").addEventListener("click", async () => {
       }
       if (jobs.size > IMPORT_FOLDER_LIMIT) {
         renderDriveSelection();
-        return showNotice(msg, `一共 ${jobs.size} 篇文档，超过一次导入的上限 ${IMPORT_FOLDER_LIMIT} 篇。请展开文件夹只勾选需要的文档；需要持续关注整个文件夹，可以用“追踪…”。`, "warn");
+        return showNotice(msg, `一共 ${jobs.size} 篇文档，超过一次导入的上限 ${IMPORT_FOLDER_LIMIT} 篇。请展开文件夹只勾选需要的文档；需要持续关注整个文件夹，可以用“追踪”。`, "warn");
       }
       const ok = await uiConfirm(
-        `所选的 ${folderKeys.length} 个文件夹里共有 ${found} 篇可导入的文档${skipped ? `（另有 ${skipped} 个条目类型不支持，会跳过）` : ""}${jobs.size > found ? `，加上单独勾选的，一共 ${jobs.size} 篇` : ""}，每篇成为一份材料。\n\n导入的是现在的内容，之后文档有改动不会自动更新；需要跟踪变化，可以导入后在材料库里开启追踪，或用“追踪…”。`,
+        `所选的 ${folderKeys.length} 个文件夹里共有 ${found} 篇可导入的文档${skipped ? `（另有 ${skipped} 个条目类型不支持，会跳过）` : ""}${jobs.size > found ? `，加上单独勾选的，一共 ${jobs.size} 篇` : ""}，每篇成为一份材料。\n\n导入的是现在的内容，之后文档有改动不会自动更新；需要跟踪变化，可以导入后在材料库里开启追踪，或用“追踪”。`,
         { title: "导入文件夹里的文档", ok: `导入 ${jobs.size} 篇` },
       );
       if (!ok) {
@@ -767,25 +743,23 @@ $("#drive-track").addEventListener("click", async () => {
     return showNotice(msg, "所选项里没有能追踪的：只有飞书文档、知识库页面和文件夹能追踪，多维表格、妙记请用“导入为材料”。", "warn");
   }
   const folders = chosen.filter(([, x]) => x.kind === "folder").length;
-  const plan = await choosePlan("追踪所选",
-    `把所选的 ${chosen.length - folders ? `${chosen.length - folders} 篇文档` : ""}${chosen.length - folders && folders ? "和" : ""}${folders ? `${folders} 个文件夹` : ""}加入周报计划，之后每个工作日检查修改，变化记录到“本周准备”里。`
-    + (folders ? "<br>文件夹会整个追踪：以后新放进去的文档也会自动纳入。" : "")
-    + "<br>追踪不会把文档存进材料库；需要拿当前内容来对话或总结，请用“导入为材料”。");
-  if (!plan) return;
-  showNotice(msg, `正在加入周报计划“${escapeHtml(plan.name)}”并记录初始版本…${folders ? "（文件夹里的文档较多时需要一会儿）" : ""}`);
+  const ok = await uiConfirm(`追踪所选的 ${chosen.length - folders ? `${chosen.length - folders} 篇文档` : ""}${chosen.length - folders && folders ? "和" : ""}${folders ? `${folders} 个文件夹` : ""}：之后每个工作日检查修改，变化进入周报的审核清单。`
+    + (folders ? "\n文件夹会整个追踪：以后新放进去的文档也会自动纳入。" : ""), { title: "追踪所选", ok: "开始追踪" });
+  if (!ok) return;
+  showNotice(msg, `正在开始追踪并记录初始版本…${folders ? "（文件夹里的文档较多时需要一会儿）" : ""}`);
   try {
     const names = Object.fromEntries(chosen.map(([, x]) => [x.url, x.name]));
-    const r = await api(`/tracking/collections/${plan.id}/sources`, { method: "POST", json: { paths: chosen.map(([, x]) => x.url), names } });
+    const r = await api("/tracking/sources", { method: "POST", json: { paths: chosen.map(([, x]) => x.url), names } });
     const addedFolders = r.added.filter((s) => s.kind === "feishu_folder");
     const docsInFolders = addedFolders.reduce((n, s) => n + (s.folder?.docs || 0), 0);
-    const lines = [`已加入周报计划“${escapeHtml(plan.name)}”：${r.added.length - addedFolders.length} 篇文档`
+    const lines = [`已开始追踪：${r.added.length - addedFolders.length} 篇文档`
       + (addedFolders.length ? `、${addedFolders.length} 个文件夹（其中 ${docsInFolders} 篇文档，之后新加进文件夹的文档也会自动追踪）` : "")
       + "。每个工作日自动检查更新。", ...r.messages.map(escapeHtml)];
     if (skipped) lines.push(`另有 ${skipped} 项（多维表格、妙记等）不能追踪，没有加入。`);
     showNotice(msg, lines.join("<br>"), r.messages.length || skipped ? "warn" : "");
     chosen.forEach(([key]) => state.driveSelected.delete(key));
     renderDrive();
-    await Promise.all([loadPlans(), loadMaterials()]);
+    await Promise.all([loadMaterials(), loadTrackingSummary()]);
   } catch (err) { showNotice(msg, escapeHtml(err.message), "error"); }
 });
 
@@ -951,7 +925,7 @@ $("#pick-materials").addEventListener("click", async () => {
   await loadMaterials();
   $("#picker-list").innerHTML = state.materials.length
     ? state.materials.map((m) => `<label><input type="checkbox" value="${m.id}" ${state.picked.has(m.id) ? "checked" : ""}>
-        ${m.id}. ${escapeHtml(m.title)} <span class="muted">（${m.char_count} 字${m.tracked.length ? "，追踪中 · 最新版本" : ""}）</span></label>`).join("")
+        ${m.id}. ${escapeHtml(m.title)} <span class="muted">（${m.char_count} 字${m.tracked ? "，追踪中 · 最新版本" : ""}）</span></label>`).join("")
     : `<p class="muted">材料库是空的，请先到“材料”页上传或粘贴。</p>`;
   $("#picker").showModal();
 });
@@ -961,318 +935,56 @@ $("#picker-done").addEventListener("click", () => {
   $("#picker").close();
 });
 
-// ---------- 周报 ----------
-const STATUS_TEXT = { pending: "排队中", running: "生成中", done: "已完成", failed: "失败" };
+// ---------- 从材料库选择（待办、本周材料共用）----------
+// 返回选中的材料编号；取消返回 null。exclude 显示为已选且不能取消，suggested 标“建议”。
+let pickResolve = null;
+const pickState = { picking: new Set(), exclude: new Set(), suggested: new Set() };
 
-function renderWeeklyMaterialChecklist() {
-  const box = $("#weekly-materials");
-  const checked = new Set([...box.querySelectorAll("input:checked")].map((i) => Number(i.value)));
-  box.innerHTML = state.materials.length
-    ? state.materials.map((m) => `<label><input type="checkbox" value="${m.id}" ${checked.has(m.id) ? "checked" : ""}>
-        ${m.id}. ${escapeHtml(m.title)} <span class="muted">（${m.char_count} 字${m.tracked.length ? "，追踪中 · 最新版本" : ""}）</span></label>`).join("")
-    : `<p class="muted">材料库是空的。也可以只写简述生成周报。</p>`;
+function renderMatPicker() {
+  const q = $("#mat-picker-q").value.trim().toLowerCase();
+  const rows = state.materials.filter((m) => !q || m.title.toLowerCase().includes(q));
+  $("#mat-picker-list").innerHTML = rows.length
+    ? rows.map((m) => {
+      const has = pickState.exclude.has(m.id);
+      const tip = has ? "（已加入）" : `（${m.char_count} 字${m.tracked ? "，追踪中的最新版本" : m.feishu ? "，飞书" : ""}）`;
+      return `<label>${fileIcon(m.file_type || "paste")}<input type="checkbox" value="${m.id}" ${has || pickState.picking.has(m.id) ? "checked" : ""} ${has ? "disabled" : ""}>
+        ${escapeHtml(m.title)} <span class="muted">${tip}</span>${pickState.suggested.has(m.id) && !has ? ' <span class="badge">本周待办的材料</span>' : ""}</label>`;
+    }).join("")
+    : `<p class="muted">${state.materials.length ? "没有匹配的材料" : "材料库是空的"}</p>`;
+  $("#mat-picker-count").textContent = pickState.picking.size ? `已选 ${pickState.picking.size} 份` : "";
 }
 
-function showWeeklyView(view) {
-  const panels = { plan: "#plan-panel", form: "#weekly-form-panel", detail: "#weekly-detail-panel", empty: "#weekly-empty" };
-  Object.entries(panels).forEach(([k, sel]) => $(sel).classList.toggle("hidden", k !== view));
-  if (view !== "plan") { plans.id = null; renderPlanList(); }
+async function pickMaterials({ title = "从材料库选择", ok = "确定", exclude = [], suggested = [] } = {}) {
+  await loadMaterials();
+  pickState.picking = new Set();
+  pickState.exclude = new Set(exclude);
+  pickState.suggested = new Set(suggested);
+  $("#mat-picker-title").textContent = title;
+  $("#mat-picker-done").textContent = ok;
+  $("#mat-picker-q").value = "";
+  renderMatPicker();
+  $("#mat-picker").showModal();
+  return new Promise((resolve) => { pickResolve = resolve; });
 }
 
-async function loadWeeklyList() {
-  const reports = await api("/weekly-reports");
-  state.weeklyPlans = Object.fromEntries(reports.map((r) => [r.id, r.plan]));
-  $("#weekly-list").innerHTML = reports.length
-    ? reports.map((r) => `<li data-id="${r.id}" class="${r.id === state.weeklyId ? "active" : ""}">
-        ${shortDate(r.period_start)}–${shortDate(r.period_end)} <span class="muted">${r.plan ? escapeHtml(r.plan.name) : "临时"}</span>
-        <small><span class="status-pill ${r.status}">${STATUS_TEXT[r.status] || r.status}</span> ${fmtTime(r.created_at)}</small></li>`).join("")
-    : `<li class="muted" style="cursor:default">还没有周报</li>`;
-  return reports;
-}
-
-function shortDate(iso) {
-  const [, m, d] = String(iso).split("-");
-  return `${m}.${d}`;
-}
-
-$("#weekly-list").addEventListener("click", (e) => {
-  const li = e.target.closest("li[data-id]");
-  if (li) openWeekly(Number(li.dataset.id));
+$("#mat-picker-q").addEventListener("input", renderMatPicker);
+$("#mat-picker-list").addEventListener("change", (e) => {
+  const cb = e.target.closest("input[type=checkbox]");
+  if (!cb) return;
+  cb.checked ? pickState.picking.add(Number(cb.value)) : pickState.picking.delete(Number(cb.value));
+  $("#mat-picker-count").textContent = pickState.picking.size ? `已选 ${pickState.picking.size} 份` : "";
+});
+$("#mat-picker-done").addEventListener("click", () => {
+  $("#mat-picker").close();
+  if (pickResolve) pickResolve([...pickState.picking]);
+  pickResolve = null;
+});
+$("#mat-picker").addEventListener("close", () => {
+  if (pickResolve) pickResolve(null);
+  pickResolve = null;
 });
 
-$("#new-weekly").addEventListener("click", () => {
-  stopPolling();
-  state.weeklyId = null;
-  showWeeklyView("form");
-  loadWeeklyList();
-});
-
-$("#weekly-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const body = {
-    material_ids: [...document.querySelectorAll("#weekly-materials input:checked")].map((i) => Number(i.value)),
-    brief: $("#brief").value.trim(),
-    period_start: $("#period-start").value || null,
-    period_end: $("#period-end").value || null,
-    audience: $("#audience").value.trim() || null,
-    name: $("#name").value.trim() || null,
-  };
-  try {
-    const r = await api("/weekly-reports", { method: "POST", json: body });
-    openWeekly(r.id);
-  } catch (err) {
-    uiAlert(err.message, "出错了");
-  }
-});
-
-function stopPolling() {
-  if (state.weeklyTimer) clearTimeout(state.weeklyTimer);
-  state.weeklyTimer = null;
-}
-
-async function openWeekly(id) {
-  stopPolling();
-  state.weeklyId = id;
-  showWeeklyView("detail");
-  exitEdit();
-  await refreshWeekly();
-}
-
-// 出处标记〔1-3〕〔简述〕渲染成可点的小标签（html 为已转义或已净化的 HTML）
-function tagify(html) {
-  return html.replace(/〔([^〕]*)〕/g, (_, tag) => `<span class="tag" data-tag="${tag}">${tag}</span>`);
-}
-
-function renderReport(content) {
-  return tagify(renderMarkdown(content));
-}
-
-function stripTags(content) {
-  return content.replace(/〔[^〕]*〕/g, "").replace(/[ \t]+\n/g, "\n").trim();
-}
-
-async function refreshWeekly() {
-  const id = state.weeklyId;
-  let r;
-  try {
-    r = await api(`/weekly-reports/${id}`);
-  } catch (err) {
-    showNotice($("#weekly-status"), escapeHtml(err.message), "error");
-    return;
-  }
-  if (id !== state.weeklyId) return; // 已切到别的周报
-  state.weeklyReport = r;
-  const plan = (state.weeklyPlans || {})[r.id];
-  $("#weekly-title").textContent = `周报 ${r.period_start} ~ ${r.period_end}${plan ? `（${plan.name}）` : ""}`;
-  const done = r.status === "done";
-  ["#edit-weekly", "#print-weekly", "#show-tags"].forEach((s) => ($(s).disabled = !done));
-  $("#export-md").classList.toggle("hidden", !done);
-  $("#export-md").href = `/weekly-reports/${id}/export.md`;
-
-  const status = $("#weekly-status");
-  if (r.status === "pending" || r.status === "running") {
-    showNotice(status, `${STATUS_TEXT[r.status]}…逐块提取并核对素材，材料多时需要几分钟。页面会自动刷新。`);
-    state.weeklyTimer = setTimeout(refreshWeekly, 3000);
-  } else if (r.status === "failed") {
-    showNotice(status, `生成失败：${escapeHtml(r.error)}`, "error");
-  } else {
-    status.classList.add("hidden");
-  }
-
-  const g = r.generation || {};
-  const reminders = $("#weekly-reminders");
-  if (g.reminders?.length) {
-    showNotice(reminders, `<b>给你的提醒</b>（不会进入周报和导出）<ul>${g.reminders.map((x) => `<li>${tagify(escapeHtml(x))}</li>`).join("")}</ul>`, "warn");
-  } else reminders.classList.add("hidden");
-  const warnings = $("#weekly-warnings");
-  if (g.warnings?.length) {
-    showNotice(warnings, `<b>系统提示</b><ul>${g.warnings.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul>`);
-  } else warnings.classList.add("hidden");
-
-  $("#weekly-preview").innerHTML = done ? renderReport(r.content) : "";
-  renderWeeklyTodos(r);
-  $("#feishu-weekly").disabled = !done;
-  $("#mail-weekly").disabled = !done;
-  if (done && state.mail?.configured) loadMailSends(id);
-  else $("#weekly-mail").classList.add("hidden");
-  if (done && state.feishu?.configured) loadFeishuExports(id);
-  else $("#weekly-feishu").classList.add("hidden");
-  $("#weekly-preview").classList.toggle("hide-tags", !$("#show-tags").checked);
-  renderWeeklyMeta(r);
-  loadWeeklyList();
-}
-
-// 周报关联的待办：生成时保存的快照（当时的标题、状态、层级），之后改待办不影响这里
-const REF_STATUS = { todo: "未开始", doing: "进行中", done: "已完成" };
-function renderWeeklyTodos(r) {
-  const refs = r.options?.todo_refs || [];
-  const box = $("#weekly-todos");
-  box.classList.toggle("hidden", !refs.length);
-  if (!refs.length) return;
-  const groups = {};
-  for (const x of refs) (groups[x.todo.parent_title || x.todo.title] ??= []).push(x);
-  box.innerHTML = `<details class="meta" open><summary>关联的待办（审核时的记录）</summary>${Object.entries(groups).map(([name, xs]) => `<div><b>${escapeHtml(name)}</b>：${xs.map((x) => {
-    const status = x.report_status ? `本次${REF_STATUS[x.report_status]}` : `当时${REF_STATUS[x.todo.status] || ""}`;
-    const who = x.todo.parent_title ? `${escapeHtml(x.todo.title)} · ` : "";
-    return `<span class="badge">${who}${escapeHtml(x.evidence?.title || "")}（E${x.evidence_id} · ${status}${x.relation === "material" ? " · 关联文件" : ""}${x.synced ? " · 已同步" : ""}）</span>`;
-  }).join(" ")}</div>`).join("")}</details>`;
-}
-
-function feishuLinks(exports) {
-  return exports.map((x) => `<a href="${escapeHtml(x.url)}" target="_blank" rel="noopener">${escapeHtml(x.title)}</a>（${fmtTime(x.created_at)}）`
-    + (x.share_error ? `<br><span class="danger">${escapeHtml(x.share_error)}</span>` : "")).join("<br>");
-}
-
-async function loadFeishuExports(id) {
-  try {
-    const exports = await api(`/weekly-reports/${id}/feishu`);
-    if (id !== state.weeklyId) return;
-    if (exports.length) showNotice($("#weekly-feishu"), `<b>已写入飞书</b><br>${feishuLinks(exports.slice(0, 3))}`);
-    else $("#weekly-feishu").classList.add("hidden");
-  } catch (_) { /* 只是展示历史，失败不影响周报 */ }
-}
-
-$("#feishu-weekly").addEventListener("click", async () => {
-  const id = state.weeklyId;
-  const box = $("#weekly-feishu");
-  const btn = $("#feishu-weekly");
-  btn.disabled = true;
-  showNotice(box, "正在写入飞书文档…");
-  try {
-    const x = await api(`/weekly-reports/${id}/feishu`, { method: "POST" });
-    showNotice(box, `<b>已写入飞书</b>（出处标记不写入）<br>${feishuLinks([x])}`, x.share_error ? "warn" : "");
-  } catch (err) {
-    showNotice(box, escapeHtml(err.message), "error");
-  } finally { btn.disabled = false; }
-});
-
-// 邮件：只由用户手动发送，发送前确认收件人；失败不自动重试（可能已经发出去了）
-async function loadMail() {
-  try { state.mail = await api("/mail/status"); } catch (_) { state.mail = null; }
-  document.querySelectorAll(".mail-only").forEach((el) => el.classList.toggle("hidden", !state.mail?.configured));
-}
-
-function mailLines(sends) {
-  return sends.map((x) => `${fmtTime(x.created_at)} ${x.status === "sent" ? "已发送" : "<span class=\"danger\">发送失败</span>"} → ${escapeHtml(x.to)}`
-    + (x.cc ? `（抄送 ${escapeHtml(x.cc)}）` : "") + (x.error ? `<br><span class="danger">${escapeHtml(x.error)}</span>` : "")).join("<br>");
-}
-
-async function loadMailSends(id) {
-  try {
-    const sends = await api(`/weekly-reports/${id}/email`);
-    if (id !== state.weeklyId) return;
-    if (sends.length) showNotice($("#weekly-mail"), `<b>邮件</b><br>${mailLines(sends.slice(0, 3))}`);
-    else $("#weekly-mail").classList.add("hidden");
-  } catch (_) { /* 只是展示历史 */ }
-}
-
-$("#mail-weekly").addEventListener("click", async () => {
-  const id = state.weeklyId;
-  const answer = await uiPrompt({
-    title: "发送周报邮件",
-    message: `从 <b>${escapeHtml(state.mail.sender)}</b> 发出，正文去掉出处标记，附件是 Markdown 文件。<br><span class="danger">发出后无法撤回。</span>`,
-    fields: [{ name: "to", label: "收件人", value: state.mail?.default_to || "", placeholder: "多个用逗号分隔", required: true }],
-    ok: "发送",
-  });
-  if (!answer) return;
-  const to = answer.to;
-  const btn = $("#mail-weekly");
-  btn.disabled = true;
-  showNotice($("#weekly-mail"), "正在发送邮件…");
-  try {
-    const x = await api(`/weekly-reports/${id}/email`, { method: "POST", json: { to } });
-    showNotice($("#weekly-mail"), `<b>邮件</b><br>${mailLines([x])}`, x.status === "sent" ? "" : "error");
-  } catch (err) {
-    showNotice($("#weekly-mail"), escapeHtml(err.message), "error");
-  } finally { btn.disabled = false; }
-});
-
-function renderWeeklyMeta(r) {
-  const g = r.generation || {};
-  const evidence = r.options?.evidence_ids || [];
-  const removed = r.options?.removed_materials || [];
-  const rows = [
-    ["素材", r.material_ids.length ? r.material_ids.map(materialTitle).join("、") : evidence.length || removed.length ? "无" : "无（只用简述）"],
-    ...(removed.length ? [["已删除的素材", removed.map((x) => `《${x.title}》（生成后从材料库删除，正文不受影响）`).join("、")]] : []),
-    ...(evidence.length ? [["工作记录", `${evidence.length} 条已确认（${evidence.map((i) => `E${i}`).join("、")}，来自文件追踪）`]] : []),
-    ["简述", r.brief || "无"],
-    ["读者 / 姓名", `${r.options?.audience || "直属上级"} / ${r.options?.name || "-"}`],
-  ];
-  if (g.chunks_total !== undefined) {
-    rows.push(
-      ["处理块数", `${g.chunks_processed} / ${g.chunks_total}（缓存 ${g.chunks_cached || 0}）`],
-      ["工作项", `${r.items.length} 条通过核对，丢弃 ${g.dropped?.length || 0} 条，失败 ${g.failed?.length || 0} 块`],
-      ["模型调用", `${g.calls} 次，输入 ${g.input_tokens} / 输出 ${g.output_tokens} tokens，耗时 ${g.seconds} 秒`],
-    );
-  }
-  if (g.uncovered?.length) rows.push(["未写入的要点", g.uncovered.map((i) => i.point).join("；")]);
-  $("#weekly-meta-body").innerHTML = `<table>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${escapeHtml(v)}</td></tr>`).join("")}</table>`;
-}
-
-// 点击出处标签（正文或提醒里）：显示对应工作项的原文
-$("#weekly-detail-panel").addEventListener("click", (e) => {
-  const tag = e.target.closest(".tag");
-  if (!tag || !state.weeklyReport) return;
-  const r = state.weeklyReport;
-  const sources = tag.dataset.tag.split(/[，,、]/).map((s) => s.trim()).filter(Boolean);
-  let html = "";
-  for (const src of sources) {
-    if (src === "简述") {
-      html += `<p><b>来自你写的简述</b></p><div class="quote">${escapeHtml(r.brief || "（空）")}</div>`;
-      continue;
-    }
-    const items = r.items.filter((i) => i.source === src);
-    if (/^E\d+$/.test(src)) {
-      html += `<p><b>已确认的工作记录 ${escapeHtml(src)}</b>（来自文件追踪）</p>`;
-    } else {
-      const [mid, chunk] = src.split("-");
-      html += `<p><b>${escapeHtml(materialTitle(Number(mid)))} 第 ${escapeHtml(chunk || "?")} 块</b></p>`;
-    }
-    html += items.length
-      ? items.map((i) => `<div>${escapeHtml(i.point)}</div><div class="quote">${escapeHtml(i.quote)}</div>`).join("")
-      : `<p class="muted">没有找到这一出处的工作项。</p>`;
-  }
-  $("#source-title").textContent = `出处 ${tag.dataset.tag}`;
-  $("#source-body").innerHTML = html;
-  $("#source-dialog").showModal();
-});
-
-$("#show-tags").addEventListener("change", (e) => $("#weekly-preview").classList.toggle("hide-tags", !e.target.checked));
-
-function exitEdit() {
-  $("#weekly-editor").classList.add("hidden");
-  $("#weekly-preview").classList.remove("hidden");
-}
-$("#edit-weekly").addEventListener("click", () => {
-  $("#weekly-text").value = state.weeklyReport.content;
-  $("#weekly-editor").classList.remove("hidden");
-  $("#weekly-preview").classList.add("hidden");
-});
-$("#cancel-edit").addEventListener("click", exitEdit);
-$("#save-weekly").addEventListener("click", async () => {
-  try {
-    await api(`/weekly-reports/${state.weeklyId}`, { method: "PUT", json: { content: $("#weekly-text").value } });
-    exitEdit();
-    await refreshWeekly();
-  } catch (err) { uiAlert(err.message, "出错了"); }
-});
-
-$("#delete-weekly").addEventListener("click", async () => {
-  if (!(await uiConfirm("删除后无法恢复（已写入飞书、已发出的邮件不受影响）。", { title: "删除这份周报", ok: "删除", danger: true }))) return;
-  stopPolling();
-  await api(`/weekly-reports/${state.weeklyId}`, { method: "DELETE" });
-  state.weeklyId = null;
-  showWeeklyView("empty");
-  loadWeeklyList();
-});
-
-// 打印为 PDF：只打印去掉出处标记的正文（提醒不进入导出）
-$("#print-weekly").addEventListener("click", () => {
-  $("#print-area").innerHTML = renderMarkdown(stripTags(state.weeklyReport.content));
-  window.print();
-});
-
-// ---------- 提醒（文件追踪：周报已准备好等）----------
+// ---------- 提醒（审核清单已整理好、自动开始失败等）----------
 async function loadInbox() {
   let items = [];
   try {
@@ -1285,7 +997,7 @@ async function loadInbox() {
   box.innerHTML = items.map((n) => `
     <div class="inbox-item">
       <div><b>🔔 ${escapeHtml(n.title)}</b>${escapeHtml(n.body)}</div>
-      ${n.collection_id ? `<button class="primary" data-go="${n.collection_id}" data-read-id="${n.id}">去确认</button>` : ""}
+      ${n.report_id ? `<button class="primary" data-go="${n.report_id}" data-read-id="${n.id}">去审核</button>` : ""}
       <button class="ghost" data-read="${n.id}">知道了</button>
     </div>`).join("");
 }
@@ -1295,7 +1007,7 @@ $("#inbox").addEventListener("click", async (e) => {
   if (go) {
     await api("/notifications/read", { method: "POST", json: { ids: [Number(go.dataset.readId)] } });
     loadInbox();
-    gotoPlan(go.dataset.go);
+    gotoWeek(Number(go.dataset.go));
     return;
   }
   const b = e.target.closest("[data-read]");

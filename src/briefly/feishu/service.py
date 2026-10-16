@@ -49,7 +49,7 @@ def resolve(client: FeishuClient, link: FeishuLink) -> FeishuLink:
 def fetch(client: FeishuClient, url: str) -> Fetched:
     link = resolve(client, parse_link(url))
     if link.kind == FOLDER:
-        raise ValueError("文件夹不能直接导入：可以把整个文件夹加入周报计划持续追踪，或展开后勾选其中的文档导入")
+        raise ValueError("文件夹不能直接导入：可以追踪整个文件夹，或展开后勾选其中的文档导入")
     if link.kind == DOCX:
         doc = read_document(client, link.token)
         return Fetched(DOCX, link.token, doc.title, doc.markdown, url, doc.revision_id, doc.warnings)

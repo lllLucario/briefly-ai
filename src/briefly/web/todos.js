@@ -1,9 +1,9 @@
 // 待办页：两级待办（父待办 + 子待办）、状态、材料（上传或从材料库选择，只存一份）、进展与活动、相关周报。
-// 依赖 app.js 里的 $、api、state、escapeHtml、showNotice、fmtTime、fileIcon、kindName、ui*、loadMaterials、showMaterialDetail、openWeekly，
-// 以及 plans.js 里的 plans（周报计划列表）。
+// 依赖 app.js 里的 $、api、state、escapeHtml、showNotice、fmtTime、fileIcon、ui*、loadMaterials、showMaterialDetail、pickMaterials，
+// 以及 weekly.js 里的 gotoWeek。
 "use strict";
 
-const todos = { list: [], id: null, filter: "open", detail: null, picking: new Set() };
+const todos = { list: [], id: null, filter: "open", detail: null };
 const TODO_STATUS = { todo: "未开始", doing: "进行中", done: "已完成" };
 const TRACK_STATUS = {
   present: ["追踪中", "ok"],
@@ -20,11 +20,6 @@ function shortDay(iso) {
   if (!iso) return "";
   const [, m, d] = iso.slice(0, 10).split("-");
   return `${Number(m)}月${Number(d)}日`;
-}
-
-function planName(id) {
-  const p = (typeof plans !== "undefined" ? plans.list : []).find((x) => x.id === id);
-  return p ? p.name : `周报计划 ${id}`;
 }
 
 // ---------- 左栏
@@ -68,30 +63,19 @@ $("#todo-filter").addEventListener("change", (e) => {
   loadTodos();
 });
 
-function planOptions(value) {
-  const list = typeof plans !== "undefined" ? plans.list : [];
-  return {
-    name: "plan", label: "计入哪个周报计划", type: "select", value: value ?? "",
-    options: [{ value: "", label: "所有周报计划" }, ...list.map((p) => ({ value: p.id, label: p.name }))],
-    hint: "准备这个计划的本周工作时，会整理这个待办的进展。子待办跟随父待办。",
-  };
-}
-
 $("#new-todo").addEventListener("click", async () => {
-  const list = typeof plans !== "undefined" ? plans.list : [];
   const r = await uiPrompt({
     title: "新建待办",
     fields: [
       { name: "title", label: "标题", required: true, placeholder: "如 支付改造上线" },
       { name: "description", label: "说明（可选）", type: "textarea", placeholder: "工作背景和目标" },
       { name: "due", label: "截止日期（可选）", type: "date" },
-      planOptions(list.length === 1 ? list[0].id : ""),
     ],
     ok: "创建",
   });
   if (!r) return;
   try {
-    const t = await api("/todos", { method: "POST", json: { title: r.title, description: r.description, due_date: r.due || null, collection_id: r.plan ? Number(r.plan) : null } });
+    const t = await api("/todos", { method: "POST", json: { title: r.title, description: r.description, due_date: r.due || null } });
     if (todos.filter === "archived") { todos.filter = "open"; $("#todo-filter").value = "open"; }
     todos.id = t.id;
     await loadTodos();
@@ -125,14 +109,10 @@ function renderTodo(t, timeline, reports) {
   ["#todo-add-child", "#todo-pick", "#todo-note"].forEach((s) => ($(s).disabled = archived));
   $("#todo-upload").disabled = archived;
 
-  const plan = t.parent_id
-    ? `跟随父待办（${t.plan_id ? escapeHtml(planName(t.plan_id)) : "所有周报计划"}）`
-    : t.collection_id ? escapeHtml(planName(t.collection_id)) : "所有周报计划";
   const rows = [
     ["说明", t.description ? escapeHtml(t.description) : `<span class="muted">无</span>`],
     ...(t.parent ? [["父待办", `<a data-open-todo="${t.parent.id}">${escapeHtml(t.parent.title)}</a>（${TODO_STATUS[t.parent.status]}）`]] : []),
     ["截止日期", t.due_date ? shortDay(t.due_date) + `（${t.due_date}）` : `<span class="muted">未设置</span>`],
-    ["计入周报", plan],
     ["时间", `创建 ${fmtTime(t.created_at)}${t.completed_at ? ` · 完成 ${fmtTime(t.completed_at)}` : ""}${archived ? ` · 归档 ${fmtTime(t.archived_at)}` : ""}`],
   ];
   $("#todo-info").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
@@ -154,14 +134,12 @@ function renderTodo(t, timeline, reports) {
 }
 
 function trackBadges(m) {
-  if (!m.tracking.length) {
-    const why = m.track_key ? "这篇飞书文档还没有加入周报计划追踪，可以在“材料”页开启" : "上传、粘贴的是一份副本，不追踪原文件";
+  if (!m.tracking) {
+    const why = m.track_key ? "这篇飞书文档还没有开启追踪，可以在“材料”页开启" : "上传、粘贴的是一份副本，不追踪原文件";
     return `<span class="badge" title="${escapeHtml(why)}">${m.track_key ? "未追踪" : "副本"}</span>`;
   }
-  return m.tracking.map((x) => {
-    const [text, cls] = TRACK_STATUS[x.status] || [x.status, ""];
-    return `<span class="badge ${cls}" title="${escapeHtml(x.last_error || `周报计划“${x.plan}”`)}">${text} · ${escapeHtml(x.plan)}</span>`;
-  }).join("");
+  const [text, cls] = TRACK_STATUS[m.tracking.status] || [m.tracking.status, ""];
+  return `<span class="badge ${cls}" title="${escapeHtml(m.tracking.last_error || "变化会进入周报的审核清单")}">${text}</span>`;
 }
 
 function materialRow(m, removable) {
@@ -184,7 +162,7 @@ function renderTodoMaterials(t) {
 
 const EVENT_TEXT = {
   created: () => "新建",
-  updated: (a) => `修改了${Object.keys(a.new_value || {}).map((k) => ({ title: "标题", description: "说明", due_date: "截止日期", collection_id: "周报计划", parent_id: "父待办" }[k] || k)).join("、")}`,
+  updated: (a) => `修改了${Object.keys(a.new_value || {}).map((k) => ({ title: "标题", description: "说明", due_date: "截止日期", parent_id: "父待办" }[k] || k)).join("、")}`,
   status: (a) => `状态：${TODO_STATUS[a.old_value?.status] || ""} → ${TODO_STATUS[a.new_value?.status] || ""}`,
   completed: () => "标记为已完成",
   reopened: (a) => `重新打开（${TODO_STATUS[a.new_value?.status] || ""}）`,
@@ -225,8 +203,7 @@ $("#todo-panel").addEventListener("click", async (e) => {
   }
   const openW = e.target.closest("[data-open-weekly]");
   if (openW) {
-    document.querySelector('.tabs button[data-tab="weekly"]').click();
-    return openWeekly(Number(openW.dataset.openWeekly));
+    return gotoWeek(Number(openW.dataset.openWeekly));
   }
   const unlink = e.target.closest("[data-unlink]");
   if (unlink) {
@@ -270,11 +247,9 @@ $("#todo-edit").addEventListener("click", async () => {
     { name: "description", label: "说明", type: "textarea", value: t.description },
     { name: "due", label: "截止日期", type: "date", value: t.due_date || "" },
   ];
-  if (!t.parent_id) fields.push(planOptions(t.collection_id ?? ""));
   const r = await uiPrompt({ title: "编辑待办", fields, ok: "保存" });
   if (!r) return;
   const body = { title: r.title, description: r.description, due_date: r.due || null };
-  if (!t.parent_id) body.collection_id = r.plan ? Number(r.plan) : null;
   try {
     await api(`/todos/${t.id}`, { method: "PUT", json: body });
     await loadTodos();
@@ -371,38 +346,10 @@ $("#todo-upload").addEventListener("change", async (e) => {
   loadTodos();
 });
 
-function renderPicker() {
-  const q = $("#todo-picker-q").value.trim().toLowerCase();
-  const linked = new Set(todos.detail.material_list.filter((m) => m.relation === "direct").flatMap((m) => [m.material_id, m.current_id]));
-  const rows = state.materials.filter((m) => !q || m.title.toLowerCase().includes(q));
-  $("#todo-picker-list").innerHTML = rows.length
-    ? rows.map((m) => {
-      const has = linked.has(m.id);
-      return `<label>${fileIcon(m.file_type || "paste")}<input type="checkbox" value="${m.id}" ${has || todos.picking.has(m.id) ? "checked" : ""} ${has ? "disabled" : ""}>
-        ${escapeHtml(m.title)} <span class="muted">${has ? "（已关联）" : `（${m.char_count} 字${m.source === "tracked" ? "，追踪中的最新版本" : m.feishu ? "，飞书" : ""}）`}</span></label>`;
-    }).join("")
-    : `<p class="muted">${state.materials.length ? "没有匹配的材料" : "材料库是空的，可以直接上传文件"}</p>`;
-  $("#todo-picker-count").textContent = todos.picking.size ? `已选 ${todos.picking.size} 份` : "";
-}
-
 $("#todo-pick").addEventListener("click", async () => {
-  await loadMaterials();
-  todos.picking.clear();
-  $("#todo-picker-q").value = "";
-  renderPicker();
-  $("#todo-picker").showModal();
-});
-$("#todo-picker-q").addEventListener("input", renderPicker);
-$("#todo-picker-list").addEventListener("change", (e) => {
-  const cb = e.target.closest("input[type=checkbox]");
-  if (!cb) return;
-  cb.checked ? todos.picking.add(Number(cb.value)) : todos.picking.delete(Number(cb.value));
-  $("#todo-picker-count").textContent = todos.picking.size ? `已选 ${todos.picking.size} 份` : "";
-});
-$("#todo-picker-done").addEventListener("click", async () => {
-  const ids = [...todos.picking];
-  $("#todo-picker").close();
-  if (!ids.length) return;
+  const linked = todos.detail.material_list.filter((m) => m.relation === "direct").flatMap((m) => [m.material_id, m.current_id]);
+  const ids = await pickMaterials({ title: "从材料库选择", ok: "关联", exclude: linked });
+  if (!ids?.length) return;
   try {
     for (const id of ids) await api(`/todos/${todos.id}/materials`, { method: "POST", json: { material_id: id } });
     todoMsg(`已关联 ${ids.length} 份材料（没有复制，材料库里仍是同一份）。`);
