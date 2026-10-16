@@ -244,16 +244,23 @@ class FeishuClient:
             attempt += 1
             self.sleep(_backoff(attempt, r))
 
-    def paginate(self, method: str, path: str, *, params: dict | None = None, json: dict | None = None, limit: int = 100) -> list[dict]:
-        """按 page_token 翻页，合并各页的 items。limit 是最多翻几页（防止异常数据导致死循环）。翻页都是读取，可重试。"""
+    def paginate(
+        self, method: str, path: str, *, params: dict | None = None, json: dict | None = None, limit: int = 100,
+        items_key: str = "items", token_key: str = "page_token",
+    ) -> list[dict]:
+        """按页码标记翻页，合并各页的列表。limit 是最多翻几页（防止异常数据导致死循环）。翻页都是读取，可重试。
+
+        大多数接口列表在 items、下一页标记在 page_token；云空间文件列表是 files 和 next_page_token（2026-10-16 实测，
+        之前按 items 读，子文件夹全显示为空）。请求时下一页的参数名都是 page_token。
+        """
         items: list[dict] = []
         params = dict(params or {})
         for _ in range(limit):
             data = self.request(method, path, params=params, json=json, idempotent=True)
-            items += data.get("items") or []
-            if not data.get("has_more") or not data.get("page_token"):
+            items += data.get(items_key) or []
+            if not data.get("has_more") or not data.get(token_key):
                 return items
-            params["page_token"] = data["page_token"]
+            params["page_token"] = data[token_key]
         raise FeishuError(f"分页超过 {limit} 页，内容过多，未读取完")
 
 

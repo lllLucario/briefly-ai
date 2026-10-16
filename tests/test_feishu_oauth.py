@@ -254,3 +254,17 @@ def test_user_scope_error_says_reconnect(tmp_path):
         with_user(app_client, tokens).get(f"{API}/minutes/v1/minutes/obcn1234567890/x")  # 用户、应用都没权限：报应用的错误
     with fake.client() as app_client, pytest.raises(Exception, match="重新连接飞书"):
         app_client.as_user(tokens).get(f"{API}/minutes/v1/minutes/obcn1234567890")
+
+
+def test_list_subfolder_uses_files_and_next_page_token():
+    """实测：云空间文件列表是 files + next_page_token（不是通用的 items + page_token）；按 items 读会把子文件夹显示成空的。"""
+    pages = [
+        {"files": [{"token": "a1", "name": "需求.docx", "type": "docx"}], "has_more": True, "next_page_token": "p2"},
+        {"files": [{"token": "a2", "name": "子目录", "type": "folder"}], "has_more": False},
+    ]
+    fake = FakeFeishu({("GET", f"{API}/drive/v1/files"): pages})
+    with fake.client() as client:
+        items = list_folder(client, "fldA")
+    assert [x.name for x in items] == ["子目录", "需求.docx"]
+    assert fake.requests[0].url.params["folder_token"] == "fldA"
+    assert fake.requests[1].url.params["page_token"] == "p2"

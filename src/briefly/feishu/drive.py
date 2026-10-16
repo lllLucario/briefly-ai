@@ -47,9 +47,9 @@ def list_folder(client: FeishuClient, folder_token: str = "") -> list[DriveItem]
     """列出文件夹内容；不传 folder_token 时是“我的空间”根目录（飞书规定根目录不分页）。快捷方式换成指向的文件。"""
     params = {"page_size": 200, "order_by": "EditedTime", "direction": "DESC"}
     if folder_token:
-        files = client.paginate("GET", "/open-apis/drive/v1/files", params={**params, "folder_token": folder_token})
-    else:
-        files = client.get("/open-apis/drive/v1/files", **params).get("files") or []
+        params["folder_token"] = folder_token
+    # 返回的列表字段是 files、下一页标记是 next_page_token（不是通用的 items / page_token）
+    files = client.paginate("GET", "/open-apis/drive/v1/files", params=params, items_key="files", token_key="next_page_token")
     items = []
     for f in files:
         kind, token = f.get("type", ""), f.get("token", "")
