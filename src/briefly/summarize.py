@@ -113,6 +113,7 @@ class WorkItem:
     attribute: str = ""
     value: str = ""
     aspect: str = ""  # 属性的具体含义（上线 / 提测 / 交付……），避免把不同的日期当成同一属性
+    group: str = ""  # 所属待办（父待办 › 子待办），周报按父待办分组；不是工作内容本身
 
     @property
     def verified_risk(self) -> bool:
@@ -331,6 +332,8 @@ def format_items(items: list[WorkItem]) -> str:
             line += f"\n  （原文中还写了 {'、'.join(lost[i.fact_id])}，概括里没有，写的时候请按原文写全）"
         if i.verified_risk and i.risk_reason:
             line += f"\n  风险依据：{i.risk_reason}"
+        if i.group:
+            line += f"\n  所属待办：{i.group}"
         key = _norm(i.quote)
         if key in first_with_quote:
             line += f"\n  （与 #{first_with_quote[key]} 出自同一句原文，但是另一项内容，同样要写进周报，按自己的类别放进对应栏目）"

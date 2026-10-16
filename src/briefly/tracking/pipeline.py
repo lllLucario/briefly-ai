@@ -35,6 +35,7 @@ class PrepareInfo:
     scan: ScanResult | None
     build: BuildResult
     notes: list[str]
+    todos: "TodoBuildResult | None" = None  # 待办活动生成的记录（todos.evidence）
 
 
 def get_prep(svc, ref: str | int, start: date | None = None, end: date | None = None, create: bool = True) -> ReportPrep:
@@ -84,20 +85,24 @@ def prepare(
         if scan_result.stats.get("unstable"):
             notes.append(f"{len(scan_result.stats['unstable'])} 个文件可能正在写入，本次未采集")
     build = EvidenceBuilder(svc, model_factory).build(prep)
+    # 待办：周期内的活动生成记录（不调用模型），文件记录关联到直接材料所属的待办
+    from ..todos.evidence import TodoEvidence
+
+    todos = TodoEvidence(svc.engine, svc.store).build(prep)
     session = sessionmaker(svc.engine, expire_on_commit=False)
     with session() as s:
         values: dict = {}
-        if build.created and prep.status != DRAFT:
+        if (build.created or todos.created) and prep.status != DRAFT:
             values["status"] = DRAFT  # 确认之后又有新变化：清单回到草稿，需要重新确认
             notes.append("清单确认后又有新的变化，已回到待确认状态")
-            s.add(EvidenceReview(prep_id=prep.id, action="reopen", after={"new": build.created}, note="有新的候选记录"))
+            s.add(EvidenceReview(prep_id=prep.id, action="reopen", after={"new": build.created + todos.created}, note="有新的候选记录"))
         if scan_result:
             values["final_scan_id"] = scan_result.run_id
         values["notes"] = {"messages": notes, "updated_at": datetime.now().isoformat(timespec="minutes")}
         s.execute(update(ReportPrep).where(ReportPrep.id == prep.id).values(**values))
         s.commit()
         prep = s.get(ReportPrep, prep.id)
-    return prep, PrepareInfo(scan_result, build, notes)
+    return prep, PrepareInfo(scan_result, build, notes, todos)
 
 
 def confirmed_evidence(svc, prep_id: int) -> list[WorkEvidence]:
@@ -136,6 +141,10 @@ def generate_report(
         ).all()
     if not evidence and not brief.strip() and not material_ids:
         raise ValueError("没有已确认的工作记录，也没有简述或素材，无法生成周报")
+    from ..todos.evidence import TodoEvidence
+
+    # 关联待办的快照写进周报：旧周报按当时的待办标题、状态、层级显示，写作时按父待办分组
+    todo_refs = TodoEvidence(svc.engine, svc.store).report_refs([e.id for e in evidence])
     report = weekly.create(
         material_ids or [],
         brief,
@@ -144,6 +153,7 @@ def generate_report(
         audience,
         name,
         evidence_ids=[e.id for e in evidence],
+        todo_refs=todo_refs,
     )
     weekly.generate(report.id)
     with session() as s:

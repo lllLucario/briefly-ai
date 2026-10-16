@@ -185,6 +185,17 @@ def register(app: FastAPI) -> None:
         svc().get(todo_id)
         return [activity_out(a) for a in svc().activities([todo_id], *window(start, end))]
 
+    @app.get("/todos/{todo_id}/reports", tags=[docs.TODOS], summary="关联了这个待办的周报（按周报里保存的快照）")
+    def reports(todo_id: int):
+        from .evidence import reports_of_todo
+
+        svc().get(todo_id)
+        return reports_of_todo(app.state.store.engine, todo_id)
+
+    @app.get("/weekly-reports/{report_id}/todos", tags=[docs.TODOS], summary="周报关联的待办（生成时的快照，不随待办变化）")
+    def report_todos(report_id: int):
+        return app.state.weekly.get(report_id).options.get("todo_refs", [])
+
     @app.get("/todos/{todo_id}/timeline", tags=[docs.TODOS], summary="时间线：活动 + 关联材料的文件变化（区分直接材料与父待办共享材料）")
     def timeline(todo_id: int, start: date | None = None, end: date | None = None):
         return svc().timeline(todo_id, *window(start, end))

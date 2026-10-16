@@ -264,6 +264,9 @@ class ReviewService:
             s.execute(update(ReportPrep).where(ReportPrep.id == prep_id).values(status=CHECKLIST_CONFIRMED, confirmed_at=datetime.now()))
             s.add(EvidenceReview(prep_id=prep_id, action="confirm_checklist", after={"confirmed": [e.id for e in confirmed]}, note=f"确认清单：{len(confirmed)} 条工作记录"))
             s.commit()
+        from ..todos.evidence import TodoEvidence
+
+        TodoEvidence(self.svc.engine, self.svc.store).freeze(prep_id)  # 冻结关联待办的审核快照
         return self.prep(prep_id)
 
     # ---- 内部

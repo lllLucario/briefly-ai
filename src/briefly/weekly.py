@@ -95,7 +95,7 @@ def section_lines(text: str, heading: str) -> list[str]:
 
 
 # 给写作模型看的说明（format_items 附在工作项后面）：如果出现在周报正文里，说明模型把说明当成了内容
-HINT_PHRASES = ("原文中还写了", "概括里没有", "出自同一句原文", "风险依据", "待复核", "同样要写进周报")
+HINT_PHRASES = ("原文中还写了", "概括里没有", "出自同一句原文", "风险依据", "待复核", "同样要写进周报", "所属待办")
 
 
 def citing_lines(body: str) -> dict[int, list[str]]:
@@ -239,10 +239,13 @@ class WeeklyService:
         audience: str | None = None,
         name: str | None = None,
         evidence_ids: list[int] | None = None,
+        todo_refs: list[dict] | None = None,
     ) -> WeeklyReport:
         """登记一份待生成的周报；真正的生成由 generate 在后台执行。
 
         evidence_ids：文件追踪中用户已确认的工作记录，存在 options 里（不改表结构）。
+        todo_refs：这些记录关联的待办在审核时的快照（todos.evidence.report_refs），写作时按所属待办分组，
+        也是历史周报显示关联待办的依据（不读当前的待办）。
         """
         evidence_ids = list(dict.fromkeys(evidence_ids or []))
         if not material_ids and not brief.strip() and not evidence_ids:
@@ -262,7 +265,7 @@ class WeeklyService:
             period_start=start,
             period_end=end,
             brief=brief.strip(),
-            options={k: v for k, v in {"audience": audience, "name": name, "evidence_ids": evidence_ids}.items() if v},
+            options={k: v for k, v in {"audience": audience, "name": name, "evidence_ids": evidence_ids, "todo_refs": todo_refs}.items() if v},
             material_ids=list(dict.fromkeys(material_ids)),
         )
         with self._session() as s:
@@ -296,7 +299,7 @@ class WeeklyService:
             warnings += [f"《{material.title}》：{w}" for w in material.parse_report.get("warnings", [])]
 
         period = f"{report.period_start.isoformat()} 至 {report.period_end.isoformat()}"
-        evidence_items = self._evidence_items(report.options.get("evidence_ids", []), warnings)
+        evidence_items = self._evidence_items(report.options.get("evidence_ids", []), warnings, report.options.get("todo_refs", []))
         extraction = extract_items(model, sources, focus=report.brief, period=period, cache=self.cache, purpose=WEEKLY_PURPOSE)
         extraction.items[:0] = evidence_items  # 已确认的工作记录排在前面，与提取的工作项一起合成
         for failed in extraction.failed:
@@ -365,12 +368,12 @@ class WeeklyService:
         if not synthesis.coverage_checked:
             warnings.append("周报没有按要求标注出处编号，未能核对是否漏写了素材中的内容")
 
-        evidence = " ".join([report.brief, period, *(f"{i.point} {i.quote}" for i in extraction.items)])
+        evidence = " ".join([report.brief, period, *(f"{i.point} {i.quote} {i.group}" for i in extraction.items)])
         numbers = unverified_numbers(content, evidence)
         if numbers:
             warnings.append(f"以下数字未在素材或简述中找到原文，请核对：{'、'.join(numbers)}")
         # 内部处理信息（块号等）混进正文：只提示人工核对，不删除（原文可能真有这样的话），不另调模型审核
-        originals = [report.brief, *(s.content for s in sources), *(f"{i.point} {i.quote}" for i in extraction.items)]
+        originals = [report.brief, *(s.content for s in sources), *(f"{i.point} {i.quote} {i.group}" for i in extraction.items)]
         terms = find_internal_terms(strip_source_tags(content), originals)
         if terms:
             warnings.append(f"周报正文中出现了程序内部的处理信息：{'、'.join(terms)}，请核对后删除")
@@ -423,11 +426,17 @@ class WeeklyService:
             rows = s.scalars(select(WorkEvidence).where(WorkEvidence.id.in_(ids), WorkEvidence.review_status == CONFIRMED))
             return sorted(rows, key=lambda e: ids.index(e.id))
 
-    def _evidence_items(self, ids: list[int], warnings: list[str]) -> list[WorkItem]:
+    def _evidence_items(self, ids: list[int], warnings: list[str], todo_refs: list[dict] | None = None) -> list[WorkItem]:
         """已确认的工作记录 → 工作项：要点是标题和描述（用户改过的以用户为准），原文是描述。
 
         不附来源文件名：文件名不是工作内容，附上会被当成要写进周报的信息（出处已由〔E编号〕标注）。
+        关联了待办的记录带所属待办（父待办 › 子待办），写作时按父待办分组；一条记录关联多个待办时都列出。
         """
+        groups: dict[int, list[str]] = {}
+        for ref in todo_refs or []:
+            groups.setdefault(ref["evidence_id"], [])
+            if ref["group"] not in groups[ref["evidence_id"]]:
+                groups[ref["evidence_id"]].append(ref["group"])
         rows = self._evidence(ids)
         found = {e.id for e in rows}
         warnings += [f"工作记录 E{i} 已被删除或撤销确认，未纳入" for i in ids if i not in found]
@@ -436,7 +445,7 @@ class WeeklyService:
             point = f"{e.title}：{e.description}" if e.description else e.title
             quote = e.description or e.title
             # 用户明确确认过的工作都要写进周报：按高重要度处理，漏写会触发重写
-            items.append(WorkItem(e.category, point, quote, f"E{e.id}", importance="high"))
+            items.append(WorkItem(e.category, point, quote, f"E{e.id}", importance="high", group="、".join(groups.get(e.id, []))))
         return items
 
     def list_reports(self) -> list[WeeklyReport]:

@@ -74,6 +74,14 @@ class ReportIn(BaseModel):
     material_ids: list[int] = []  # 额外勾选的材料，与已确认的记录一起写进周报
 
 
+class TodoStatusIn(BaseModel):
+    status: str | None  # 本次报告里这个待办的状态（todo / doing / done）；为空恢复系统判断
+
+
+class SyncIn(BaseModel):
+    confirm: bool = False  # 用户明确同意把本次状态同步到待办
+
+
 class SettingsIn(BaseModel):
     audience: str = ""  # 默认读者
     author: str = ""  # 默认署名（写在周报上的名字）
@@ -91,7 +99,7 @@ def _scan(result) -> dict | None:
     return None if result is None else {"run_id": result.run_id, "status": result.status, "stats": result.stats}
 
 
-def _evidence(e: WorkEvidence) -> dict:
+def _evidence(e: WorkEvidence, todos: dict[int, list[dict]] | None = None) -> dict:
     return {
         "id": e.id,
         "title": e.title,
@@ -105,10 +113,16 @@ def _evidence(e: WorkEvidence) -> dict:
         "flags": e.flags,
         "user_edited": e.user_edited,
         "has_update": e.has_update,
+        "todos": (todos or {}).get(e.id, []),  # 关联的待办：生成时的快照、现在的状态、本次报告状态、是否已同步
     }
 
 
 def _prep(prep: ReportPrep, review: ReviewService) -> dict:
+    from ..todos.evidence import TodoEvidence
+
+    bridge = TodoEvidence(review.svc.engine, review.svc.store)
+    bridge.ensure_links(prep)  # 合并、拆分出的记录继承原记录关联的待办（幂等）
+    todos = bridge.links_for_prep(prep.id)
     items = review.items(prep.id)
     counts = {s: sum(1 for e in items if e.review_status == s) for s in (PENDING, CONFIRMED, REJECTED)}
     return {
@@ -120,7 +134,8 @@ def _prep(prep: ReportPrep, review: ReviewService) -> dict:
         "weekly_report_id": prep.weekly_report_id,
         "notes": (prep.notes or {}).get("messages", []),
         "counts": counts,
-        "items": [_evidence(e) for e in items],
+        "items": [_evidence(e, todos) for e in items],
+        "todo_material_ids": bridge.suggested_materials(prep),  # 本周有记录的待办关联的材料副本，建议加选
     }
 
 
@@ -291,7 +306,13 @@ def register(app: FastAPI, model_factory: Callable[[], BaseChatModel], feishu_fa
     def run_prepare(ref: str, body: PeriodIn):
         prep, info = prepare(svc(), ref, body.start, body.end, scan=body.scan, model_factory=model_factory)
         out = _prep(prep, review())
-        out["build"] = {"created": len(info.build.created), "unchanged": len(info.build.unchanged), "calls": info.build.calls}
+        todo_build = info.todos
+        out["build"] = {
+            "created": len(info.build.created) + len(todo_build.created),
+            "unchanged": len(info.build.unchanged) + len(todo_build.unchanged),
+            "calls": info.build.calls,
+            "from_todos": len(todo_build.created),
+        }
         out["scan"] = _scan(info.scan)
         out["notes"] = info.notes
         return out
@@ -338,6 +359,24 @@ def register(app: FastAPI, model_factory: Callable[[], BaseChatModel], feishu_fa
     @app.post("/tracking/preps/{prep_id}/evidence/{evidence_id}/regenerate", tags=[docs.REVIEW], summary="重新生成描述（force 覆盖你改过的描述）")
     def regenerate(prep_id: int, evidence_id: int, force: bool = False):
         return _evidence(review().regenerate(prep_id, evidence_id, force=force))
+
+    @app.put("/tracking/preps/{prep_id}/evidence/{evidence_id}/todos/{todo_id}", tags=[docs.REVIEW], summary="本次报告里关联待办的状态（只影响本次记录，不改待办）")
+    def todo_report_status(prep_id: int, evidence_id: int, todo_id: int, body: TodoStatusIn):
+        from ..todos.evidence import TodoEvidence
+
+        r = review()
+        TodoEvidence(svc().engine, svc().store).set_report_status(r, prep_id, evidence_id, todo_id, body.status)
+        return _prep(r.prep(prep_id), r)
+
+    @app.post("/tracking/preps/{prep_id}/evidence/{evidence_id}/todos/{todo_id}/sync", tags=[docs.REVIEW], summary="把本次报告的状态同步到待办（必须 confirm=true，否则 409 说明会改什么）")
+    def todo_sync(prep_id: int, evidence_id: int, todo_id: int, body: SyncIn):
+        from ..todos.evidence import TodoEvidence
+
+        r = review()
+        _, notices = TodoEvidence(svc().engine, svc().store).sync_status(prep_id, evidence_id, todo_id, confirm=body.confirm)
+        out = _prep(r.prep(prep_id), r)
+        out["notices"] = notices
+        return out
 
     @app.get("/tracking/evidence/{evidence_id}/sources", tags=[docs.REVIEW], summary="一条记录的依据：文件、版本、位置、原文、变化")
     def evidence_sources(evidence_id: int):
