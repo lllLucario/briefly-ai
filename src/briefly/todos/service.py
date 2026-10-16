@@ -368,11 +368,11 @@ class TodoService:
             s.add(TodoActivity(todo_id=todo_id, event_type=MATERIAL_UNLINKED, material_id=material_id, old_value={"title": material.title if material else ""}))
             s.commit()
 
-    def todos_of_material(self, material_id: int) -> list[Todo]:
-        """直接关联了这份材料（或同一个追踪文件的任一版本）的待办，含已归档的。"""
+    def todos_of_material(self, material_id: int, same_file: bool = True) -> list[Todo]:
+        """直接关联了这份材料的待办，含已归档的。same_file：同一个追踪文件 / 飞书文档的其他版本也算。"""
         with self._session() as s:
             material = s.get(Material, material_id)
-            key = track_key_of(s, material) if material else None
+            key = track_key_of(s, material) if material and same_file else None
             ids = s.scalars(select(TodoMaterial.todo_id).where(_same_material(material_id, key))).all()
             return list(s.scalars(select(Todo).where(Todo.id.in_(ids)).order_by(Todo.id)))
 

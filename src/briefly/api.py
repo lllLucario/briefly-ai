@@ -429,10 +429,19 @@ def create_app(
             **summary(store, m).model_dump(), content=m.content, sections=sections, parse_report=m.parse_report
         )
 
-    @app.delete("/materials/{material_id}", tags=[docs.MATERIALS], status_code=204, summary="删除材料")
-    def delete_material(material_id: int, store: Store):
+    @app.delete("/materials/{material_id}", tags=[docs.MATERIALS], status_code=204, summary="删除材料（被待办关联时需 force）")
+    def delete_material(material_id: int, store: Store, force: bool = False):
+        from .todos.service import ConfirmationRequired, TodoService
+
         if store.get(material_id).source == TRACKED:
             raise ValueError("这是追踪中文档的最新版本，随追踪自动更新；不需要了请停止追踪")
+        todos = TodoService(store.engine, store)
+        linked = todos.todos_of_material(material_id, same_file=False)
+        if linked and not force:
+            names = "、".join(f"「{t.title}」" for t in linked[:5])
+            raise ConfirmationRequired(f"这份材料关联在 {len(linked)} 个待办上（{names}）。删除后这些待办里也看不到它了，确定删除吗？")
+        if linked:
+            todos.forget_material(material_id)
         store.delete(material_id)
 
     def weekly_out(r: WeeklyReport) -> WeeklyOut:
@@ -509,11 +518,13 @@ def create_app(
         return response
 
     from .feishu.api import register as register_feishu
+    from .todos.api import register as register_todos
     from .tracking.api import register as register_tracking
 
     register_feishu(app, feishu_factory, feishu_tokens)  # 飞书：用户授权、云空间、导入链接、周报写入飞书文档
     # 文件追踪：集合、扫描、定时、周报准备与审核；飞书文档连接了账号时先用用户身份读取
     register_tracking(app, model_factory, app.state.feishu_reader)
+    register_todos(app)  # 待办：父子结构、材料关联、活动；周报联动在周报计划的本周准备里
 
     @app.get("/", include_in_schema=False)
     def index():
