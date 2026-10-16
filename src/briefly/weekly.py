@@ -430,13 +430,16 @@ class WeeklyService:
         """已确认的工作记录 → 工作项：要点是标题和描述（用户改过的以用户为准），原文是描述。
 
         不附来源文件名：文件名不是工作内容，附上会被当成要写进周报的信息（出处已由〔E编号〕标注）。
-        关联了待办的记录带所属待办（父待办 › 子待办），写作时按父待办分组；一条记录关联多个待办时都列出。
+        关联了待办的记录带所属的顶级待办（子待办的记录写父待办），并把同一个父待办的记录排在一起：
+        模型基本按给出的顺序写，靠提示词让它重新排序不可靠（实测 W9）。一条记录关联多个待办时都列出。
         """
         groups: dict[int, list[str]] = {}
         for ref in todo_refs or []:
+            todo = ref.get("todo") or {}
+            top = todo.get("parent_title") or todo.get("title") or ref["group"]
             groups.setdefault(ref["evidence_id"], [])
-            if ref["group"] not in groups[ref["evidence_id"]]:
-                groups[ref["evidence_id"]].append(ref["group"])
+            if top not in groups[ref["evidence_id"]]:
+                groups[ref["evidence_id"]].append(top)
         rows = self._evidence(ids)
         found = {e.id for e in rows}
         warnings += [f"工作记录 E{i} 已被删除或撤销确认，未纳入" for i in ids if i not in found]
@@ -446,7 +449,10 @@ class WeeklyService:
             quote = e.description or e.title
             # 用户明确确认过的工作都要写进周报：按高重要度处理，漏写会触发重写
             items.append(WorkItem(e.category, point, quote, f"E{e.id}", importance="high", group="、".join(groups.get(e.id, []))))
-        return items
+        first: dict[str, int] = {}
+        for n, item in enumerate(items):
+            first.setdefault(item.group or f"#{n}", n)
+        return [item for _, item in sorted(enumerate(items), key=lambda x: (first[x[1].group or f"#{x[0]}"], x[0]))]
 
     def list_reports(self) -> list[WeeklyReport]:
         with self._session() as s:

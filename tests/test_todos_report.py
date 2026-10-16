@@ -73,8 +73,10 @@ def test_parent_and_children_become_checklist_items(ctx):
     report = generate_report(env.svc, WeeklyService(env.store, lambda: model), prep.id)
     assert report.status == "done", report.error
     groups = {i["point"].split("：")[0]: i["group"] for i in report.items}
-    assert groups == {"支付改造": "支付改造", "接口联调": "支付改造 › 接口联调", "压测": "支付改造 › 压测"}
-    assert "所属待办：支付改造 › 压测" in str(model.calls[-1])  # 写作时看得到分组
+    assert groups == {"支付改造": "支付改造", "接口联调": "支付改造", "压测": "支付改造"}  # 写作按顶级待办分组
+    assert "所属待办：支付改造" in str(model.calls[-1])
+    refs = {r["todo"]["title"]: r["group"] for r in report.options["todo_refs"]}
+    assert refs["压测"] == "支付改造 › 压测"  # 显示用的完整路径仍保留
 
 
 def test_rerun_is_idempotent_and_reviewed_items_get_increments(ctx):
@@ -388,3 +390,21 @@ def test_imported_feishu_doc_shows_existing_tracking_without_new_tracking(feishu
     svc.scan(c.id)
     statuses = {x.title.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]: x.tracking[0]["status"] for x in todos.materials(t.id)}
     assert statuses["方案.md"] == "missing"
+
+
+def test_items_of_the_same_parent_are_written_next_to_each_other(ctx):
+    """模型基本按给出的顺序写：同一个父待办的记录在交给模型前排在一起，不被别的工作隔开。"""
+    env, c, todos, model = ctx
+    a_parent, b = todos.create("支付改造"), todos.create("数据看板")
+    backdate(env, a_parent.id), backdate(env, b.id)
+    first = todos.create("接口联调", parent_id=a_parent.id)
+    todos.add_note(b.id, "完成订单看板前端")
+    second = todos.create("压测", parent_id=a_parent.id)
+    todos.add_note(first.id, "完成登录接口")
+    todos.add_note(second.id, "压测环境搭好")
+    prep, _, review, items = run_prepare(env, c, model)
+    review.confirm(prep.id, [e.id for e in items])
+    review.confirm_checklist(prep.id)
+    report = generate_report(env.svc, WeeklyService(env.store, lambda: model), prep.id)
+    order = [i["point"].split("：")[0] for i in report.items]
+    assert abs(order.index("接口联调") - order.index("压测")) == 1, order

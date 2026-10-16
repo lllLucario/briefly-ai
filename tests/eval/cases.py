@@ -127,6 +127,19 @@ def report_has(*parts: str) -> Check:
     return Check(c.name, lambda r: c.fn(r.content))
 
 
+def grouped(head: str, together: tuple[str, ...], other: str) -> Check:
+    """某栏目里，together 中各词所在的行是相邻的（中间没有含 other 的行）：同一个父待办的工作写在一起。"""
+
+    def check(r) -> bool:
+        lines = [x for x in _section(r.content, head).splitlines() if x.strip()]
+        hits = [i for i, x in enumerate(lines) if any(w in x for w in together)]
+        if not hits:
+            return False
+        return not any(other in lines[i] and not any(w in lines[i] for w in together) for i in range(min(hits), max(hits) + 1))
+
+    return Check(f"{head}里 {'/'.join(together)} 写在一起", check)
+
+
 def report_lacks(*parts: str) -> Check:
     c = lacks(*parts)
     return Check(c.name, lambda r: c.fn(r.content))
@@ -214,7 +227,7 @@ class Case:
     group: str
     title: str
     turns: list[Turn] = field(default_factory=list)  # 对话用例
-    weekly: dict | None = None  # 周报用例：materials、brief、period_start、period_end
+    weekly: dict | None = None  # 周报用例：materials、brief、period_start、period_end；evidence：已确认的工作记录（含所属待办）
     checks: list[Check] = field(default_factory=list)  # 周报用例的检查
     requires: tuple[str, ...] = ()  # 需要的本地文件（相对仓库根目录），缺失时跳过
 
@@ -296,6 +309,23 @@ CASES: list[Case] = [
         "W8", "周报", "简述只提一件事：简述以外的重要工作仍要写进周报",
         weekly={"materials": ["week_log.md"], "brief": "这周主要做支付改造", **WEEK},
         checks=[report_done(), report_has("1.8", "200"), report_has("32 条", "游标分页"), no_unverified_numbers()],
+    ),
+    Case(
+        "W9", "周报", "待办记录按父待办分组：同一父待办的工作写在一起，不写“所属待办”字样",
+        weekly={
+            "materials": [], "brief": "",
+            "evidence": [
+                {"group": "支付改造 › 接口联调", "title": "接口联调", "description": "开始推进；进展：完成登录接口和退款接口联调。", "category": "in_progress"},
+                {"group": "数据看板", "title": "数据看板", "description": "进展：完成订单看板前端，接口待联调。", "category": "in_progress"},
+                {"group": "支付改造 › 压测", "title": "压测", "description": "进展：压测环境搭好，首轮压测 QPS 达到 1200。", "category": "in_progress"},
+                {"group": "支付改造", "title": "支付改造", "description": "进展：与财务确认 10 月 28 日上线。", "category": "plan"},
+            ],
+            **WEEK,
+        },
+        checks=[
+            report_done(), report_has("登录接口", "退款接口", "1200", "订单看板", "10 月 28 日"), report_lacks("所属待办"),
+            grouped("【进行中】", ("登录接口", "退款接口", "1200", "压测"), "看板"), no_unverified_numbers(),
+        ],
     ),
     Case(
         "W4", "周报", "只有简述、没有素材",

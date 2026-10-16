@@ -31,6 +31,34 @@ def _load(store: MaterialStore, name: str) -> int:
     return material.id
 
 
+def _evidence(engine, spec: dict) -> tuple[list[int], list[dict]]:
+    """周报用例里已确认的工作记录（如来自待办）：直接写进库，并附所属待办（与周报计划生成周报时相同的格式）。"""
+    from sqlalchemy.orm import Session
+
+    from briefly.tracking.models import CONFIRMED, ReportPrep, TrackingCollection, WorkEvidence
+
+    rows = spec.get("evidence") or []
+    if not rows:
+        return [], []
+    with Session(engine) as s:
+        plan = TrackingCollection(name="实测")
+        s.add(plan)
+        s.flush()
+        prep = ReportPrep(collection_id=plan.id, period_start=date.fromisoformat(spec["period_start"]), period_end=date.fromisoformat(spec["period_end"]))
+        s.add(prep)
+        s.flush()
+        items = [WorkEvidence(prep_id=prep.id, title=x["title"], description=x["description"], category=x["category"], origin="todo", review_status=CONFIRMED) for x in rows]
+        s.add_all(items)
+        s.commit()
+        ids = [e.id for e in items]
+    refs = []
+    for i, x in zip(ids, rows):
+        if x.get("group"):
+            *parent, title = x["group"].split(" › ")
+            refs.append({"evidence_id": i, "group": x["group"], "todo": {"title": title, "parent_title": parent[0] if parent else None}})
+    return ids, refs
+
+
 def run_once(case: Case, model_factory) -> dict:
     """跑一次用例，返回输出和每项检查的结果。出错也记录下来，不中断其他用例。"""
     engine = create_db_engine("sqlite://")
@@ -42,8 +70,10 @@ def run_once(case: Case, model_factory) -> dict:
             spec = case.weekly
             weekly = WeeklyService(store, model_factory)
             ids = [_load(store, n) for n in spec["materials"]]
+            evidence_ids, todo_refs = _evidence(engine, spec)
             report = weekly.create(
-                ids, spec["brief"], date.fromisoformat(spec["period_start"]), date.fromisoformat(spec["period_end"])
+                ids, spec["brief"], date.fromisoformat(spec["period_start"]), date.fromisoformat(spec["period_end"]),
+                evidence_ids=evidence_ids, todo_refs=todo_refs,
             )
             weekly.generate(report.id)
             report = weekly.get(report.id)
