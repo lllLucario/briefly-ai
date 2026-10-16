@@ -31,6 +31,7 @@ class CollectionIn(BaseModel):
 class PathsIn(BaseModel):
     paths: list[str]
     recursive: bool = True
+    names: dict[str, str] = {}  # 链接 → 显示名（网页从云空间列表里已知，如飞书文件夹的名称）
 
 
 class ScheduleIn(BaseModel):
@@ -197,7 +198,7 @@ def register(app: FastAPI, model_factory: Callable[[], BaseChatModel], feishu_fa
 
     @app.post("/tracking/collections/{ref}/sources", tags=[docs.TRACKING], summary="添加文件或文件夹（可多个），立即采集基线")
     def add_sources(ref: str, body: PathsIn):
-        result = svc().add_paths(ref, body.paths, recursive=body.recursive)
+        result = svc().add_paths(ref, body.paths, recursive=body.recursive, names=body.names)
         folders = svc().feishu_folders(ref)
         return {"added": [_source(x, folders) for x in result.added], "messages": result.messages, "scan": _scan(result.scan)}
 

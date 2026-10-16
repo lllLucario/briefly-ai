@@ -395,10 +395,11 @@ function fileRow(f, depth, name) {
 }
 
 // 文件夹下的文件按相对路径建成树：{dirs: {名称: 子树}, files: [[名称, 文件]]}
-function buildTree(root, files) {
+// 本地文件夹用文件路径减去文件夹路径；飞书文件夹用成员记录里的相对路径（子文件夹/标题）
+function buildTree(root, files, relOf = (f) => norm(f.path).slice(norm(root).length + 1)) {
   const tree = { dirs: {}, files: [] };
   for (const f of files) {
-    const parts = norm(f.path).slice(norm(root).length + 1).split("/");
+    const parts = relOf(f).split("/");
     let node = tree;
     for (const dir of parts.slice(0, -1)) node = node.dirs[dir] ??= { dirs: {}, files: [] };
     node.files.push([parts[parts.length - 1], f]);
@@ -430,24 +431,31 @@ async function loadFiles() {
   ]);
   const used = new Set();
   const blocks = sources.map((s) => {
-    const own = s.kind === "folder"
-      ? files.filter((f) => lower(f.path).startsWith(lower(s.path) + "/"))
-      : files.filter((f) => lower(f.path) === lower(s.path) || lower(f.path).startsWith(lower(s.path) + "/"));
+    const inFeishuFolder = (f) => (f.folders || []).find((m) => m.source_id === s.id);
+    const own = s.kind === "folder" ? files.filter((f) => lower(f.path).startsWith(lower(s.path) + "/"))
+      : s.kind === "feishu_folder" ? files.filter(inFeishuFolder)
+        : files.filter((f) => lower(f.path) === lower(s.path) || lower(f.path).startsWith(lower(s.path) + "/"));
     own.forEach((f) => used.add(f.id));
     const paused = s.status === "paused" ? `<span class="badge">已暂停</span>` : "";
     const error = s.last_error ? `<span class="badge warn" title="${escapeHtml(s.last_error)}">${escapeHtml(s.last_error.slice(0, 50))}</span>` : "";
     const actions = `${s.status === "active" ? `<button class="ghost small" data-src="${s.id}" data-act="pause">暂停</button>`
       : `<button class="ghost small" data-src="${s.id}" data-act="resume">恢复</button>`}
       <button class="ghost small danger" data-src="${s.id}" data-act="remove">移除</button>`;
-    if (s.kind === "folder") {
+    if (s.kind === "folder" || s.kind === "feishu_folder") {
       const key = `s${s.id}`;
       const open = !plans.collapsed.has(key);
+      const feishu = s.kind === "feishu_folder";
+      const label = feishu ? `${s.folder?.name || "飞书文件夹"}（飞书）` : `${s.path}${s.recursive ? "" : "（仅第一层）"}`;
+      const meta = feishu
+        ? `${own.length} 篇文档${s.folder?.skipped ? ` · ${s.folder.skipped} 个非文档未追踪` : ""}`
+        : `${own.length} 个文件`;
+      const tree = feishu ? buildTree("", own, (f) => inFeishuFolder(f).rel_path) : buildTree(s.path, own);
       return `<div class="tree-source">
         <div class="tree-row dir root" style="--depth:0" data-toggle="${key}">
           <span class="twisty">${open ? "▾" : "▸"}</span>${fileIcon("folder")}
-          <span class="tree-name" title="${escapeHtml(s.path)}">${escapeHtml(s.path)}${s.recursive ? "" : "（仅第一层）"}</span>
-          ${paused}${error}<span class="tree-meta">${own.length} 个文件</span>${actions}</div>
-        ${open ? (own.length ? renderTree(buildTree(s.path, own), 1, key) : `<div class="tree-row muted" style="--depth:1">（没有可追踪的文件）</div>`) : ""}</div>`;
+          <span class="tree-name" title="${escapeHtml(feishu ? "新加进这个飞书文件夹的文档会自动追踪" : s.path)}">${escapeHtml(label)}</span>
+          ${paused}${error}<span class="tree-meta">${meta}</span>${actions}</div>
+        ${open ? (own.length ? renderTree(tree, 1, key) : `<div class="tree-row muted" style="--depth:1">（没有可追踪的文件）</div>`) : ""}</div>`;
     }
     const f = own[0];
     const title = s.kind === "feishu" ? (f ? norm(f.path).split("/").pop() : "飞书文档") : norm(s.path).split("/").pop();
@@ -588,8 +596,9 @@ async function renderTrackedSummary() {
     const [sources, files] = await Promise.all([api(`/tracking/collections/${p.id}/sources`), api(`/tracking/collections/${p.id}/files`)]);
     for (const s of sources) {
       const f = files.find((x) => lower(x.path).startsWith(lower(s.path)));
-      const name = s.kind === "feishu" ? (f ? norm(f.path).split("/").pop() : "飞书文档") : s.path;
-      const kind = s.kind === "folder" ? "folder" : s.kind === "feishu" ? "feishu" : norm(s.path).split(".").pop();
+      const name = s.kind === "feishu" ? (f ? norm(f.path).split("/").pop() : "飞书文档")
+        : s.kind === "feishu_folder" ? `${s.folder?.name || "飞书文件夹"}（飞书）` : s.path;
+      const kind = ["folder", "feishu_folder"].includes(s.kind) ? "folder" : s.kind === "feishu" ? "feishu" : norm(s.path).split(".").pop();
       rows.push(`<div class="tree-row" style="--depth:0">${fileIcon(kind)}<span class="tree-name" title="${escapeHtml(s.path)}">${escapeHtml(name)}</span>
         <span class="tree-meta">${escapeHtml(p.name)}</span><a href="#" data-goto-plan="${p.id}">打开</a></div>`);
     }

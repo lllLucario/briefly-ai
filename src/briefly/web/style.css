@@ -309,8 +309,8 @@ dialog.wide { width: min(760px, 94vw); }
 .drive-head { display: flex; align-items: center; justify-content: space-between; padding: 0 10px; font-size: 13px; }
 #drive-dialog .drive-list { max-height: min(52vh, 460px); }
 .drive-list li.selectable, .drive-list li.folder { cursor: pointer; }
-.drive-list li.selectable:hover, .drive-list li.folder:hover { background: var(--bg); }
-.drive-list li.selected { background: var(--accent-soft); }
+.drive-list li.selectable:hover, .drive-list li.folder:hover { background-color: var(--bg); }
+.drive-list li.selected { background-color: var(--accent-soft); }
 .drive-list li .kind { min-width: 0; }
 .drive-list li .pick-gap { width: 13px; flex: none; }
 .dialog-foot { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
@@ -323,3 +323,12 @@ dialog.wide { width: min(760px, 94vw); }
 .ui-field { gap: 4px; font-size: 13px; }
 .ui-field input, .ui-field textarea { width: 100%; }
 button.danger-solid { background: var(--danger); border-color: var(--danger); color: #fff; }
+
+/* 云空间弹窗里的文件夹树：原地展开，每一级缩进 18px 并画竖线 */
+#drive-dialog .drive-list li {
+  padding-left: calc(10px + var(--depth, 0) * 18px);
+  background-image: repeating-linear-gradient(to right, transparent 0 17px, var(--line) 17px 18px);
+  background-size: calc(var(--depth, 0) * 18px) 100%; background-position: 14px 0; background-repeat: no-repeat;
+}
+#drive-dialog .drive-list li.folder .name { color: var(--text); font-weight: 500; }
+#drive-dialog .drive-list li .twisty { width: 12px; }

@@ -154,7 +154,7 @@ class TrackingService:
         collect_garbage(self.engine, self.blobs)
 
     # ---- 追踪源
-    def _feishu_path(self, raw: str) -> tuple[str, str, str]:
+    def _feishu_path(self, raw: str, known_name: str = "") -> tuple[str, str, str]:
         """飞书链接 → (追踪源类型, 路径, 文件夹名)。
 
         文档：feishu://docx/<id>（知识库链接换成文档本身），确认能读取；
@@ -172,10 +172,12 @@ class TrackingService:
             with (self.feishu_factory or default_client)() as client:
                 if link.kind == FOLDER:
                     list_folder(client, link.token)
-                    try:
-                        name = folder_name(client, link.token)
-                    except FeishuError:
-                        name = ""
+                    name = known_name
+                    if not name:  # 网页会带上名称；命令行添加时才查（需要额外权限，查不到就不显示名称）
+                        try:
+                            name = folder_name(client, link.token)
+                        except FeishuError:
+                            name = ""
                     return FEISHU_FOLDER, feishu_folder_key(link.token), name
                 link = resolve(client, link)
                 if link.kind in (BITABLE, MINUTES):
@@ -185,7 +187,9 @@ class TrackingService:
             raise ValueError(str(e)) from e
         return FEISHU, feishu_key(link.token), ""
 
-    def add_paths(self, ref: str | int, paths: list[str], recursive: bool = True, scan: bool = True) -> AddResult:
+    def add_paths(
+        self, ref: str | int, paths: list[str], recursive: bool = True, scan: bool = True, names: dict[str, str] | None = None
+    ) -> AddResult:
         """批量添加文件、文件夹或飞书文档链接，并立即扫描建立 Baseline。"""
         c = self.collection(ref)
         result = AddResult()
@@ -195,7 +199,7 @@ class TrackingService:
         for raw in paths:
             if looks_like_feishu(raw):
                 try:
-                    kind, key, name = self._feishu_path(raw)
+                    kind, key, name = self._feishu_path(raw, (names or {}).get(raw, ""))
                 except ValueError as e:
                     result.messages.append(f"{raw}：{e}，未添加")
                     continue

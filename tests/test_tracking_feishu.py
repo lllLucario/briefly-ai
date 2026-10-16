@@ -311,3 +311,11 @@ def test_folder_cannot_be_imported_as_material(folder_env):
     svc, drive = folder_env
     with svc.feishu_factory() as client, pytest.raises(ValueError, match="文件夹不能直接导入"):
         import_link(client, svc.store, FOLDER_URL)
+
+
+def test_folder_name_from_web_is_used(folder_env):
+    """网页从云空间列表里已知文件夹名，随添加请求带上；不用再调需要额外权限的文件夹元数据接口。"""
+    svc, drive = folder_env
+    c = svc.create_collection("项目A")
+    source = svc.add_paths(c.id, [FOLDER_URL], names={FOLDER_URL: "网页带来的名字"}).added[0]
+    assert svc.feishu_folders(c.id)[source.id].name == "网页带来的名字"
