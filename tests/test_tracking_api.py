@@ -110,3 +110,20 @@ def test_plan_view_endpoints(env):
 
         client.delete("/tracking/collections/项目A")  # 删除计划时默认设置一起删除，不报外键错误
         assert client.get("/tracking/collections").json() == []
+
+
+def test_tracked_files_show_latest_version_in_material_list(env):
+    """材料库列出追踪中文件的最新版本并标明属于哪个计划；它随追踪更新，不能在材料库里删除。"""
+    env.write("进度.md", "# 进度\n原有内容")
+    with TestClient(create_app(env.store, model_factory=make_model)) as client:
+        client.post("/tracking/collections", json={"name": "项目A"})
+        client.post("/tracking/collections/项目A/sources", json={"paths": [str(env.work / "进度.md")]})
+        [m] = client.get("/materials").json()
+        assert m["source"] == "tracked" and [t["plan"] for t in m["tracked"]] == ["项目A"]
+        r = client.delete(f"/materials/{m['id']}")
+        assert r.status_code == 400 and "停止追踪" in r.json()["detail"]
+
+        env.write("进度.md", "# 进度\n原有内容\n新增一行")
+        client.post("/tracking/collections/项目A/scan")
+        [latest] = client.get("/materials").json()
+        assert latest["id"] != m["id"] and "新增一行" in client.get(f"/materials/{latest['id']}").json()["content"]

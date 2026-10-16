@@ -293,20 +293,33 @@ def test_parse_failure_keeps_raw_version(env):
     assert env.svc.blobs.get(snap.sha256) == b"not a zip file"  # 原始字节保留，可重新解析
 
 
-def test_parse_result_is_reused_and_hidden_from_material_list(env):
+def test_material_list_shows_only_latest_tracked_version(env):
+    """材料库显示追踪中文件的最新版本（随追踪更新），旧版本和已不追踪的文件不显示。"""
     env.write("a/同.md", "# 同样的内容")
     env.write("b/同.md", "# 同样的内容")
     user_material, _ = env.store.add_text("用户材料", "用户自己粘贴的")
     c = env.svc.create_collection("c")
-    env.svc.add_paths(c.id, [str(env.work / "a"), str(env.work / "b")])
+    sources = env.svc.add_paths(c.id, [str(env.work / "a"), str(env.work / "b")]).added
 
     ids = {env.svc.snapshots(f.id)[0].material_id for f in env.svc.files(c.id)}
     assert len(ids) == 1  # 相同字节只解析一次
-    assert [m.id for m in env.store.list_materials()] == [user_material.id]  # 追踪版本不出现在材料列表
+    [first] = ids
+    assert [m.id for m in env.store.list_materials()] == [user_material.id, first]
+    assert [h.material_id for h in env.store.search("同样")] == [first]
+
+    env.write("a/同.md", "# 改过的内容")
+    env.write("b/同.md", "# 改过的内容")
+    env.svc.scan(c.id)
+    [latest] = {env.svc.snapshots(f.id)[-1].material_id for f in env.svc.files(c.id)}
+    assert [m.id for m in env.store.list_materials()] == [user_material.id, latest]  # 旧版本不再显示
     assert env.store.search("同样") == []
-    # 用户再上传同样内容：转为用户材料
+
+    for source in sources:
+        env.svc.remove_source(source.id)
+    assert [m.id for m in env.store.list_materials()] == [user_material.id]  # 不再追踪：最新版本也不显示
+    # 用户上传与某个追踪版本相同的内容：转为用户材料
     m, created = env.store.add_text("我上传的", "# 同样的内容")
-    assert created and m.id in ids and [x.id for x in env.store.list_materials()] == [user_material.id, m.id]
+    assert created and m.id == first and [x.id for x in env.store.list_materials()] == [user_material.id, m.id]
 
 
 def test_docx_metadata_is_captured(env):

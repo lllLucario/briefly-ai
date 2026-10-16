@@ -214,14 +214,14 @@ function renderMaterialRows() {
   rows.innerHTML = state.materials.map((m) => `
     <tr class="clickable ${state.activeMaterial === m.id ? "active" : ""}" data-id="${m.id}">
       <td>${m.id}</td>
-      <td>${escapeHtml(m.title)} ${m.warnings.length ? `<span class="warn-dot" title="${escapeHtml(m.warnings.join("\n"))}">⚠</span>` : ""}</td>
+      <td>${escapeHtml(m.title)} ${m.warnings.length ? `<span class="warn-dot" title="${escapeHtml(m.warnings.join("\n"))}">⚠</span>` : ""}${m.source === "tracked" ? ` <span class="badge" title="随追踪自动更新为最新内容；以前的版本在周报计划里查看">最新版本</span>` : ""}</td>
       <td class="nowrap">${fileIcon(m.file_type || "paste")} ${escapeHtml(FILE_TYPES[m.file_type] || kindName(m.file_type || "paste"))}</td>
       <td class="track-cell">${trackCell(m)}</td>
       <td>${m.char_count}</td>
       <td>${m.chunk_count} / ${m.section_count}</td>
       <td>${m.structure || "-"}</td>
       <td>${fmtTime(m.created_at)}</td>
-      <td><button class="ghost danger" data-delete="${m.id}">删除</button></td>
+      <td>${m.source === "tracked" ? "" : `<button class="ghost danger" data-delete="${m.id}">删除</button>`}</td>
     </tr>`).join("");
 }
 
@@ -233,6 +233,12 @@ const UNTRACKABLE = {
 };
 
 function trackCell(m) {
+  // 追踪版本本身没有飞书导入信息：从追踪记录的路径（feishu://docx/<id>）取文档编号
+  const feishuKey = m.tracked.find((t) => t.key.startsWith("feishu://docx/"))?.key;
+  if (feishuKey && !m.feishu) m = { ...m, feishu: { kind: "docx", token: feishuKey.split("/").pop(), url: `https://feishu.cn/docx/${feishuKey.split("/").pop()}` } };
+  if (m.feishu?.kind !== "docx" && m.tracked.length) {
+    return `<span class="track-chips">${m.tracked.map((t) => `<span class="chip" title="本机文件：在“周报”页的周报计划里管理">追踪中 · ${escapeHtml(t.plan)}</span>`).join("")}</span>`;
+  }
   if (m.feishu?.kind !== "docx") {
     const why = UNTRACKABLE[m.feishu?.kind]
       || "上传或粘贴的是一份副本，没法回去检查原文件的修改。要追踪本机文件，请在“周报”页的周报计划里添加文件路径";
@@ -933,7 +939,7 @@ $("#pick-materials").addEventListener("click", async () => {
   await loadMaterials();
   $("#picker-list").innerHTML = state.materials.length
     ? state.materials.map((m) => `<label><input type="checkbox" value="${m.id}" ${state.picked.has(m.id) ? "checked" : ""}>
-        ${m.id}. ${escapeHtml(m.title)} <span class="muted">（${m.char_count} 字）</span></label>`).join("")
+        ${m.id}. ${escapeHtml(m.title)} <span class="muted">（${m.char_count} 字${m.tracked.length ? "，追踪中 · 最新版本" : ""}）</span></label>`).join("")
     : `<p class="muted">材料库是空的，请先到“材料”页上传或粘贴。</p>`;
   $("#picker").showModal();
 });
@@ -951,7 +957,7 @@ function renderWeeklyMaterialChecklist() {
   const checked = new Set([...box.querySelectorAll("input:checked")].map((i) => Number(i.value)));
   box.innerHTML = state.materials.length
     ? state.materials.map((m) => `<label><input type="checkbox" value="${m.id}" ${checked.has(m.id) ? "checked" : ""}>
-        ${m.id}. ${escapeHtml(m.title)} <span class="muted">（${m.char_count} 字）</span></label>`).join("")
+        ${m.id}. ${escapeHtml(m.title)} <span class="muted">（${m.char_count} 字${m.tracked.length ? "，追踪中 · 最新版本" : ""}）</span></label>`).join("")
     : `<p class="muted">材料库是空的。也可以只写简述生成周报。</p>`;
 }
 

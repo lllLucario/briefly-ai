@@ -25,7 +25,7 @@ from .agent import Agent, new_thread_id, sqlite_checkpointer
 from .db import create_db_engine
 from .feishu import FeishuClient, client_from_config
 from .llm import create_chat_model
-from .materials import Material, MaterialNotFound, MaterialStore
+from .materials import TRACKED, Material, MaterialNotFound, MaterialStore
 from .sessions import ChatSession, SessionStore
 from .skills import SKILLS
 from .weekly import WeeklyReport, WeeklyService
@@ -73,6 +73,7 @@ class MaterialOut(BaseModel):
     warnings: list[str]
     created_at: datetime
     feishu: dict | None = None  # 从飞书导入的材料：{kind, token, url}，用于开启追踪
+    tracked: list[dict] = []  # 追踪中文件的最新版本：[{plan_id, plan, file_id, key}]，随追踪更新
 
 
 class MaterialDetail(MaterialOut):
@@ -366,10 +367,18 @@ def create_app(
         sessions.delete(thread_id)
         agent.graph.checkpointer.delete_thread(thread_id)
 
-    def summary(store: MaterialStore, m: Material, chunks: dict | None = None, sections: dict | None = None):
-        """chunks / sections 为批量查好的计数；不传时单独查这一份。"""
+    def tracked_versions() -> dict[int, list[dict]]:
+        from .tracking.collection import latest_materials
+
+        return latest_materials(app.state.store.engine)
+
+    def summary(
+        store: MaterialStore, m: Material, chunks: dict | None = None, sections: dict | None = None, tracked: dict | None = None
+    ):
+        """chunks / sections / tracked 为批量查好的；不传时单独查这一份。"""
         chunks = store.chunk_counts([m.id]) if chunks is None else chunks
         sections = store.section_counts([m.id]) if sections is None else sections
+        tracked = tracked_versions() if tracked is None else tracked
         return MaterialOut(
             id=m.id,
             title=m.title,
@@ -384,6 +393,7 @@ def create_app(
             feishu={k: v for k, v in feishu.items() if k in ("kind", "token", "url")}
             if (feishu := m.parse_report.get("feishu"))
             else None,
+            tracked=tracked.get(m.id, []),
         )
 
     def created(store: MaterialStore, m: Material, is_new: bool, response: Response) -> CreatedMaterial:
@@ -408,8 +418,8 @@ def create_app(
 
     @app.get("/materials", tags=[docs.MATERIALS], response_model=list[MaterialOut], summary="材料列表（不含正文）")
     def list_materials(store: Store):
-        chunks, sections = store.chunk_counts(), store.section_counts()
-        return [summary(store, m, chunks, sections) for m in store.list_materials()]
+        chunks, sections, tracked = store.chunk_counts(), store.section_counts(), tracked_versions()
+        return [summary(store, m, chunks, sections, tracked) for m in store.list_materials()]
 
     @app.get("/materials/{material_id}", tags=[docs.MATERIALS], response_model=MaterialDetail, summary="材料详情：正文、大纲、解析报告")
     def get_material(material_id: int, store: Store):
@@ -421,6 +431,8 @@ def create_app(
 
     @app.delete("/materials/{material_id}", tags=[docs.MATERIALS], status_code=204, summary="删除材料")
     def delete_material(material_id: int, store: Store):
+        if store.get(material_id).source == TRACKED:
+            raise ValueError("这是追踪中文档的最新版本，随追踪自动更新；不需要了请停止追踪")
         store.delete(material_id)
 
     def weekly_out(r: WeeklyReport) -> WeeklyOut:

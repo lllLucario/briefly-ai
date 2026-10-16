@@ -25,6 +25,9 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    and_,
+    func,
+    select,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -319,3 +322,22 @@ class EvidenceReview(Base):
     after: Mapped[dict] = mapped_column(JSON, default=dict)
     note: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+def latest_versions():
+    """仍在追踪的每个文件最近一个解析出文字的版本：(material_id, file_id, collection_id, path_key)。
+
+    材料库只显示这个版本（随追踪更新），旧版本只在周报计划里查看历史和差异。
+    """
+    last = (
+        select(FileSnapshot.file_id, func.max(FileSnapshot.version).label("version"))
+        .where(FileSnapshot.material_id.is_not(None))
+        .group_by(FileSnapshot.file_id)
+        .subquery()
+    )
+    return (
+        select(FileSnapshot.material_id, TrackedFile.id, TrackedFile.collection_id, TrackedFile.path_key)
+        .join(last, and_(FileSnapshot.file_id == last.c.file_id, FileSnapshot.version == last.c.version))
+        .join(TrackedFile, TrackedFile.id == FileSnapshot.file_id)
+        .where(TrackedFile.status != UNTRACKED)
+    )

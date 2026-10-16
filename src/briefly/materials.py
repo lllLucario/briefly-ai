@@ -3,7 +3,7 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Engine, ForeignKey, Integer, String, Text, func, select
+from sqlalchemy import JSON, DateTime, Engine, ForeignKey, Integer, String, Text, func, or_, select
 from sqlalchemy.orm import Mapped, mapped_column, relationship, sessionmaker
 
 from . import config
@@ -12,7 +12,7 @@ from .db import Base
 from .loaders import file_type, load_document
 
 SNIPPET_RADIUS = 100
-TRACKED = "tracked"  # 文件追踪保存的版本：只供追踪模块使用，默认不出现在材料列表和检索中
+TRACKED = "tracked"  # 文件追踪保存的版本：材料列表和检索只用每个文件的最新版本，旧版本只供追踪模块使用
 MAX_SEARCH_HITS = 10
 
 
@@ -81,6 +81,14 @@ class SearchHit:
 def wrap_material(header: str, body: str) -> str:
     """材料内容统一用标记包起来，提醒模型这是待处理的材料而不是指令。"""
     return f"{header}\n【材料开始】\n{body}\n【材料结束】"
+
+
+def visible():
+    """默认可见的材料：用户添加的，加上追踪中文件的最新版本。"""
+    from .tracking.models import latest_versions
+
+    latest = latest_versions().subquery()
+    return or_(Material.source != TRACKED, Material.id.in_(select(latest.c.material_id)))
 
 
 class MaterialStore:
@@ -155,12 +163,12 @@ class MaterialStore:
         return self.add_text(filename, doc.text, source="file", kind=kind, markdown=doc.markdown, report=doc.report)
 
     def list_materials(self, ids: list[int] | None = None) -> list[Material]:
-        """不指定 ids 时只列用户自己添加的材料（不含文件追踪的版本）。"""
+        """不指定 ids 时列用户添加的材料和追踪中文件的最新版本（不含旧版本）。"""
         query = select(Material).order_by(Material.id)
         if ids is not None:
             query = query.where(Material.id.in_(ids))
         else:
-            query = query.where(Material.source != TRACKED)
+            query = query.where(visible())
         with self._session() as s:
             return list(s.scalars(query))
 
@@ -215,7 +223,7 @@ class MaterialStore:
         if material_ids is not None:
             query = query.where(Material.id.in_(material_ids))
         else:
-            query = query.where(Material.source != TRACKED)
+            query = query.where(visible())
         with self._session() as s:
             rows = s.execute(query).all()
         hits: list[SearchHit] = []

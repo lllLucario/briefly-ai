@@ -22,6 +22,7 @@ from .models import (
     EvidenceReview,
     FeishuFolder,
     FeishuFolderMember,
+    latest_versions,
     FileChange,
     FileSnapshot,
     Notification,
@@ -61,6 +62,16 @@ class AddResult:
     added: list[TrackingSource] = field(default_factory=list)
     messages: list[str] = field(default_factory=list)  # 重复、重叠、不支持、不存在等说明
     scan: ScanResult | None = None
+
+
+def latest_materials(engine: Engine) -> dict[int, list[dict]]:
+    """材料库里随追踪更新的材料：{material_id: [{plan_id, plan, file_id, key}]}（同一篇可能在多个计划里）。"""
+    out: dict[int, list[dict]] = {}
+    with sessionmaker(engine)() as s:
+        plans = {c.id: c.name for c in s.scalars(select(TrackingCollection))}
+        for material_id, file_id, plan_id, key in s.execute(latest_versions()):
+            out.setdefault(material_id, []).append({"plan_id": plan_id, "plan": plans.get(plan_id, ""), "file_id": file_id, "key": key})
+    return out
 
 
 class TrackingService:
