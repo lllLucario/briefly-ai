@@ -402,14 +402,17 @@ def describe(conflicts: list[FactConflict], items: list[WorkItem]) -> str:
 
 
 # ---------- 写完后的检查
-def conflict_problems(conflicts: list[FactConflict], cited: Callable[[int], bool]) -> list[str]:
-    """材料之间的冲突（未解决、场景不同）：材料的各个说法都要在正文里出现（按编号）。"""
+def conflict_problems(conflicts: list[FactConflict], lines_of: Callable[[int], list[str]]) -> list[str]:
+    """材料之间的冲突（未解决、场景不同）：材料的各个说法都要在正文里写出来。
+
+    lines_of(n) 是正文里引用了 #n 的行。只引用了编号、取值却没写（两个编号标在同一行、只写了一个日期）也算缺少。
+    """
     problems = []
     for c in conflicts:
         if c.resolution == SUPERSEDED:
             continue
         numbered = [(n, v) for n, v, o in zip(c.numbers, c.values, c.origins) if o != BRIEF and n]
-        missing = [n for n, _ in numbered if not cited(n)]
+        missing = [n for n, v in numbered if not any(value_in(line, v) for line in lines_of(n))]
         if len({v for _, v in numbered}) > 1 and missing and len(missing) < len(numbered):
             values = "、".join(f"#{n}（{v}）" for n, v in numbered if n in missing)
             problems.append(

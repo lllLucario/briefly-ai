@@ -137,7 +137,8 @@ def report_check(items: list[WorkItem], conflicts: list[FactConflict] | None = N
                 lost = partial_terms(items[n - 1], lines)
                 if lost:
                     problems.append(f"#{n}（{items[n - 1].point}）写进周报时缺少 {'、'.join(lost)}，请按要点写全")
-        problems += conflict_problems(conflicts or [], lambda n: n in used)
+        cited = citing_lines(body)
+        problems += conflict_problems(conflicts or [], lambda n: cited.get(n, []))
         problems += brief_conflict_problems(conflicts or [], text, REMINDER_HEADING)
         leaked = [h for h in HINT_PHRASES if h in body]
         if leaked:

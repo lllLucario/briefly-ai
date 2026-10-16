@@ -2,7 +2,7 @@
 
     python tests/eval/tracking_e2e.py [--keep-server]
 
-覆盖：文件追踪（集合、混合添加、基线、扫描、各类变化、Diff、暂停恢复）、每日扫描与每周定时准备（API 后台线程实际触发）、
+覆盖：追踪文件（混合添加、基线、扫描、各类变化、Diff、暂停恢复）、每日扫描与每周定时开始（API 后台线程实际触发）、
 提醒（API 与 inbox）、交互审核（stdin 输入）、生成周报、幂等、run-due、prune，以及对话、材料、周报接口。
 全部数据在临时目录，独立数据库，端口 8765，不碰 data/。结果写到 files/eval/tracking-e2e-<时间>.md。
 会调用 .env 中配置的模型，产生少量费用。
@@ -10,7 +10,6 @@
 import argparse
 import json
 import os
-import re
 import sqlite3
 import subprocess
 import sys
@@ -65,9 +64,10 @@ class Env:
         os.utime(path, (self.t, self.t))
         return path
 
-    def run(self, *args: str, stdin: str | None = None, timeout: int = 300) -> tuple[int, str]:
+    def run(self, group: str, *args: str, stdin: str | None = None, timeout: int = 300) -> tuple[int, str]:
+        """group：track（追踪文件）或 weekly（周报）。"""
         proc = subprocess.run(
-            [str(SCRIPTS / "briefly"), "track", *args],
+            [str(SCRIPTS / "briefly"), group, *args],
             input=stdin,
             capture_output=True,
             text=True,
@@ -134,12 +134,12 @@ def scenario(e: Env):
     e.write("进度.xlsx", xlsx_bytes({"进度": [["任务", "负责人", "进度"], ["接口联调", "张三", "50%"], ["压测", "赵琳", "0%"]]}))
     e.write("预算.xlsx", xlsx_bytes({"预算": [["项目", "金额"], ["服务器", 20000]]}))
 
-    # ---- 2. 创建集合、混合添加（立即基线）、重叠路径
-    code, out = e.run("create", "支付改造", "--owner", "张三")
-    step("创建集合", code == 0 and "已创建集合" in out, out)
-    code, out = e.run("add", "支付改造", str(e.work / "项目"), str(e.work / "方案.docx"), str(e.work / "进度.xlsx"), str(e.work / "预算.xlsx"))
+    # ---- 2. 设置你在文档里的名字、混合添加（立即基线）、重叠路径
+    code, out = e.run("weekly", "settings", "--owner", "张三")
+    step("设置你在文档里的名字", code == 0 and "张三" in out, out)
+    code, out = e.run("track", "add", str(e.work / "项目"), str(e.work / "方案.docx"), str(e.work / "进度.xlsx"), str(e.work / "预算.xlsx"))
     step("混合添加文件夹和文件，立即采集基线", code == 0 and "新版本 8" in out, out)  # 5 个项目文件 + 3 个
-    code, out = e.run("add", "支付改造", str(e.work / "项目" / "需求.md"))
+    code, out = e.run("track", "add", str(e.work / "项目" / "需求.md"))
     step("重叠路径提示、不重复处理", code == 0 and "已被文件夹追踪源" in out and "新版本 0" in out, out)
     files = e.sql("select path from tracked_files")
     step("依赖目录被排除", not any("node_modules" in p for (p,) in files) and len(files) == 8, "\n".join(p for (p,) in files))
@@ -158,33 +158,33 @@ def scenario(e: Env):
     (e.work / "项目" / "旧草稿.md").unlink()
     e.t += 60
     os.utime(e.work / "项目" / "说明.md", (e.t, e.t))
-    code, out = e.run("scan", "支付改造")
+    code, out = e.run("track", "scan")
     expect = ["新版本 7", "修改 5", "新出现 1", "删除 1", "可能移动 1", "只改了修改时间 1"]
     step("手动扫描识别各类变化", code == 0 and all(x in out for x in expect), out)
 
     ids = {Path(p).name: i for i, p in e.sql("select id, path from tracked_files")}
-    code, out = e.run("files", "支付改造")
+    code, out = e.run("track", "files")
     step("文件列表：状态与可能移动", code == 0 and "不在了" in out and "可能由文件" in out, out)
-    code, out = e.run("history", str(ids["方案.docx"]))
+    code, out = e.run("track", "history", str(ids["方案.docx"]))
     step("版本历史", code == 0 and "v1 [基线]" in out and "v2 [增量]" in out, out)
-    code, out = e.run("diff", str(ids["方案.docx"]))
+    code, out = e.run("track", "diff", str(ids["方案.docx"]))
     step("Word Diff 只含新增的修订内容", code == 0 and "异步队列" in out and "新增 1" in out, out)
-    code, out = e.run("diff", str(ids["进度.xlsx"]))
+    code, out = e.run("track", "diff", str(ids["进度.xlsx"]))
     step("Excel Diff：单元格修改 + 插入行", code == 0 and "C2：50% → 100%" in out and "回调超时排查" in out and "压测" not in out.split("新增")[-1], out)
-    code, out = e.run("diff", str(ids["任务.csv"]))
+    code, out = e.run("track", "diff", str(ids["任务.csv"]))
     step("CSV Diff：按主键，忽略顺序", code == 0 and "按主键列「编号」" in out and "进行中 → 已完成" in out and "新增 1" in out, out)
-    code, out = e.run("changes", "支付改造")
+    code, out = e.run("track", "changes")
     step("变化记录", code == 0 and all(x in out for x in ("修改", "删除", "可能移动/改名", "新出现")), out)
     source_id = e.sql("select id from tracking_sources where path like '%进度.xlsx'")[0][0]
-    code1, out1 = e.run("pause", str(source_id))
-    code2, out2 = e.run("resume", str(source_id))
+    code1, out1 = e.run("track", "pause", str(source_id))
+    code2, out2 = e.run("track", "resume", str(source_id))
     step("暂停与恢复追踪源", code1 == 0 and code2 == 0 and "已暂停" in out1 and "已恢复" in out2, out1 + out2)
 
-    # ---- 4. 设置每周定时（1 分钟后），启动 API：后台线程应先做每日扫描，到点再自动准备周报
+    # ---- 4. 设置每周定时（1 分钟后），启动 API：后台线程应先做每日扫描，到点再自动开始（检查更新 + 整理审核清单）
     when = datetime.now() + timedelta(minutes=1)
     weekday = str(when.isoweekday())
-    code, out = e.run("schedule", "支付改造", "--weekday", weekday, "--time", when.strftime("%H:%M"))
-    step("设置每周定时准备", code == 0 and "下次" in out, out)
+    code, out = e.run("weekly", "schedule", "--weekday", weekday, "--time", when.strftime("%H:%M"))
+    step("设置每周定时", code == 0 and "下次" in out, out)
     e.write("方案.docx", docx_with_revisions(
         "现有支付链路为同步调用，回调平均耗时 1.8 秒。",
         [("张三", "新增异步队列：回调先入队再处理，预发环境实测平均耗时降到 200 毫秒。"), ("张三", "风控调用改为异步，失败时重试 3 次。")],
@@ -196,20 +196,22 @@ def scenario(e: Env):
     step("API 服务启动", bool(up))
     daily = wait_for(lambda: e.sql("select status, stats from scan_runs where trigger='daily' and status != 'running'"), 60)
     step("后台线程执行每日扫描", bool(daily) and daily[0][0] == "done", str(daily))
-    run = wait_for(lambda: e.sql("select status, prep_id, late_minutes, error from scheduled_runs where status != 'running'"), 200, 3)
-    step("到点自动准备周报（后台线程）", bool(run) and run[0][0] == "done", str(run) + "\n" + (e.tmp / "api.log").read_text(encoding="utf-8")[-1500:])
+    run = wait_for(lambda: e.sql("select status, report_id, late_minutes, error from scheduled_runs where status != 'running'"), 200, 3)
+    step("到点自动开始：整理审核清单（后台线程）", bool(run) and run[0][0] == "done", str(run) + "\n" + (e.tmp / "api.log").read_text(encoding="utf-8")[-1500:])
     if not run or run[0][0] != "done":
         return server
-    prep_id = run[0][1]
+    report_id = run[0][1]
+    status = e.sql("select status from weekly_reports where id=?", report_id)[0][0]
+    step("自动开始不在审核前生成正文", status == "none", status)
     _, notes = http("GET", "/notifications")
     step("API 返回提醒", bool(notes) and "待你确认" in notes[0]["title"], json.dumps(notes, ensure_ascii=False))
-    code, out = e.run("inbox")
+    code, out = e.run("weekly", "inbox")
     step("命令行查看提醒（看后已读）", code == 0 and "待你确认" in out, out)
-    code, out = e.run("list")
-    step("集合列表显示定时设置", code == 0 and "定时准备：每" in out and "未读提醒" not in out, out)
+    code, out = e.run("weekly", "schedule")
+    step("定时设置与执行记录", code == 0 and "当前设置：每" in out and "[完成]" in out, out)
 
-    # ---- 5. 审核：确认自己的、排除预算表（李四）、修改一条、补充会议、确认清单（stdin 输入，真实 input()）
-    evidence = e.sql("select id, title, description, attribution, category, source_refs, flags from work_evidence where prep_id=? and review_status='PENDING'", prep_id)
+    # ---- 5. 审核：确认自己的、排除预算表（李四）、修改一条、补充会议（stdin 输入，真实 input()）
+    evidence = e.sql("select id, title, description, attribution, category, source_refs, flags from work_evidence where report_id=? and review_status='PENDING'", report_id)
     lines = [f"E{i}「{t}」{d}（{a}，{c}，{fl}）" for i, t, d, a, c, _, fl in evidence]
     names = {i: {Path(r["path"]).name for r in json.loads(refs)} for i, *_, refs, _ in evidence}
     budget = [i for i in names if "预算.xlsx" in names[i]]
@@ -226,28 +228,28 @@ def scenario(e: Env):
         ["l", f"s {word[0]}", f"y {' '.join(map(str, mine))}", f"n {budget[0]}", f"e {mine[0]}", "", "（人工修改）补充了验收标准", "",
          "a", "参加支付改造评审会", "评审会确认 10 月 20 日上线", "plan", "h", "done", ""]
     )  # fmt: skip
-    code, out = e.run("review", "支付改造", stdin=script)
-    step("交互审核：确认、排除、修改、补充、确认清单", code == 0 and "清单已确认" in out and "已排除 1 条" in out, out[-3000:])
-    reviews = [a for (a,) in e.sql("select action from evidence_reviews where prep_id=?", prep_id)]
-    step("审核记录留痕", all(x in reviews for x in ("confirm", "exclude", "edit", "add", "confirm_checklist")), str(reviews))
+    code, out = e.run("weekly", "review", stdin=script)
+    step("交互审核：确认、排除、修改、补充", code == 0 and "生成周报：briefly weekly generate" in out and "已排除 1 条" in out, out[-3000:])
+    reviews = [a for (a,) in e.sql("select action from evidence_reviews where report_id=?", report_id)]
+    step("审核记录留痕", all(x in reviews for x in ("prepare", "confirm", "exclude", "edit", "add")), str(reviews))
 
     # ---- 6. 生成周报
     out_file = e.tmp / "周报.md"
-    code, out = e.run("report", "支付改造", "-o", str(out_file), timeout=600)
+    code, out = e.run("weekly", "generate", "-o", str(out_file), timeout=600)
     text = out_file.read_text(encoding="utf-8") if out_file.exists() else ""
     ok = code == 0 and text and "〔" not in text and "8000" not in text and "压测环境" not in text and "评审会" in text
     step("生成周报：只用已确认记录，导出无出处标记", ok, out)
-    _, reports = http("GET", "/weekly-reports")
-    detail = http("GET", f"/weekly-reports/{reports[0]['id']}")[1] if reports else {}
+    _, reports = http("GET", "/weekly")
+    detail = http("GET", f"/weekly/{reports[0]['id']}")[1] if reports else {}
     sources = {i["source"] for i in detail.get("items", [])}
-    step("周报可在网页接口查看，出处为 E 编号", bool(sources) and all(s.startswith("E") for s in sources), json.dumps(sorted(sources)))
+    step("周报可在网页接口查看，出处为 E 编号；同一周只有一份", len(reports) == 1 and reports[0]["id"] == report_id and bool(sources) and all(s.startswith("E") for s in sources), json.dumps(sorted(sources)))
 
     # ---- 7. 幂等、run-due、prune
-    code, out = e.run("prepare", "支付改造")
-    step("再次准备：不重复生成、已审核不被覆盖", code == 0 and "新候选 0 条" in out, out)
-    code, out = e.run("run-due")
-    step("run-due：今天的扫描和准备都已完成", code == 0 and "都已完成" in out and "每周定时准备完成" not in out, out)
-    code, out = e.run("prune", "--keep-days", "30")
+    code, out = e.run("weekly", "prepare")
+    step("再次整理：不重复生成、已审核不被覆盖", code == 0 and "文件变化新记录 0 条" in out and "待办新记录 0 条" in out, out)
+    code, out = e.run("weekly", "run-due")
+    step("run-due：今天的扫描已完成，定时不重复执行", code == 0 and "每日扫描已完成" in out and "每周定时开始完成" not in out, out)
+    code, out = e.run("track", "prune", "--keep-days", "30")
     step("清理旧版本", code == 0 and "清理了" in out, out)
 
     # ---- 8. 之前的功能：材料、对话、上下文用量、网页

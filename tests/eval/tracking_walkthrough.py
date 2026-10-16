@@ -1,8 +1,8 @@
-"""文件追踪的真实模型走查（手动运行，会调用 .env 中配置的模型，产生费用）。
+"""追踪文件 → 审核清单 → 周报的真实模型走查（手动运行，会调用 .env 中配置的模型，产生费用）。
 
     python tests/eval/tracking_walkthrough.py -n 3
 
-场景：周一添加项目文件夹、Word、Excel → 周中修改（Word 有张三的修订，预算表是李四改的）→ 周五准备周报 →
+场景：周一添加项目文件夹、Word、Excel → 周中修改（Word 有张三的修订，预算表是李四改的）→ 周五整理审核清单 →
 确认自己的、排除李四的、补充一条会议 → 生成周报。每轮用临时目录和独立数据库，不碰 data/ 下的数据。
 结果写到 files/eval/tracking-<时间>.md。假模型测试见 tests/test_tracking_*.py，两者分开报告。
 """
@@ -21,13 +21,12 @@ from briefly import config  # noqa: E402
 from briefly.db import create_db_engine  # noqa: E402
 from briefly.materials import MaterialStore  # noqa: E402
 from briefly.tracking.blobs import BlobStore  # noqa: E402
-from briefly.tracking.collection import TrackingService  # noqa: E402
 from briefly.tracking.diff import Differ, format_hunk  # noqa: E402
-from briefly.tracking.models import CONFIRMED, PENDING  # noqa: E402
-from briefly.tracking.pipeline import generate_report, prepare  # noqa: E402
-from briefly.tracking.review import ReviewService  # noqa: E402
-from briefly.weekly import WeeklyService, unverified_numbers  # noqa: E402
-from tracking_util import docx_bytes, docx_with_revisions, xlsx_bytes  # noqa: E402
+from briefly.tracking.service import TrackingService  # noqa: E402
+from briefly.weekly.engine import unverified_numbers  # noqa: E402
+from briefly.weekly.models import CONFIRMED, PENDING  # noqa: E402
+from briefly.weekly.service import WeeklyService  # noqa: E402
+from tracking_util import docx_with_revisions, xlsx_bytes  # noqa: E402
 
 BASELINE_ONLY = ["现有支付链路为同步调用", "项目背景", "原有需求说明"]
 
@@ -53,8 +52,9 @@ def run_once(workdir: Path) -> dict:
     write(work / "方案.docx", docx_with_revisions("现有支付链路为同步调用，回调平均耗时 1.8 秒。", []), t)
     write(work / "进度.xlsx", xlsx_bytes({"进度": [["任务", "负责人", "进度"], ["接口联调", "张三", "50%"], ["压测", "赵琳", "0%"]]}), t)
     write(work / "预算.xlsx", xlsx_bytes({"预算": [["项目", "金额"], ["服务器", 20000]]}), t)
-    c = svc.create_collection("支付改造", ["张三"])
-    svc.add_paths(c.id, [str(work / "项目"), str(work / "方案.docx"), str(work / "进度.xlsx"), str(work / "预算.xlsx")])
+    weekly = WeeklyService(store, tracking=svc)
+    weekly.update_settings(owner_names=["张三"])
+    svc.add_paths([str(work / "项目"), str(work / "方案.docx"), str(work / "进度.xlsx"), str(work / "预算.xlsx")])
 
     # 周中：张三在 Word 里补充架构（修订记录），更新进度表和需求文档；李四改了预算表
     t += 600
@@ -73,13 +73,13 @@ def run_once(workdir: Path) -> dict:
         t,
     )
     write(work / "预算.xlsx", xlsx_bytes({"预算": [["项目", "金额"], ["服务器", 20000], ["压测环境", 8000]]}), t)
-    svc.scan(c.id)
+    svc.scan()
 
     # 周五：准备周报
     start = date.today() - timedelta(days=date.today().weekday())
     started = time.monotonic()
-    prep, info = prepare(svc, c.id, start, start + timedelta(days=6))
-    review = ReviewService(svc)
+    prep, info = weekly.prepare(start)
+    review = weekly.review()
     items = review.items(prep.id)
     checks: dict[str, bool] = {}
     problems: list[str] = []
@@ -119,8 +119,7 @@ def run_once(workdir: Path) -> dict:
         elif e.review_status == PENDING:
             review.confirm(prep.id, [e.id])
     review.add(prep.id, "参加支付改造评审会", "评审会确认 10 月 20 日上线", "done")
-    review.confirm_checklist(prep.id)
-    report = generate_report(svc, WeeklyService(store), prep.id)
+    report = weekly.generate(prep.id)
     seconds = round(time.monotonic() - started, 1)
 
     confirmed = {e.id for e in review.items(prep.id) if e.review_status == CONFIRMED}

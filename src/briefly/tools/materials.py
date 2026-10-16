@@ -242,8 +242,11 @@ def material_tools(
             request += "\n\n" + describe(conflicts, extraction.items)
 
         def check(text: str) -> list[str]:
-            used = {int(n) for n in re.findall(r"#(\d+)", text)}
-            return conflict_problems(conflicts, lambda n: n in used)
+            cited: dict[int, list[str]] = {}
+            for line in text.splitlines():
+                for n in dict.fromkeys(int(x) for x in re.findall(r"#(\d+)", line)):
+                    cited.setdefault(n, []).append(line)
+            return conflict_problems(conflicts, lambda n: cited.get(n, []))
 
         digest = synthesize(llm, read_prompt("digest"), request, extraction.items, on_call=on_call, check=check)
         # 必须保留的信息放在最前面：结果超出工具预算被截断时，截掉的是末尾

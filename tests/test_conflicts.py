@@ -174,3 +174,15 @@ def test_agent_answer_that_unifies_conflict_is_retried(store):
     assert agent.chat("总结这两份材料") == "项目A 交付时间两份材料不一致：10 月 20 日 / 10 月 25 日。"
     assert len(finals) == 2 and "回答里缺少：项目A 的日期“10 月 20 日”" in finals[1]
     assert sum(1 for m in agent.history if isinstance(m, AIMessage) and not m.tool_calls) == 1  # 重试过程不进会话历史
+
+
+def test_conflict_needs_each_value_written_not_just_cited():
+    """两个编号标在同一行、却只写了一个日期：取值没写出来，要求重写。"""
+    from briefly.conflicts import FactConflict, conflict_problems
+
+    c = FactConflict(subject="项目A", attribute="date", values=["10 月 20 日", "10 月 25 日"], sources=["1-1", "2-1"],
+                     numbers=[1, 2], origins=["material", "material"], fact_ids=["1-1.1", "2-1.1"])
+    one_line = {1: ["- 项目A 交付时间为 10 月 25 日〔#1、#2〕"], 2: ["- 项目A 交付时间为 10 月 25 日〔#1、#2〕"]}
+    assert conflict_problems([c], lambda n: one_line.get(n, [])) and "#1（10 月 20 日）" in conflict_problems([c], lambda n: one_line.get(n, []))[0]
+    both = {1: ["- 交付时间：10 月 20 日〔#1〕/ 10 月 25 日〔#2〕"], 2: ["- 交付时间：10 月 20 日〔#1〕/ 10 月 25 日〔#2〕"]}
+    assert conflict_problems([c], lambda n: both.get(n, [])) == []
