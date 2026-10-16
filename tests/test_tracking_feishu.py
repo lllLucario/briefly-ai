@@ -136,7 +136,7 @@ def test_wiki_link_and_duplicates(env):
 @pytest.mark.parametrize(
     "url, message",
     [
-        ("https://abc.feishu.cn/base/bascnAbCdEfGhIjKl", "多维表格暂不支持追踪"),
+        ("https://abc.feishu.cn/base/bascnAbCdEfGhIjKl", "暂不支持追踪"),
         ("https://abc.feishu.cn/sheets/shtcnAbCdEfGhIjKl", "电子表格"),
     ],
 )
@@ -187,3 +187,127 @@ def test_attribution_uses_last_editor():
     assert status == INFERRED
     status, _, flags = judge(["张三"], None, meta)
     assert status != INFERRED and "others" in flags
+
+
+# ---- 飞书文件夹：整个文件夹一起追踪
+class Drive:
+    """可变的飞书云空间：文件夹 → 条目；文档 → 段落。"""
+
+    def __init__(self) -> None:
+        self.folders = {
+            "fldcnProject0001": [("docA1234567890", "docx", "方案"), ("fldcnSubdir00002", "folder", "子目录"), ("bascnX1234567", "bitable", "任务表")],
+            "fldcnSubdir00002": [("docB1234567890", "docx", "纪要")],
+        }
+        self.docs = {"docA1234567890": ["方案初稿"], "docB1234567890": ["周会纪要"]}
+        self.revisions = {k: 1 for k in self.docs}
+        self.list_error = None
+
+    def routes(self) -> dict:
+        def files(request):
+            if self.list_error:
+                return self.list_error
+            token = request.url.params.get("folder_token", "")
+            return {"files": [{"token": t, "type": k, "name": n} for t, k, n in self.folders.get(token, [])], "has_more": False}
+
+        def doc(request):
+            token = request.url.path.split("/")[5]
+            return {"document": {"document_id": token, "revision_id": self.revisions[token], "title": token}}
+
+        def blocks(request):
+            token = request.url.path.split("/")[5]
+            ids = [f"p{i}" for i in range(len(self.docs[token]))]
+            items = [{"block_id": token, "block_type": 1, "page": {"elements": [{"text_run": {"content": token}}]}, "children": ids}]
+            items += [{"block_id": i, "block_type": 2, "text": {"elements": [{"text_run": {"content": p}}]}} for i, p in zip(ids, self.docs[token])]
+            return {"items": items, "has_more": False}
+
+        routes = {
+            ("GET", f"{API}/drive/v1/files"): files,
+            ("GET", f"{API}/drive/explorer/v2/folder/fldcnProject0001/meta"): {"name": "项目资料"},
+            ("POST", f"{API}/drive/v1/metas/batch_query"): {"metas": []},
+        }
+        for token in ["docA1234567890", "docB1234567890", "docC1234567890"]:
+            routes[("GET", f"{API}/docx/v1/documents/{token}")] = doc
+            routes[("GET", f"{API}/docx/v1/documents/{token}/blocks")] = blocks
+        return routes
+
+
+@pytest.fixture
+def folder_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "TRACKING_DIR", str(tmp_path / "store"))
+    drive = Drive()
+    fake = FakeFeishu(drive.routes())
+    engine = create_db_engine("sqlite://")
+    svc = TrackingService(engine, MaterialStore(engine), BlobStore(tmp_path / "store"), feishu_factory=fake.client)
+    yield svc, drive
+    engine.dispose()
+
+
+FOLDER_URL = "https://abc.feishu.cn/drive/folder/fldcnProject0001"
+
+
+def files_by_doc(svc, c):
+    return {f.path_key.rsplit("/", 1)[-1]: f for f in svc.files(c.id)}
+
+
+def test_track_whole_folder(folder_env):
+    svc, drive = folder_env
+    c = svc.create_collection("项目A")
+    r = svc.add_paths(c.id, [FOLDER_URL])
+    [source] = r.added
+    assert (source.kind, source.path, source.recursive) == ("feishu_folder", "feishu://folder/fldcnProject0001", True)
+    files = files_by_doc(svc, c)
+    assert set(files) == {"docA1234567890", "docB1234567890"}  # 子文件夹里的也算；多维表格跳过
+    assert all(svc.snapshots(f.id)[0].kind == "baseline" for f in files.values())
+    info = svc.feishu_folders(c.id)[source.id]
+    assert (info.name, info.docs, info.skipped) == ("项目资料", 2, 1)
+    members = svc.folder_members(c.id)
+    assert members["feishu://docx/docB1234567890"] == [(source.id, "子目录/纪要")]
+    assert svc.add_paths(c.id, [FOLDER_URL]).messages[0].endswith("已在追踪（追踪源 1）")
+
+
+def test_folder_picks_up_new_docs_and_drops_removed_ones(folder_env):
+    svc, drive = folder_env
+    c = svc.create_collection("项目A")
+    svc.add_paths(c.id, [FOLDER_URL])
+    drive.folders["fldcnProject0001"].append(("docC1234567890", "docx", "新文档"))
+    drive.docs["docC1234567890"], drive.revisions["docC1234567890"] = ["新写的内容"], 1
+    drive.folders["fldcnProject0001"] = [x for x in drive.folders["fldcnProject0001"] if x[0] != "docA1234567890"]  # 移出文件夹
+    drive.docs["docB1234567890"].append("补充结论")
+    drive.revisions["docB1234567890"] = 2
+    stats = svc.scan(c.id).stats
+    files = files_by_doc(svc, c)
+    assert files["docC1234567890"].status == "present" and files["docA1234567890"].status == "untracked"
+    changes = {(ch.file_id, ch.change_type) for ch in svc.changes(c.id)}
+    assert (files["docC1234567890"].id, "CREATED") in changes and (files["docB1234567890"].id, "MODIFIED") in changes
+    assert stats["untracked"] == 1
+
+
+def test_folder_listing_failure_keeps_members(folder_env):
+    svc, drive = folder_env
+    c = svc.create_collection("项目A")
+    svc.add_paths(c.id, [FOLDER_URL])
+    drive.list_error = feishu_error(1061004, "forbidden", 403)
+    svc.scan(c.id)
+    assert all(f.status == "present" for f in svc.files(c.id))  # 没有因为列不出而误标“已不追踪”
+    assert "沿用上次的文档名单" in svc.sources(c.id)[0].last_error
+    drive.list_error = None
+    svc.scan(c.id)
+    assert svc.sources(c.id)[0].last_error == ""
+
+
+def test_removing_folder_untracks_its_docs_and_delete_cleans_up(folder_env):
+    svc, drive = folder_env
+    c = svc.create_collection("项目A")
+    source = svc.add_paths(c.id, [FOLDER_URL]).added[0]
+    svc.remove_source(source.id)
+    assert {f.status for f in svc.files(c.id)} == {"untracked"}
+    svc.delete_collection(c.id)  # 两张文件夹表一起清理，不留孤儿记录
+    assert svc.list_collections() == []
+
+
+def test_folder_cannot_be_imported_as_material(folder_env):
+    from briefly.feishu.service import import_link
+
+    svc, drive = folder_env
+    with svc.feishu_factory() as client, pytest.raises(ValueError, match="文件夹不能直接导入"):
+        import_link(client, svc.store, FOLDER_URL)

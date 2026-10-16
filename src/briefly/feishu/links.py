@@ -3,9 +3,9 @@ import re
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
 
-DOCX, WIKI, BITABLE, MINUTES = "docx", "wiki", "bitable", "minutes"
+DOCX, WIKI, BITABLE, MINUTES, FOLDER = "docx", "wiki", "bitable", "minutes", "folder"
 _HOSTS = ("feishu.cn", "larksuite.com", "larkoffice.com", "feishu.net")
-_KINDS = {"docx": DOCX, "wiki": WIKI, "base": BITABLE, "minutes": MINUTES}
+_KINDS = {"docx": DOCX, "wiki": WIKI, "base": BITABLE, "minutes": MINUTES, "folder": FOLDER}  # 文件夹：/drive/folder/<token>，只能追踪
 _UNSUPPORTED = {
     "docs": "旧版飞书文档（/docs/）不支持，请在飞书中升级为新版文档后再粘贴链接",
     "sheets": "飞书电子表格暂不支持，可以导出为 Excel 后上传",
@@ -17,7 +17,7 @@ _UNSUPPORTED = {
 
 @dataclass(frozen=True)
 class FeishuLink:
-    kind: str  # docx / wiki / bitable / minutes
+    kind: str  # docx / wiki / bitable / minutes / folder
     token: str
     table_id: str = ""  # 多维表格：链接里的 ?table=
     view_id: str = ""  # 多维表格：链接里的 ?view=

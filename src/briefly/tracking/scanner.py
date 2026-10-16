@@ -50,6 +50,8 @@ from .models import (
     UNREACHABLE,
     UNTRACKED,
     FileChange,
+    FeishuFolder,
+    FeishuFolderMember,
     FileSnapshot,
     ScanLock,
     ScanRun,
@@ -73,6 +75,12 @@ SYSTEM_FILES = {"thumbs.db", "desktop.ini", ".ds_store"}
 
 # 飞书文档追踪源：path 为 feishu://docx/<document_id>，同时作为文件记录的 path_key
 FEISHU, FEISHU_PREFIX = "feishu", "feishu://"
+# 飞书文件夹追踪源：path 为 feishu://folder/<folder_token>；每次检查更新列出其中的文档（成员记在 feishu_folder_members）
+FEISHU_FOLDER = "feishu_folder"
+
+
+def feishu_folder_key(folder_token: str) -> str:
+    return f"{FEISHU_PREFIX}folder/{folder_token}"
 
 
 def feishu_key(document_id: str) -> str:
@@ -179,7 +187,12 @@ def _add(listing: Listing, path: Path, source_id: int) -> None:
 
 
 def covers(source: TrackingSource, key: str) -> bool:
-    """追踪源是否覆盖这个路径（不看文件是否存在）。"""
+    """追踪源是否覆盖这个路径（不看文件是否存在）。
+
+    飞书文件夹按成员名单判断：调用方需先把名单挂在 source.members 上（attach_members）。
+    """
+    if source.kind == FEISHU_FOLDER:
+        return key in getattr(source, "members", ())
     if source.kind == FEISHU or key.startswith(FEISHU_PREFIX):
         return source.kind == FEISHU and key == source.path
     src = path_key(source.path)
@@ -188,6 +201,29 @@ def covers(source: TrackingSource, key: str) -> bool:
     if source.recursive:
         return is_within(key, src) and key != src
     return path_key(Path(key).parent) == src
+
+
+def attach_members(session: Session, sources: list[TrackingSource]) -> None:
+    """把飞书文件夹最近一次列出的文档名单挂到 source.members 上，供 covers 判断。"""
+    folders = [x for x in sources if x.kind == FEISHU_FOLDER]
+    if not folders:
+        return
+    rows = session.execute(
+        select(FeishuFolderMember.source_id, FeishuFolderMember.file_key).where(
+            FeishuFolderMember.source_id.in_([x.id for x in folders])
+        )
+    ).all()
+    for x in folders:
+        x.members = {key for sid, key in rows if sid == x.id}
+
+
+@dataclass
+class _FeishuTarget:
+    """要扫描的一篇飞书文档：来自单独添加的文档追踪源，或某个飞书文件夹的成员。"""
+
+    path: str  # feishu://docx/<id>
+    source: TrackingSource  # 来源追踪源（文件夹成员指向文件夹）
+    via_folder: bool = False
 
 
 def expected_daily_dates(after: date, until: date) -> list[date]:
@@ -355,10 +391,18 @@ class Scanner:
         with self._session() as s:
             sources = list(s.scalars(select(TrackingSource).where(TrackingSource.collection_id == collection_id)))
             files = list(s.scalars(select(TrackedFile).where(TrackedFile.collection_id == collection_id)))
+            attach_members(s, sources)
         active = [x for x in sources if x.status == ACTIVE]
         paused = [x for x in sources if x.status == PAUSED]
-        feishu_sources = [x for x in active if x.kind == FEISHU]
-        active = [x for x in active if x.kind != FEISHU]
+        feishu_sources = [x for x in active if x.kind in (FEISHU, FEISHU_FOLDER)]
+        active = [x for x in active if x.kind not in (FEISHU, FEISHU_FOLDER)]
+        # 飞书文件夹：先列出当前成员（新加的文档纳入，移出的不再覆盖）；列不出时沿用上次的名单
+        feishu_client = None
+        if any(x.kind == FEISHU_FOLDER for x in feishu_sources):
+            feishu_client = self._feishu_client(feishu_sources, stats)
+            if feishu_client is not None:
+                for folder in [x for x in feishu_sources if x.kind == FEISHU_FOLDER]:
+                    self._list_feishu_folder(feishu_client, folder)
 
         listing = Listing()
         for source in active:
@@ -424,9 +468,17 @@ class Scanner:
             self._scan_new(collection_id, key, path, kind, run, stats, vanished, vanished_hash, claimed)
             processed += 1
 
-        # 飞书文档：按版本号判断有没有变化，变了才读取全部内容
+        # 飞书文档（单独添加的 + 文件夹成员，同一篇只扫一次）：按版本号判断有没有变化，变了才读取全部内容
         if feishu_sources:
-            self._scan_feishu(collection_id, feishu_sources, by_key, run, trigger, baseline_sources, stats)
+            targets: dict[str, _FeishuTarget] = {}
+            for x in feishu_sources:
+                if x.kind == FEISHU:
+                    targets.setdefault(x.path, _FeishuTarget(x.path, x))
+            for x in feishu_sources:
+                if x.kind == FEISHU_FOLDER:
+                    for key in sorted(x.members):
+                        targets.setdefault(key, _FeishuTarget(key, x, via_folder=True))
+            self._scan_feishu(collection_id, list(targets.values()), by_key, run, trigger, baseline_sources, stats, feishu_client)
 
         # 4. 确实不在了的文件（没有被认作移动）记 DELETED
         for f in vanished:
@@ -452,15 +504,51 @@ class Scanner:
                 s.commit()
             stats["deleted"] += 1
 
+    def _feishu_client(self, sources: list[TrackingSource], stats: dict):
+        """创建飞书客户端；未配置或创建失败时把错误记到这些追踪源上，返回 None。"""
+        from ..feishu import FeishuError
+        from ..feishu.client import default_client
+
+        try:
+            return (self.feishu_factory or default_client)()
+        except FeishuError as e:
+            for source in sources:
+                self._source_error(source, str(e))
+            return None
+
+    def _list_feishu_folder(self, client, folder: TrackingSource) -> None:
+        """列出飞书文件夹里的文档并更新成员名单；失败时保留旧名单、记录原因。"""
+        from ..feishu import FeishuError
+        from ..feishu.drive import walk_folder
+
+        token = folder.path.rsplit("/", 1)[-1]
+        try:
+            listed = walk_folder(client, token)
+        except FeishuError as e:
+            self._source_error(folder, f"文件夹暂时无法列出，沿用上次的文档名单：{e}")
+            return
+        members = {feishu_key(doc): rel for doc, rel in listed.docs}
+        with self._session() as s:
+            s.execute(delete(FeishuFolderMember).where(FeishuFolderMember.source_id == folder.id))
+            s.add_all(FeishuFolderMember(source_id=folder.id, file_key=k, rel_path=r) for k, r in members.items())
+            info = s.get(FeishuFolder, folder.id) or FeishuFolder(source_id=folder.id)
+            info.docs, info.skipped, info.listed_at = len(members), listed.skipped, datetime.now()
+            s.merge(info)
+            s.commit()
+        folder.members = set(members)
+        note = f"文档超过 {len(members)} 篇，只追踪了前 {len(members)} 篇" if listed.truncated else ""
+        self._source_error(folder, note)
+
     def _scan_feishu(
         self,
         collection_id: int,
-        sources: list[TrackingSource],
+        targets: list[_FeishuTarget],
         by_key: dict[str, TrackedFile],
         run: ScanRun,
         trigger: str,
         baseline_sources: set[int],
         stats: dict,
+        client=None,
     ) -> None:
         """飞书文档：版本号（revision_id）没变就跳过；变了读取全部块转成 Markdown，内容不同才保存新版本。
 
@@ -468,24 +556,27 @@ class Scanner:
         只能说明最后一次编辑的人，归属最多 INFERRED。
         """
         from ..feishu import FeishuError
-        from ..feishu.client import default_client
         from ..feishu.contact import user_name
         from ..feishu.docx import document_meta, document_revision, read_document
 
-        try:
-            client = (self.feishu_factory or default_client)()
-        except FeishuError as e:
-            for source in sources:
-                self._source_error(source, str(e))
-                if (f := by_key.get(source.path)) is not None and f.status == PRESENT:
-                    self._set_status(f.id, UNREACHABLE, str(e))
-                    stats["unreachable"] += 1
-            return
+        def source_error(target: _FeishuTarget, problem: str) -> None:
+            if not target.via_folder:  # 文件夹成员的问题记在文件上，不覆盖文件夹的状态
+                self._source_error(target.source, problem)
+
+        if client is None:
+            client = self._feishu_client([t.source for t in targets if not t.via_folder], stats)
+            if client is None:
+                for target in targets:
+                    if (f := by_key.get(target.path)) is not None and f.status == PRESENT:
+                        self._set_status(f.id, UNREACHABLE, "未配置飞书应用，或飞书客户端创建失败")
+                        stats["unreachable"] += 1
+                return
         names: dict[str, str] = {}
         with client:
-            for source in sources:
-                document_id = source.path.rsplit("/", 1)[-1]
-                f = by_key.get(source.path)
+            for target in targets:
+                source = target.source
+                document_id = target.path.rsplit("/", 1)[-1]
+                f = by_key.get(target.path)
                 stats["files"] += 1
                 try:
                     title, revision = document_revision(client, document_id)
@@ -493,19 +584,19 @@ class Scanner:
                     if f and latest and f.status == PRESENT and revision is not None and f.mtime == revision:
                         stats["stat_skipped"] += 1  # 版本号没变：不读内容
                         stats["unchanged"] += 1
-                        self._source_error(source, "")
+                        source_error(target, "")
                         continue
                     doc = read_document(client, document_id)
                     meta = {"revision_id": doc.revision_id, "title": doc.title, **document_meta(client, document_id)}
                     if meta.get("last_modified_by_id"):
                         meta["last_modified_by"] = user_name(client, meta["last_modified_by_id"], names)
                 except FeishuError as e:
-                    self._source_error(source, str(e))
+                    source_error(target, str(e))
                     if f is not None and f.status not in (UNREACHABLE, UNTRACKED):
                         self._set_status(f.id, UNREACHABLE, str(e))
                     stats["unreachable"] += 1
                     continue
-                self._source_error(source, "")
+                source_error(target, "")
                 safe = re.sub(r'[\\/:*?"<>|\r\n]+', "_", doc.title).strip() or document_id
                 display = f"{FEISHU_PREFIX}docx/{document_id}/{safe}"  # 展示名取最后一段，即文档标题
                 data = f"# {doc.title}\n\n{doc.markdown}".encode("utf-8")
@@ -515,7 +606,7 @@ class Scanner:
                     f = TrackedFile(
                         collection_id=collection_id,
                         path=display,
-                        path_key=source.path,
+                        path_key=target.path,
                         file_type=FEISHU,
                         status=PRESENT,
                         first_seen_at=datetime.now(),

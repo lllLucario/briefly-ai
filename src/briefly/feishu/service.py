@@ -12,7 +12,7 @@ from ..materials import Material, MaterialStore
 from .bitable import read_table
 from .client import FeishuClient, FeishuError
 from .docx import create_document, document_meta, document_url, read_document, share_with
-from .links import BITABLE, DOCX, MINUTES, WIKI, FeishuLink, parse_link
+from .links import BITABLE, DOCX, FOLDER, MINUTES, WIKI, FeishuLink, parse_link
 from .minutes import read_minutes
 
 # 周报的栏目行（【本周完成】）写成飞书文档的二级标题
@@ -48,6 +48,8 @@ def resolve(client: FeishuClient, link: FeishuLink) -> FeishuLink:
 
 def fetch(client: FeishuClient, url: str) -> Fetched:
     link = resolve(client, parse_link(url))
+    if link.kind == FOLDER:
+        raise ValueError("文件夹不能直接导入：可以把整个文件夹加入周报计划持续追踪，或展开后勾选其中的文档导入")
     if link.kind == DOCX:
         doc = read_document(client, link.token)
         return Fetched(DOCX, link.token, doc.title, doc.markdown, url, doc.revision_id, doc.warnings)

@@ -78,8 +78,12 @@ class SettingsIn(BaseModel):
     author: str = ""  # 默认署名（写在周报上的名字）
 
 
-def _source(x) -> dict:
-    return {"id": x.id, "kind": x.kind, "path": x.path, "recursive": x.recursive, "status": x.status, "last_error": x.last_error}
+def _source(x, folders: dict | None = None) -> dict:
+    out = {"id": x.id, "kind": x.kind, "path": x.path, "recursive": x.recursive, "status": x.status, "last_error": x.last_error}
+    info = (folders or {}).get(x.id)
+    if info is not None:  # 飞书文件夹：名称、追踪的文档数、跳过的非文档项
+        out["folder"] = {"name": info.name, "docs": info.docs, "skipped": info.skipped, "listed_at": info.listed_at}
+    return out
 
 
 def _scan(result) -> dict | None:
@@ -188,12 +192,14 @@ def register(app: FastAPI, model_factory: Callable[[], BaseChatModel], feishu_fa
     # ---- 追踪源与文件
     @app.get("/tracking/collections/{ref}/sources", tags=[docs.TRACKING], summary="追踪源列表")
     def sources(ref: str):
-        return [_source(x) for x in svc().sources(ref)]
+        folders = svc().feishu_folders(ref)
+        return [_source(x, folders) for x in svc().sources(ref)]
 
     @app.post("/tracking/collections/{ref}/sources", tags=[docs.TRACKING], summary="添加文件或文件夹（可多个），立即采集基线")
     def add_sources(ref: str, body: PathsIn):
         result = svc().add_paths(ref, body.paths, recursive=body.recursive)
-        return {"added": [_source(x) for x in result.added], "messages": result.messages, "scan": _scan(result.scan)}
+        folders = svc().feishu_folders(ref)
+        return {"added": [_source(x, folders) for x in result.added], "messages": result.messages, "scan": _scan(result.scan)}
 
     @app.post("/tracking/sources/{source_id}/{action}", tags=[docs.TRACKING], summary="暂停 / 恢复 / 移除追踪源")
     def source_action(source_id: int, action: str):
@@ -210,10 +216,11 @@ def register(app: FastAPI, model_factory: Callable[[], BaseChatModel], feishu_fa
     @app.get("/tracking/collections/{ref}/files", tags=[docs.TRACKING], summary="被追踪的文件")
     def files(ref: str):
         s = svc()
-        counts, changes = s.snapshot_counts(ref), s.last_changes(ref)
+        counts, changes, members = s.snapshot_counts(ref), s.last_changes(ref), s.folder_members(ref)
         return [
             {"id": f.id, "path": f.path, "file_type": f.file_type, "status": f.status, "versions": counts.get(f.id, 0),
-             "last_change": changes.get(f.id), "last_error": f.last_error, "moved_from_id": f.moved_from_id}
+             "last_change": changes.get(f.id), "last_error": f.last_error, "moved_from_id": f.moved_from_id,
+             "folders": [{"source_id": sid, "rel_path": rel} for sid, rel in members.get(f.path_key, [])]}
             for f in s.files(ref)
         ]  # fmt: skip
 

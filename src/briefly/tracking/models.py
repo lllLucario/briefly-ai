@@ -1,7 +1,8 @@
 """文件追踪的数据模型（业务库，与材料、周报同库）。
 
 实体关系：
-    TrackingCollection 1─n TrackingSource（文件、文件夹或飞书文档）
+    TrackingCollection 1─n TrackingSource（文件、文件夹、飞书文档或飞书文件夹）
+    TrackingSource(feishu_folder) 1─1 FeishuFolder、1─n FeishuFolderMember（文件夹里当前的文档）
     TrackingCollection 1─1 PlanSettings（网页上的“周报计划”：默认读者、署名）
     TrackingCollection 1─n TrackedFile（被追踪的文件；id 是永久身份，路径可变）
     TrackedFile 1─n FileSnapshot（版本；原始字节按 SHA-256 存在版本库，解析文本存为材料）
@@ -84,12 +85,35 @@ class PlanSettings(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class FeishuFolder(Base):
+    """飞书文件夹追踪源（kind=feishu_folder）的名称与最近一次列出的统计。"""
+
+    __tablename__ = "feishu_folders"
+
+    source_id: Mapped[int] = mapped_column(ForeignKey("tracking_sources.id", ondelete="CASCADE"), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), default="")
+    docs: Mapped[int] = mapped_column(Integer, default=0)  # 追踪的文档数
+    skipped: Mapped[int] = mapped_column(Integer, default=0)  # 不能追踪的项（多维表格、电子表格、文件等）
+    listed_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class FeishuFolderMember(Base):
+    """飞书文件夹里最近一次列出的文档：决定哪些文档属于这个追踪源，rel_path 用于按文件夹结构显示。
+    列出失败时保留上一次的名单，文档不会被误标为“已不追踪”。"""
+
+    __tablename__ = "feishu_folder_members"
+
+    source_id: Mapped[int] = mapped_column(ForeignKey("tracking_sources.id", ondelete="CASCADE"), primary_key=True)
+    file_key: Mapped[str] = mapped_column(String(200), primary_key=True)  # feishu://docx/<id>
+    rel_path: Mapped[str] = mapped_column(Text, default="")  # 子文件夹/文档标题
+
+
 class TrackingSource(Base):
     __tablename__ = "tracking_sources"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     collection_id: Mapped[int] = mapped_column(ForeignKey("tracking_collections.id", ondelete="CASCADE"), index=True)
-    kind: Mapped[str] = mapped_column(String(10))  # file / folder
+    kind: Mapped[str] = mapped_column(String(16))  # file / folder / feishu / feishu_folder
     path: Mapped[str] = mapped_column(Text)  # 绝对路径（添加时 resolve）
     recursive: Mapped[bool] = mapped_column(Boolean, default=True)
     status: Mapped[str] = mapped_column(String(10), default=ACTIVE)

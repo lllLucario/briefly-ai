@@ -20,6 +20,8 @@ from .models import (
     REMOVED,
     UNTRACKED,
     EvidenceReview,
+    FeishuFolder,
+    FeishuFolderMember,
     FileChange,
     FileSnapshot,
     Notification,
@@ -35,7 +37,19 @@ from .models import (
     WeeklySchedule,
     WorkEvidence,
 )
-from .scanner import FEISHU, ScanResult, Scanner, covers, feishu_key, is_supported, is_within, path_key
+from .scanner import (
+    FEISHU,
+    FEISHU_FOLDER,
+    ScanResult,
+    Scanner,
+    attach_members,
+    covers,
+    feishu_folder_key,
+    feishu_key,
+    is_supported,
+    is_within,
+    path_key,
+)
 
 
 class TrackingNotFound(MaterialNotFound):
@@ -128,6 +142,9 @@ class TrackingService:
             s.execute(delete(TrackedFile).where(TrackedFile.collection_id == c.id))
             s.execute(delete(ScanRun).where(ScanRun.collection_id == c.id))
             s.execute(delete(ScanLock).where(ScanLock.collection_id == c.id))
+            source_ids = select(TrackingSource.id).where(TrackingSource.collection_id == c.id)
+            s.execute(delete(FeishuFolderMember).where(FeishuFolderMember.source_id.in_(source_ids)))
+            s.execute(delete(FeishuFolder).where(FeishuFolder.source_id.in_(source_ids)))
             s.execute(delete(TrackingSource).where(TrackingSource.collection_id == c.id))
             s.execute(delete(PlanSettings).where(PlanSettings.collection_id == c.id))
             s.execute(delete(TrackingCollection).where(TrackingCollection.id == c.id))
@@ -137,24 +154,36 @@ class TrackingService:
         collect_garbage(self.engine, self.blobs)
 
     # ---- 追踪源
-    def _feishu_path(self, raw: str) -> str:
-        """飞书链接 → 追踪源路径 feishu://docx/<id>：知识库链接换成文档本身，并确认应用能读取。"""
+    def _feishu_path(self, raw: str) -> tuple[str, str, str]:
+        """飞书链接 → (追踪源类型, 路径, 文件夹名)。
+
+        文档：feishu://docx/<id>（知识库链接换成文档本身），确认能读取；
+        文件夹：feishu://folder/<token>，确认能列出（通常要连接飞书账号，应用身份看不到个人云空间）。
+        """
         from ..feishu import FeishuError, parse_link
         from ..feishu.client import default_client
         from ..feishu.docx import document_revision
-        from ..feishu.links import BITABLE
+        from ..feishu.drive import folder_name, list_folder
+        from ..feishu.links import BITABLE, FOLDER, MINUTES
         from ..feishu.service import resolve
 
         link = parse_link(raw)
         try:
             with (self.feishu_factory or default_client)() as client:
+                if link.kind == FOLDER:
+                    list_folder(client, link.token)
+                    try:
+                        name = folder_name(client, link.token)
+                    except FeishuError:
+                        name = ""
+                    return FEISHU_FOLDER, feishu_folder_key(link.token), name
                 link = resolve(client, link)
-                if link.kind == BITABLE:
-                    raise ValueError("多维表格暂不支持追踪，可以在“材料”页粘贴链接导入当前内容")
+                if link.kind in (BITABLE, MINUTES):
+                    raise ValueError("多维表格、妙记暂不支持追踪，可以在“材料”页导入当前内容")
                 document_revision(client, link.token)
         except FeishuError as e:
             raise ValueError(str(e)) from e
-        return feishu_key(link.token)
+        return FEISHU, feishu_key(link.token), ""
 
     def add_paths(self, ref: str | int, paths: list[str], recursive: bool = True, scan: bool = True) -> AddResult:
         """批量添加文件、文件夹或飞书文档链接，并立即扫描建立 Baseline。"""
@@ -166,15 +195,22 @@ class TrackingService:
         for raw in paths:
             if looks_like_feishu(raw):
                 try:
-                    key = self._feishu_path(raw)
+                    kind, key, name = self._feishu_path(raw)
                 except ValueError as e:
                     result.messages.append(f"{raw}：{e}，未添加")
                     continue
-                same = next((x for x in existing if x.kind == FEISHU and x.path == key), None)
+                same = next((x for x in existing if x.kind == kind and x.path == key), None)
                 if same and same.status != REMOVED:
                     result.messages.append(f"{raw}：已在追踪（追踪源 {same.id}）")
                     continue
-                result.added.append(self._save_source(c.id, same, FEISHU, key, False, existing))
+                source = self._save_source(c.id, same, kind, key, kind == FEISHU_FOLDER, existing)
+                if kind == FEISHU_FOLDER:
+                    with self._session() as s:
+                        info = s.get(FeishuFolder, source.id) or FeishuFolder(source_id=source.id)
+                        info.name = name or info.name
+                        s.merge(info)
+                        s.commit()
+                result.added.append(source)
                 continue
             try:
                 p = Path(raw).expanduser().resolve(strict=True)
@@ -265,6 +301,7 @@ class TrackingService:
                     )
                 )
             )
+            attach_members(s, [source, *active])  # 飞书文件夹按成员名单判断覆盖
             for f in s.scalars(select(TrackedFile).where(TrackedFile.collection_id == source.collection_id)):
                 if covers(source, f.path_key) and not any(covers(x, f.path_key) for x in active):
                     f.status, f.last_error = UNTRACKED, "所属追踪源已移除"
@@ -314,6 +351,30 @@ class TrackingService:
         c = self.collection(ref)
         with self._session() as s:
             return s.scalar(select(func.max(ScanRun.finished_at)).where(ScanRun.collection_id == c.id, ScanRun.status == DONE))
+
+    def feishu_folders(self, ref: str | int) -> dict[int, FeishuFolder]:
+        """飞书文件夹追踪源的名称与统计：{追踪源编号: FeishuFolder}。"""
+        c = self.collection(ref)
+        with self._session() as s:
+            rows = s.scalars(
+                select(FeishuFolder).join(TrackingSource, TrackingSource.id == FeishuFolder.source_id)
+                .where(TrackingSource.collection_id == c.id)
+            )
+            return {x.source_id: x for x in rows}
+
+    def folder_members(self, ref: str | int) -> dict[str, list[tuple[int, str]]]:
+        """飞书文档属于哪些文件夹追踪源：{feishu://docx/<id>: [(追踪源编号, 相对路径)]}。"""
+        c = self.collection(ref)
+        with self._session() as s:
+            rows = s.execute(
+                select(FeishuFolderMember.file_key, FeishuFolderMember.source_id, FeishuFolderMember.rel_path)
+                .join(TrackingSource, TrackingSource.id == FeishuFolderMember.source_id)
+                .where(TrackingSource.collection_id == c.id)
+            ).all()
+        out: dict[str, list[tuple[int, str]]] = {}
+        for key, sid, rel in rows:
+            out.setdefault(key, []).append((sid, rel))
+        return out
 
     def files(self, ref: str | int) -> list[TrackedFile]:
         c = self.collection(ref)

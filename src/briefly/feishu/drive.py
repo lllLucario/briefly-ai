@@ -82,3 +82,43 @@ def search(client: FeishuClient, query: str, limit: int = 20) -> list[DriveItem]
         title = _TAG.sub("", unit.get("title_highlighted") or meta.get("title") or "")
         items.append(_item(token, title, kind, url, meta.get("update_time"), meta.get("owner_name", "")))
     return items
+
+
+# 追踪飞书文件夹时的上限：文档太多会让每次检查更新很慢（每篇文档一次接口调用），也容易触发限频
+FOLDER_MAX_DOCS = 200
+FOLDER_MAX_DEPTH = 10
+
+
+@dataclass
+class FolderDocs:
+    docs: list[tuple[str, str]]  # (文档 token, 在文件夹里的相对路径：子文件夹/标题)
+    skipped: int  # 不能追踪的项（多维表格、电子表格、思维笔记、普通文件等）
+    truncated: bool  # 超过上限，只取了前 FOLDER_MAX_DOCS 篇
+
+
+def walk_folder(client: FeishuClient, folder_token: str) -> FolderDocs:
+    """递归列出文件夹里的新版文档（含子文件夹，快捷方式按目标算），广度优先，最多 FOLDER_MAX_DOCS 篇。"""
+    docs: list[tuple[str, str]] = []
+    skipped, seen = 0, set()
+    queue = [(folder_token, "", 0)]
+    while queue:
+        token, prefix, depth = queue.pop(0)
+        for x in list_folder(client, token):
+            name = x.name.replace("/", "／")
+            if x.kind == "folder":
+                if depth + 1 < FOLDER_MAX_DEPTH:
+                    queue.append((x.token, f"{prefix}{name}/", depth + 1))
+            elif x.kind == "docx":
+                if x.token in seen:
+                    continue
+                if len(docs) >= FOLDER_MAX_DOCS:
+                    return FolderDocs(docs, skipped, True)
+                seen.add(x.token)
+                docs.append((x.token, f"{prefix}{name}"))
+            else:
+                skipped += 1
+    return FolderDocs(docs, skipped, False)
+
+
+def folder_name(client: FeishuClient, folder_token: str) -> str:
+    return (client.get(f"/open-apis/drive/explorer/v2/folder/{folder_token}/meta") or {}).get("name", "")
