@@ -212,6 +212,21 @@ def fact_trace(items: list[WorkItem], raw: str) -> tuple[list[dict], list[tuple[
     return trace, partial
 
 
+REPORT_STATUS = {"todo": "未开始", "doing": "进行中", "done": "已完成"}
+
+
+def placed(category: str, status: str | None) -> str:
+    """用户给出本次状态时，工作项放进哪个栏目：已完成 → 本周完成，进行中 → 进行中；
+    未开始不等于“下周计划”，原本是计划、问题或其他的保持不变，原本判断为完成或进行中的改为其他。"""
+    if status == "done":
+        return "done"
+    if status == "doing":
+        return "in_progress"
+    if status == "todo" and category in ("done", "in_progress"):
+        return "other"
+    return category
+
+
 class WeeklyService:
     def __init__(self, store: MaterialStore, model_factory: Callable[[], BaseChatModel] = create_chat_model) -> None:
         self.store = store
@@ -434,7 +449,10 @@ class WeeklyService:
         模型基本按给出的顺序写，靠提示词让它重新排序不可靠（实测 W9）。一条记录关联多个待办时都列出。
         """
         groups: dict[int, list[str]] = {}
+        statuses: dict[int, str] = {}  # 用户在审核清单里给出的本次状态（todo / doing / done）
         for ref in todo_refs or []:
+            if ref.get("report_status"):
+                statuses.setdefault(ref["evidence_id"], ref["report_status"])
             todo = ref.get("todo") or {}
             top = todo.get("parent_title") or todo.get("title") or ref["group"]
             groups.setdefault(ref["evidence_id"], [])
@@ -445,10 +463,12 @@ class WeeklyService:
         warnings += [f"工作记录 E{i} 已被删除或撤销确认，未纳入" for i in ids if i not in found]
         items = []
         for e in rows:
-            point = f"{e.title}：{e.description}" if e.description else e.title
+            status = statuses.get(e.id)
+            title = f"{e.title}（{REPORT_STATUS[status]}）" if status else e.title
+            point = f"{title}：{e.description}" if e.description else title
             quote = e.description or e.title
             # 用户明确确认过的工作都要写进周报：按高重要度处理，漏写会触发重写
-            items.append(WorkItem(e.category, point, quote, f"E{e.id}", importance="high", group="、".join(groups.get(e.id, []))))
+            items.append(WorkItem(placed(e.category, status), point, quote, f"E{e.id}", importance="high", group="、".join(groups.get(e.id, []))))
         first: dict[str, int] = {}
         for n, item in enumerate(items):
             first.setdefault(item.group or f"#{n}", n)

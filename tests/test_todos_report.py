@@ -175,7 +175,8 @@ def test_checklist_edits_do_not_touch_the_todo_until_sync_is_confirmed(ctx):
     review.edit(prep.id, item.id, description="方案初稿完成，等待评审")
     bridge = TodoEvidence(env.svc.engine, env.store)
     bridge.set_report_status(review, prep.id, item.id, t.id, DONE)
-    assert review.get(item.id).category == "done"
+    after = review.get(item.id)
+    assert after.category == item.category == "in_progress" and after.description == "方案初稿完成，等待评审"  # 记录本身不变
     fresh = todos.get(t.id)
     assert (fresh.status, fresh.description) == (DOING, "原始说明")
 
@@ -270,7 +271,8 @@ def test_checklist_api_shows_todos_and_requires_sync_confirmation(ctx):
         assert item["todos"][0]["title"] == "写方案" and item["todos"][0]["status"] == DOING
         url = f"/tracking/preps/{prep['id']}/evidence/{item['id']}/todos/{t.id}"
         after = client.put(url, json={"status": "done"}).json()
-        assert after["items"][0]["category"] == "done" and after["items"][0]["todos"][0]["report_status"] == "done"
+        assert after["items"][0]["category"] == "in_progress" and not after["items"][0]["user_edited"]
+        assert after["items"][0]["todos"][0]["report_status"] == "done"
         r = client.post(f"{url}/sync", json={})
         assert r.status_code == 409 and r.json()["confirm"]
         assert client.get(f"/todos/{t.id}").json()["status"] == DOING
@@ -408,3 +410,26 @@ def test_items_of_the_same_parent_are_written_next_to_each_other(ctx):
     report = generate_report(env.svc, WeeklyService(env.store, lambda: model), prep.id)
     order = [i["point"].split("：")[0] for i in report.items]
     assert abs(order.index("接口联调") - order.index("压测")) == 1, order
+
+
+def test_report_status_is_kept_apart_from_the_item(ctx):
+    """本次状态单独保存：不标“你改过”，不改描述和类别；写周报时按它放栏目并写明状态。"""
+    env, c, todos, model = ctx
+    a, b = todos.create("写方案"), todos.create("调研")
+    todos.set_status(a.id, DOING)
+    todos.set_status(b.id, DOING)
+    prep, _, review, items = run_prepare(env, c, model)
+    ids = {e.title: e.id for e in items}
+    review.confirm(prep.id, list(ids.values()))
+    review.confirm_checklist(prep.id)
+    bridge = TodoEvidence(env.svc.engine, env.store)
+    bridge.set_report_status(review, prep.id, ids["写方案"], a.id, DONE)
+    bridge.set_report_status(review, prep.id, ids["调研"], b.id, "todo")
+    assert not review.get(ids["写方案"]).user_edited and review.get(ids["写方案"]).category == "in_progress"
+    assert review.prep(prep.id).status == "draft"  # 清单确认后有修改：回到待确认
+    assert [h.action for h in review.history(prep.id)][-3:] == ["todo_status", "reopen", "todo_status"]
+    review.confirm_checklist(prep.id)
+    report = generate_report(env.svc, WeeklyService(env.store, lambda: model), prep.id)
+    by_title = {i["point"].split("：")[0]: i["category"] for i in report.items}
+    assert by_title == {"写方案（已完成）": "done", "调研（未开始）": "other"}  # 未开始不写进下周计划
+    assert todos.get(a.id).status == DOING  # 待办不变

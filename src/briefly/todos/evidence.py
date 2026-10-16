@@ -59,7 +59,6 @@ from .models import (
 from .service import ConfirmationRequired, TodoNotFound, TodoService
 
 TODO_ALGO = "todo-evidence-v1"
-STATUS_CATEGORY = {DONE: "done", DOING: "in_progress", TODO: "plan"}  # 本次报告状态 → 记录类别
 
 
 @dataclass
@@ -332,20 +331,23 @@ class TodoEvidence:
         return link, e
 
     def set_report_status(self, review, prep_id: int, evidence_id: int, todo_id: int, status: str | None) -> EvidenceTodoLink:
-        """本次报告里这个待办的状态判断：只改本次记录（类别随之调整，留审核记录），不改待办。"""
+        """本次报告里这个待办的状态判断：单独保存（不改记录的描述、类别，不算“你改过”），也不改待办。
+
+        写周报时按这个状态放栏目并写明状态（weekly._evidence_items）。和其他审核操作一样留审核记录；
+        清单已确认的，回到待确认（周报内容变了）。
+        """
         if status is not None and status not in STATUS_NAMES:
             raise ValueError(f"状态只能是 {' / '.join(STATUS_NAMES)}")
         with self._session() as s:
-            link, e = self._link(s, prep_id, evidence_id, todo_id)
+            link, _ = self._link(s, prep_id, evidence_id, todo_id)
+            before = link.report_status
+            if before == status:
+                return link
             link.report_status = status
             link.synced_at = None
+            s.add(EvidenceReview(evidence_id=evidence_id, prep_id=prep_id, action="todo_status", before={"todo_id": todo_id, "report_status": before}, after={"todo_id": todo_id, "report_status": status}, note="本次报告的状态判断"))
+            review._reopen(s, prep_id)
             s.commit()
-        if status is not None and STATUS_CATEGORY[status] != e.category:
-            review.edit(prep_id, evidence_id, category=STATUS_CATEGORY[status])
-        else:
-            with self._session() as s:
-                s.add(EvidenceReview(evidence_id=evidence_id, prep_id=prep_id, action="todo_status", after={"todo_id": todo_id, "report_status": status}, note="本次报告的状态判断"))
-                s.commit()
         return link
 
     def sync_status(self, prep_id: int, evidence_id: int, todo_id: int, confirm: bool = False) -> tuple[Todo, list[str]]:
