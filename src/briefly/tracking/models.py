@@ -1,7 +1,8 @@
 """文件追踪的数据模型（业务库，与材料、周报同库）。
 
 实体关系：
-    TrackingCollection 1─n TrackingSource（文件或文件夹）
+    TrackingCollection 1─n TrackingSource（文件、文件夹或飞书文档）
+    TrackingCollection 1─1 PlanSettings（网页上的“周报计划”：默认读者、署名）
     TrackingCollection 1─n TrackedFile（被追踪的文件；id 是永久身份，路径可变）
     TrackedFile 1─n FileSnapshot（版本；原始字节按 SHA-256 存在版本库，解析文本存为材料）
     TrackingCollection 1─n ScanRun（每次扫描的触发方式、状态、统计）
@@ -70,6 +71,17 @@ class TrackingCollection(Base):
     # 用户在文档里的署名（Word 修订作者、最后修改人），用于归属判断；可多个
     owner_names: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class PlanSettings(Base):
+    """周报计划（网页上对集合的叫法）的默认读者和署名，生成周报时自动带入。单独一张表：create_all 不会给旧库加列。"""
+
+    __tablename__ = "plan_settings"
+
+    collection_id: Mapped[int] = mapped_column(ForeignKey("tracking_collections.id", ondelete="CASCADE"), primary_key=True)
+    audience: Mapped[str] = mapped_column(String(100), default="")
+    author: Mapped[str] = mapped_column(String(100), default="")  # 周报上的署名（不是归属判断用的 owner_names）
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 class TrackingSource(Base):

@@ -1,4 +1,6 @@
-"""文件追踪的接口（/tracking/...）：集合与追踪源、扫描、每周定时、周报准备、审核、生成周报。网页“追踪”页使用。
+"""文件追踪的接口（/tracking/...）：集合与追踪源、扫描、每周定时、周报准备、审核、生成周报。
+
+网页上集合叫“周报计划”，在“周报”页使用；文件追踪的本周准备、追踪的文件、设置都在计划里。
 
 接口函数用 def：扫描、生成候选记录要读文件、调模型，FastAPI 放进线程池执行。集合可以用编号或名称指定。
 """
@@ -12,7 +14,8 @@ from pydantic import BaseModel
 
 from .. import api_docs as docs
 from ..weekly import WeeklyService
-from .collection import TrackingService
+from .collection import TrackingNotFound, TrackingService
+from .diff import Differ, format_hunk
 from .models import CONFIRMED, PENDING, REJECTED, ReportPrep, WorkEvidence
 from .pipeline import generate_report, get_prep, prepare
 from .review import ReviewService
@@ -67,6 +70,12 @@ class ReportIn(BaseModel):
     brief: str = ""
     audience: str | None = None
     name: str | None = None
+    material_ids: list[int] = []  # 额外勾选的材料，与已确认的记录一起写进周报
+
+
+class SettingsIn(BaseModel):
+    audience: str = ""  # 默认读者
+    author: str = ""  # 默认署名（写在周报上的名字）
 
 
 def _source(x) -> dict:
@@ -123,13 +132,23 @@ def register(app: FastAPI, model_factory: Callable[[], BaseChatModel], feishu_fa
     def busy(request, exc: ScanBusy):
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
-    # ---- 集合
-    @app.get("/tracking/collections", tags=[docs.TRACKING], summary="集合列表")
+    def _this_week(c) -> dict | None:
+        """本周的准备情况（网页左栏显示待确认数量）；还没准备时为空。"""
+        try:
+            prep = get_prep(svc(), c.id, create=False)
+        except ValueError:
+            return None
+        items = review().items(prep.id)
+        return {"id": prep.id, "status": prep.status, "pending": sum(1 for e in items if e.review_status == PENDING)}
+
+    # ---- 集合（网页上叫“周报计划”）
+    @app.get("/tracking/collections", tags=[docs.TRACKING], summary="集合（周报计划）列表")
     def list_collections():
         s, schedules = svc(), ScheduleService(svc())
         out = []
         for c in s.list_collections():
             schedule = schedules.get(c.id)
+            settings = s.plan_settings(c.id)
             out.append(
                 {
                     "id": c.id,
@@ -140,9 +159,17 @@ def register(app: FastAPI, model_factory: Callable[[], BaseChatModel], feishu_fa
                     "schedule": None
                     if schedule is None
                     else {"weekday": schedule.weekday, "time": schedule.time, "enabled": schedule.enabled, "text": describe(schedule)},
+                    "settings": {"audience": settings.audience, "author": settings.author},
+                    "this_week": _this_week(c),
+                    "last_scan": s.last_scan(c.id),
                 }
             )
         return out
+
+    @app.put("/tracking/collections/{ref}/settings", tags=[docs.TRACKING], summary="周报计划的默认读者和署名")
+    def set_settings(ref: str, body: SettingsIn):
+        row = svc().set_plan_settings(ref, body.audience, body.author)
+        return {"audience": row.audience, "author": row.author}
 
     @app.post("/tracking/collections", tags=[docs.TRACKING], status_code=201, summary="创建集合")
     def create_collection(body: CollectionIn):
@@ -183,11 +210,38 @@ def register(app: FastAPI, model_factory: Callable[[], BaseChatModel], feishu_fa
     @app.get("/tracking/collections/{ref}/files", tags=[docs.TRACKING], summary="被追踪的文件")
     def files(ref: str):
         s = svc()
-        counts = s.snapshot_counts(ref)
+        counts, changes = s.snapshot_counts(ref), s.last_changes(ref)
         return [
-            {"id": f.id, "path": f.path, "status": f.status, "versions": counts.get(f.id, 0), "last_error": f.last_error, "moved_from_id": f.moved_from_id}
+            {"id": f.id, "path": f.path, "file_type": f.file_type, "status": f.status, "versions": counts.get(f.id, 0),
+             "last_change": changes.get(f.id), "last_error": f.last_error, "moved_from_id": f.moved_from_id}
             for f in s.files(ref)
-        ]
+        ]  # fmt: skip
+
+    @app.get("/tracking/files/{file_id}/versions", tags=[docs.TRACKING], summary="一个文件的版本历史（新的在前）")
+    def file_versions(file_id: int):
+        snaps = svc().snapshots(file_id)
+        kinds = {"baseline": "初始版本", "first_seen": "首次发现", "incremental": "检查更新", "final": "周报前检查"}
+        return [
+            {"id": x.id, "version": x.version, "kind": kinds.get(x.kind, x.kind), "captured_at": x.captured_at, "size": x.size,
+             "parse_error": x.parse_error, "gap_before": x.gap_before}
+            for x in reversed(snaps)
+        ]  # fmt: skip
+
+    @app.get("/tracking/files/{file_id}/diff", tags=[docs.TRACKING], summary="某个版本与上一个版本的差异")
+    def file_diff(file_id: int, version: int):
+        snaps = svc().snapshots(file_id)
+        current = next((x for x in snaps if x.version == version), None)
+        if current is None:
+            raise TrackingNotFound(f"文件 {file_id} 没有第 {version} 个版本")
+        previous = next((x for x in reversed(snaps) if x.version < version), None)
+        result = Differ(svc()).diff(previous, current)
+        return {
+            "from_version": previous.version if previous else None,
+            "to_version": current.version,
+            "hunks": [format_hunk(h, 600) for h in result.hunks],
+            "notes": result.notes,
+            "truncated": result.truncated,
+        }
 
     @app.post("/tracking/collections/{ref}/scan", tags=[docs.TRACKING], summary="手动扫描")
     def scan(ref: str):
@@ -289,5 +343,5 @@ def register(app: FastAPI, model_factory: Callable[[], BaseChatModel], feishu_fa
     @app.post("/tracking/preps/{prep_id}/report", tags=[docs.REVIEW], summary="用已确认的记录生成周报草稿（会调用模型），之后在“周报”页查看")
     def report(prep_id: int, body: ReportIn):
         weekly = WeeklyService(app.state.store, model_factory)
-        result = generate_report(svc(), weekly, prep_id, body.brief, body.audience, body.name)
+        result = generate_report(svc(), weekly, prep_id, body.brief, body.audience, body.name, body.material_ids or None)
         return {"weekly_report_id": result.id, "status": result.status, "error": result.error}

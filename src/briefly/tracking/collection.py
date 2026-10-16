@@ -13,6 +13,7 @@ from ..materials import MaterialNotFound, MaterialStore
 from .blobs import BlobStore
 from .models import (
     ACTIVE,
+    DONE,
     MANUAL,
     PAUSED,
     REGISTER,
@@ -22,6 +23,7 @@ from .models import (
     FileChange,
     FileSnapshot,
     Notification,
+    PlanSettings,
     ReportPrep,
     ScanLock,
     ScheduledRun,
@@ -127,6 +129,7 @@ class TrackingService:
             s.execute(delete(ScanRun).where(ScanRun.collection_id == c.id))
             s.execute(delete(ScanLock).where(ScanLock.collection_id == c.id))
             s.execute(delete(TrackingSource).where(TrackingSource.collection_id == c.id))
+            s.execute(delete(PlanSettings).where(PlanSettings.collection_id == c.id))
             s.execute(delete(TrackingCollection).where(TrackingCollection.id == c.id))
             s.commit()
         from .storage import collect_garbage
@@ -278,6 +281,40 @@ class TrackingService:
         return self.source(source_id)
 
     # ---- 查询
+    # ---- 周报计划的默认读者、署名（网页上把集合叫“周报计划”）
+    def plan_settings(self, ref: str | int) -> PlanSettings:
+        c = self.collection(ref)
+        with self._session() as s:
+            return s.get(PlanSettings, c.id) or PlanSettings(collection_id=c.id, audience="", author="")
+
+    def set_plan_settings(self, ref: str | int, audience: str = "", author: str = "") -> PlanSettings:
+        c = self.collection(ref)
+        with self._session() as s:
+            row = s.get(PlanSettings, c.id)
+            if row is None:
+                row = PlanSettings(collection_id=c.id)
+                s.add(row)
+            row.audience, row.author = audience.strip()[:100], author.strip()[:100]
+            s.commit()
+            return row
+
+    def last_changes(self, ref: str | int) -> dict[int, datetime]:
+        """每个文件最近一次发现变化的时间。"""
+        c = self.collection(ref)
+        with self._session() as s:
+            rows = s.execute(
+                select(FileChange.file_id, func.max(FileChange.detected_at))
+                .where(FileChange.collection_id == c.id)
+                .group_by(FileChange.file_id)
+            ).all()
+        return {file_id: at for file_id, at in rows}
+
+    def last_scan(self, ref: str | int):
+        """最近一次完成的扫描时间；从没扫描过时为 None。"""
+        c = self.collection(ref)
+        with self._session() as s:
+            return s.scalar(select(func.max(ScanRun.finished_at)).where(ScanRun.collection_id == c.id, ScanRun.status == DONE))
+
     def files(self, ref: str | int) -> list[TrackedFile]:
         c = self.collection(ref)
         with self._session() as s:

@@ -109,6 +109,7 @@ class WeeklyOut(BaseModel):
     error: str
     created_at: datetime
     updated_at: datetime
+    plan: dict | None = None  # 来自哪个周报计划 {id, name}；临时周报为空
 
 
 class WeeklyDetail(WeeklyOut):
@@ -194,6 +195,22 @@ class MailStatus(BaseModel):
     configured: bool
     sender: str  # 发件邮箱
     default_to: str  # 默认收件人
+
+
+def plans_of_reports(engine) -> dict[int, dict]:
+    """周报编号 → 生成它的周报计划 {id, name}（周报由某个计划的本周工作生成时）。"""
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+
+    from .tracking.models import ReportPrep, TrackingCollection
+
+    with Session(engine) as s:
+        rows = s.execute(
+            select(ReportPrep.weekly_report_id, TrackingCollection.id, TrackingCollection.name)
+            .join(TrackingCollection, TrackingCollection.id == ReportPrep.collection_id)
+            .where(ReportPrep.weekly_report_id.is_not(None))
+        ).all()
+    return {report_id: {"id": cid, "name": name} for report_id, cid, name in rows}
 
 
 def default_agent(store: MaterialStore) -> Agent:
@@ -415,7 +432,8 @@ def create_app(
 
     @app.get("/weekly-reports", tags=[docs.WEEKLY], response_model=list[WeeklyOut], summary="周报历史")
     def list_weekly(weekly: Weekly):
-        return [weekly_out(r) for r in weekly.list_reports()]
+        plans = plans_of_reports(app.state.store.engine)
+        return [weekly_out(r).model_copy(update={"plan": plans.get(r.id)}) for r in weekly.list_reports()]
 
     @app.get("/weekly-reports/{report_id}", tags=[docs.WEEKLY], response_model=WeeklyDetail, summary="周报详情（轮询看进度）")
     def get_weekly(report_id: int, weekly: Weekly):

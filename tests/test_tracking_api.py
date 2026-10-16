@@ -70,3 +70,43 @@ def test_errors_are_readable(env):
             s.add(ScanLock(collection_id=1, owner="other", expires_at=datetime.now() + timedelta(minutes=5)))
             s.commit()
         assert client.post("/tracking/collections/c/scan").status_code == 409
+
+
+def test_plan_view_endpoints(env):
+    """网页“周报计划”用到的接口：默认设置、本周待确认数、文件类型与最近变化、版本历史与差异、周报带上材料、周报列表标出计划。"""
+    env.write("项目/方案.md", "# 方案\n原有内容")
+    model = make_model()
+    with TestClient(create_app(env.store, model_factory=lambda: model)) as client:
+        client.post("/tracking/collections", json={"name": "项目A"})
+        client.post("/tracking/collections/项目A/sources", json={"paths": [str(env.work / "项目")]})
+        assert client.put("/tracking/collections/项目A/settings", json={"audience": "导师", "author": "王五"}).json() == {"audience": "导师", "author": "王五"}
+        [c] = client.get("/tracking/collections").json()
+        assert c["settings"] == {"audience": "导师", "author": "王五"} and c["this_week"] is None and c["last_scan"]
+
+        env.write("项目/方案.md", "# 方案\n原有内容\n补充灰度发布方案")
+        client.post("/tracking/collections/项目A/scan")
+        [f] = client.get("/tracking/collections/项目A/files").json()
+        assert f["file_type"] == "md" and f["last_change"] and f["versions"] == 2
+        versions = client.get(f"/tracking/files/{f['id']}/versions").json()
+        assert [v["version"] for v in versions] == [2, 1] and versions[1]["kind"] == "初始版本"
+        diff = client.get(f"/tracking/files/{f['id']}/diff", params={"version": 2}).json()
+        assert diff["from_version"] == 1 and any("灰度" in h for h in diff["hunks"])
+        assert client.get(f"/tracking/files/{f['id']}/diff", params={"version": 9}).status_code == 404
+
+        start, end = (d.isoformat() for d in WEEK)
+        prep = client.post("/tracking/collections/项目A/prepare", json={"start": start, "end": end}).json()
+        material = client.post("/materials", json={"title": "周会纪要", "content": "评审会确认上线时间为 10 月 20 日。"}).json()["material"]
+        client.post(f"/tracking/preps/{prep['id']}/review", json={"action": "confirm", "ids": [e["id"] for e in prep["items"]]})
+        client.post(f"/tracking/preps/{prep['id']}/confirm")
+        report = client.post(f"/tracking/preps/{prep['id']}/report", json={"material_ids": [material["id"]], "audience": "导师", "name": "王五"}).json()
+        weekly = client.get(f"/weekly-reports/{report['weekly_report_id']}").json()
+        assert weekly["material_ids"] == [material["id"]] and weekly["options"]["name"] == "王五"
+        listed = {r["id"]: r["plan"] for r in client.get("/weekly-reports").json()}
+        assert listed[report["weekly_report_id"]]["name"] == "项目A"
+
+        env.write("项目/方案.md", "# 方案\n原有内容\n补充灰度发布方案\n本周新增压测结论")
+        current = client.post("/tracking/collections/项目A/prepare", json={}).json()  # 不传日期：本周
+        assert client.get("/tracking/collections").json()[0]["this_week"] == {"id": current["id"], "status": "draft", "pending": current["counts"]["PENDING"]}
+
+        client.delete("/tracking/collections/项目A")  # 删除计划时默认设置一起删除，不报外键错误
+        assert client.get("/tracking/collections").json() == []
