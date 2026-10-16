@@ -100,6 +100,71 @@ function fmtTime(iso) {
   return `${d.getMonth() + 1}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// ---------- 通用弹窗（代替浏览器自带的 alert / confirm / prompt，风格与页面一致）
+// 同一时间只有一个；回车确认、Esc 或“取消”关闭。返回 Promise。
+let uiResolve = null;
+
+function uiOpen({ title = "提示", message = "", fields = [], ok = "确定", cancel = "取消", danger = false }) {
+  if (uiResolve) uiResolve(null); // 上一个还开着：按取消处理
+  $("#ui-title").textContent = title;
+  $("#ui-message").innerHTML = message;
+  $("#ui-message").classList.toggle("hidden", !message);
+  $("#ui-fields").innerHTML = fields.map((f, i) => `<label class="stack ui-field">
+      <span>${escapeHtml(f.label || "")}${f.required ? ' <span class="danger">*</span>' : ""}</span>
+      ${f.type === "textarea"
+        ? `<textarea data-ui="${i}" rows="${f.rows || 3}" placeholder="${escapeHtml(f.placeholder || "")}">${escapeHtml(f.value || "")}</textarea>`
+        : `<input data-ui="${i}" type="${f.type || "text"}" value="${escapeHtml(f.value || "")}" placeholder="${escapeHtml(f.placeholder || "")}">`}
+      ${f.hint ? `<small class="muted">${escapeHtml(f.hint)}</small>` : ""}</label>`).join("");
+  $("#ui-error").classList.add("hidden");
+  $("#ui-ok").textContent = ok;
+  $("#ui-ok").className = danger ? "danger-solid" : "primary";
+  $("#ui-cancel").textContent = cancel;
+  $("#ui-cancel").classList.toggle("hidden", cancel === null);
+  const dialog = $("#ui-dialog");
+  dialog.showModal();
+  (dialog.querySelector("[data-ui]") || $("#ui-ok")).focus();
+  return new Promise((resolve) => {
+    uiResolve = (value) => {
+      uiResolve = null;
+      if (dialog.open) dialog.close();
+      resolve(value);
+    };
+    uiResolve.fields = fields;
+  });
+}
+
+$("#ui-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (!uiResolve) return;
+  const fields = uiResolve.fields;
+  const values = {};
+  for (const [i, f] of fields.entries()) {
+    const value = document.querySelector(`#ui-fields [data-ui="${i}"]`).value.trim();
+    if (f.required && !value) {
+      $("#ui-error").textContent = `请填写${f.label || "内容"}`;
+      $("#ui-error").classList.remove("hidden");
+      return document.querySelector(`#ui-fields [data-ui="${i}"]`).focus();
+    }
+    values[f.name || i] = value;
+  }
+  uiResolve(fields.length ? values : true);
+});
+// 取消：输入框返回 null，确认 / 提示返回 false
+function uiCancelValue() { return uiResolve.fields.length ? null : false; }
+$("#ui-cancel").addEventListener("click", () => uiResolve && uiResolve(uiCancelValue()));
+$("#ui-dialog").addEventListener("cancel", (e) => { e.preventDefault(); if (uiResolve) uiResolve(uiCancelValue()); }); // Esc
+
+// 输入：返回 {字段名: 值}，取消返回 null
+function uiPrompt(options) { return uiOpen(options); }
+// 确认：返回 true / false
+function uiConfirm(message, { title = "请确认", ok = "确定", danger = false } = {}) {
+  return uiOpen({ title, message: escapeHtml(message).replace(/\n/g, "<br>"), ok, danger });
+}
+// 提示：只有一个“知道了”
+function uiAlert(message, title = "提示") {
+  return uiOpen({ title, message: escapeHtml(message).replace(/\n/g, "<br>"), ok: "知道了", cancel: null });
+}
+
 function showNotice(el, html, kind = "") {
   el.className = `notice ${kind}`;
   el.innerHTML = html;
@@ -157,7 +222,7 @@ $("#material-rows").addEventListener("click", async (e) => {
   if (del) {
     e.stopPropagation();
     const id = Number(del.dataset.delete);
-    if (!confirm(`删除材料 ${materialTitle(id)}？`)) return;
+    if (!(await uiConfirm(`删除材料 ${materialTitle(id)}？`, { title: "删除材料", ok: "删除", danger: true }))) return;
     try {
       await api(`/materials/${id}`, { method: "DELETE" });
       if (state.activeMaterial === id) { state.activeMaterial = null; $("#material-detail").classList.add("hidden"); }
@@ -315,7 +380,7 @@ function renderFeishuAccount() {
 
 $("#feishu-account").addEventListener("click", async (e) => {
   if (e.target.id !== "feishu-logout") return;
-  if (!confirm("断开飞书账号？本机保存的授权会被删除，之后只能读取添加了应用的文档。")) return;
+  if (!(await uiConfirm("本机保存的授权会被删除，之后只能读取添加了应用的文档。", { title: "断开飞书账号", ok: "断开", danger: true }))) return;
   await api("/feishu/oauth/logout", { method: "POST" });
   await loadFeishu();
 });
@@ -639,7 +704,7 @@ $("#input").addEventListener("keydown", (e) => {
 });
 
 $("#delete-session").addEventListener("click", async () => {
-  if (!state.threadId || !confirm("删除这个会话？对话记录将一并删除。")) return;
+  if (!state.threadId || !(await uiConfirm("对话记录将一并删除。", { title: "删除这个会话", ok: "删除", danger: true }))) return;
   await api(`/chat/sessions/${state.threadId}`, { method: "DELETE" });
   newSession();
 });
@@ -748,7 +813,7 @@ $("#weekly-form").addEventListener("submit", async (e) => {
     const r = await api("/weekly-reports", { method: "POST", json: body });
     openWeekly(r.id);
   } catch (err) {
-    alert(err.message);
+    uiAlert(err.message, "出错了");
   }
 });
 
@@ -878,10 +943,14 @@ async function loadMailSends(id) {
 
 $("#mail-weekly").addEventListener("click", async () => {
   const id = state.weeklyId;
-  const to = prompt("收件人邮箱（多个用逗号分隔）", state.mail?.default_to || "");
-  if (!to || !to.trim()) return;
-  if (!confirm(`将从 ${state.mail.sender} 把这份周报发送给：${to.trim()}
-发出后无法撤回，确认发送？`)) return;
+  const answer = await uiPrompt({
+    title: "发送周报邮件",
+    message: `从 <b>${escapeHtml(state.mail.sender)}</b> 发出，正文去掉出处标记，附件是 Markdown 文件。<br><span class="danger">发出后无法撤回。</span>`,
+    fields: [{ name: "to", label: "收件人", value: state.mail?.default_to || "", placeholder: "多个用逗号分隔", required: true }],
+    ok: "发送",
+  });
+  if (!answer) return;
+  const to = answer.to;
   const btn = $("#mail-weekly");
   btn.disabled = true;
   showNotice($("#weekly-mail"), "正在发送邮件…");
@@ -958,11 +1027,11 @@ $("#save-weekly").addEventListener("click", async () => {
     await api(`/weekly-reports/${state.weeklyId}`, { method: "PUT", json: { content: $("#weekly-text").value } });
     exitEdit();
     await refreshWeekly();
-  } catch (err) { alert(err.message); }
+  } catch (err) { uiAlert(err.message, "出错了"); }
 });
 
 $("#delete-weekly").addEventListener("click", async () => {
-  if (!confirm("删除这份周报？")) return;
+  if (!(await uiConfirm("删除后无法恢复（已写入飞书、已发出的邮件不受影响）。", { title: "删除这份周报", ok: "删除", danger: true }))) return;
   stopPolling();
   await api(`/weekly-reports/${state.weeklyId}`, { method: "DELETE" });
   state.weeklyId = null;

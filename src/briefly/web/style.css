@@ -315,3 +315,11 @@ dialog.wide { width: min(760px, 94vw); }
 .drive-list li .pick-gap { width: 13px; flex: none; }
 .dialog-foot { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
 #open-drive .ficon { margin-right: 2px; }
+
+/* 通用弹窗（提示、确认、输入） */
+#ui-dialog { width: min(440px, 92vw); }
+#ui-dialog h3 { margin: 0; }
+.ui-message { color: var(--muted); font-size: 14px; line-height: 1.6; }
+.ui-field { gap: 4px; font-size: 13px; }
+.ui-field input, .ui-field textarea { width: 100%; }
+button.danger-solid { background: var(--danger); border-color: var(--danger); color: #fff; }

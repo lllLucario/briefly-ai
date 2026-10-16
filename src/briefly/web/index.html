@@ -216,6 +216,20 @@
     </section>
   </main>
 
+  <!-- 通用弹窗：提示、确认、输入（代替浏览器自带的 alert / confirm / prompt） -->
+  <dialog id="ui-dialog">
+    <form id="ui-form" class="stack" method="dialog">
+      <h3 id="ui-title"></h3>
+      <div id="ui-message" class="ui-message"></div>
+      <div id="ui-fields" class="stack"></div>
+      <div id="ui-error" class="danger small hidden"></div>
+      <div class="row gap end">
+        <button type="button" id="ui-cancel" class="ghost">取消</button>
+        <button type="submit" id="ui-ok" class="primary">确定</button>
+      </div>
+    </form>
+  </dialog>
+
   <!-- 添加材料 -->
   <dialog id="add-dialog" class="wide">
     <div class="dialog-head"><h3>添加材料</h3><button type="button" class="ghost small" data-close>✕</button></div>

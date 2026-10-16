@@ -69,14 +69,26 @@ $("#plan-list").addEventListener("click", (e) => {
 });
 
 $("#new-plan").addEventListener("click", async () => {
-  const name = prompt("周报计划的名字，例如“项目A 周报”");
-  if (!name || !name.trim()) return;
+  const answer = await uiPrompt({
+    title: "新建周报计划",
+    message: "一个计划对应一条周报线，比如一个项目或一门课。之后可以添加要追踪的文件、设定每周几自动准备。",
+    fields: [
+      { name: "name", label: "名字", placeholder: "如 项目A 周报", required: true },
+      { name: "audience", label: "读者（选填）", placeholder: "如 直属上级、导师" },
+      { name: "author", label: "署名（选填）", placeholder: "写在周报上的名字" },
+    ],
+    ok: "创建",
+  });
+  if (!answer) return;
   try {
-    const c = await api("/tracking/collections", { method: "POST", json: { name: name.trim(), owner_names: [] } });
+    const c = await api("/tracking/collections", { method: "POST", json: { name: answer.name, owner_names: [] } });
+    if (answer.audience || answer.author) {
+      await api(`/tracking/collections/${c.id}/settings`, { method: "PUT", json: { audience: answer.audience, author: answer.author } });
+    }
     await loadPlans();
     await openPlan(c.id, "files");
     planMsg("周报计划已创建。下一步：添加要追踪的文件或文件夹；也可以先到“设置”里设定每周几自动准备。");
-  } catch (err) { alert(err.message); }
+  } catch (err) { uiAlert(err.message, "出错了"); }
 });
 
 // 从提醒条跳到某个计划的本周准备
@@ -227,13 +239,13 @@ function updateMakeReport() {
 }
 
 async function reviewAction(action, ids, note = "") {
-  if (!ids.length) return alert("先勾选记录");
+  if (!ids.length) return uiAlert("先勾选要操作的记录。");
   try {
     plans.prep = await api(`/tracking/preps/${plans.prep.id}/review`, { method: "POST", json: { action, ids, note } });
     ids.forEach((i) => plans.selected.delete(i));
     renderPrep();
     loadPlans();
-  } catch (err) { alert(err.message); }
+  } catch (err) { uiAlert(err.message, "出错了"); }
 }
 
 $("#prep-box").addEventListener("change", (e) => {
@@ -246,11 +258,11 @@ $("#prep-box").addEventListener("click", async (e) => {
   if (t.id === "bulk-confirm") return reviewAction("confirm", [...plans.selected]);
   if (t.id === "bulk-exclude") return reviewAction("exclude", [...plans.selected]);
   if (t.id === "bulk-merge") {
-    if (plans.selected.size < 2) return alert("至少勾选两条记录");
+    if (plans.selected.size < 2) return uiAlert("合并至少要勾选两条记录。");
     return openEvidenceDialog("merge", null);
   }
   if (t.id === "add-evidence") {
-    if (!plans.prep) return alert("先点“准备本周工作”");
+    if (!plans.prep) return uiAlert("先点“准备本周工作”，再补充文件里没体现的工作。");
     return openEvidenceDialog("add", null);
   }
   if (t.id === "open-weekly") {
@@ -268,12 +280,12 @@ $("#prep-box").addEventListener("click", async (e) => {
   if (act === "regen") {
     const ev = plans.prep.items.find((x) => x.id === id);
     const force = ev.user_edited && ev.origin !== "manual";
-    if (force && !confirm("这条描述你修改过，重新生成会覆盖。继续？")) return;
+    if (force && !(await uiConfirm("这条描述你修改过，重新生成会覆盖你的修改。", { title: "重新生成描述", ok: "覆盖并重新生成", danger: true }))) return;
     t.disabled = true;
     try {
       await api(`/tracking/preps/${plans.prep.id}/evidence/${id}/regenerate?force=${force}`, { method: "POST" });
       await loadPrep();
-    } catch (err) { alert(err.message); t.disabled = false; }
+    } catch (err) { uiAlert(err.message, "出错了"); t.disabled = false; }
   }
 });
 
@@ -361,7 +373,7 @@ $("#evidence-form").addEventListener("submit", async (e) => {
     $("#evidence-dialog").close();
     await loadPrep();
     loadPlans();
-  } catch (err) { alert(err.message); }
+  } catch (err) { uiAlert(err.message, "出错了"); }
 });
 
 // ---------- 追踪的文件：按追踪源分组的文件树，文件夹可折叠，子项缩进
@@ -461,7 +473,7 @@ $("#source-tree").addEventListener("click", async (e) => {
   const src = e.target.closest("[data-src]");
   if (versions) return showVersions(Number(versions.dataset.versions), versions.closest(".tree-row").querySelector(".tree-name").textContent);
   if (src) {
-    if (src.dataset.act === "remove" && !confirm("不再追踪这一项？不会删除文件，历史版本保留。")) return;
+    if (src.dataset.act === "remove" && !(await uiConfirm("不会删除文件，记录的历史版本保留。", { title: "不再追踪这一项", ok: "移除", danger: true }))) return;
     try {
       const r = await api(`/tracking/sources/${src.dataset.src}/${src.dataset.act}`, { method: "POST" });
       if (r.scan) planMsg(scanSummary(r.scan));
@@ -527,7 +539,7 @@ $("#schedule-save").addEventListener("click", async () => {
     await api(`/tracking/collections/${plans.id}/schedule`, { method: "PUT", json: { weekday: Number($("#schedule-weekday").value), time: $("#schedule-time").value } });
     loadSchedule();
     loadPlans();
-  } catch (err) { alert(err.message); }
+  } catch (err) { uiAlert(err.message, "出错了"); }
 });
 
 $("#schedule-off").addEventListener("click", async () => {
@@ -535,7 +547,7 @@ $("#schedule-off").addEventListener("click", async () => {
     await api(`/tracking/collections/${plans.id}/schedule`, { method: "DELETE" });
     loadSchedule();
     loadPlans();
-  } catch (err) { alert(err.message); }
+  } catch (err) { uiAlert(err.message, "出错了"); }
 });
 
 $("#settings-save").addEventListener("click", async () => {
@@ -545,7 +557,7 @@ $("#settings-save").addEventListener("click", async () => {
     $("#plan-author").value = r.author;
     planMsg("已保存：生成周报时自动填写。");
     loadPlans();
-  } catch (err) { alert(err.message); }
+  } catch (err) { uiAlert(err.message, "出错了"); }
 });
 
 $("#owners-save").addEventListener("click", async () => {
@@ -554,11 +566,11 @@ $("#owners-save").addEventListener("click", async () => {
     await api(`/tracking/collections/${plans.id}/owners`, { method: "PUT", json: { name: currentPlan().name, owner_names: owners } });
     planMsg("已保存。之后整理本周工作时，会用这些名字判断改动是不是你做的。");
     loadPlans();
-  } catch (err) { alert(err.message); }
+  } catch (err) { uiAlert(err.message, "出错了"); }
 });
 
 $("#plan-delete").addEventListener("click", async () => {
-  if (!confirm("删除这个周报计划？记录的版本和候选记录会删除；原文件和已生成的周报不受影响。")) return;
+  if (!(await uiConfirm("记录的版本和候选记录会删除；原文件和已生成的周报不受影响。", { title: `删除周报计划“${currentPlan()?.name || ""}”`, ok: "删除", danger: true }))) return;
   await api(`/tracking/collections/${plans.id}`, { method: "DELETE" });
   plans.id = null;
   await loadPlans();
