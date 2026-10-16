@@ -499,10 +499,11 @@ function renderDriveSelection() {
     ? `已选 ${n} 项${pickedFolders ? `（含 ${pickedFolders} 个文件夹）` : ""}${n > pickedHere ? `，其中 ${n - pickedHere} 项不在当前列表` : ""}`
     : "未选择";
   $("#drive-clear").classList.toggle("hidden", !n);
-  const importable = n - pickedFolders;
-  $("#drive-import").disabled = !importable;
-  $("#drive-import").textContent = importable ? `导入所选（${importable}）` : "导入所选";
-  $("#drive-import").title = pickedFolders ? "文件夹不能直接导入，只导入所选的文档；整个文件夹可以用“追踪到周报计划”" : "";
+  $("#drive-import").disabled = !n;
+  const docs = n - pickedFolders;
+  const parts = [docs ? `${docs} 篇` : "", pickedFolders ? `${pickedFolders} 个文件夹` : ""].filter(Boolean).join(" + ");
+  $("#drive-import").textContent = n ? `导入所选（${parts}）` : "导入所选";
+  $("#drive-import").title = pickedFolders ? "文件夹会导入其中（含子文件夹）支持的文档，导入前会确认篇数" : "";
   $("#drive-track").disabled = !n;
 }
 
@@ -580,24 +581,76 @@ $("#drive-back").addEventListener("click", () => {
   renderDrive();
 });
 
-// 批量导入：只导入文档（文件夹跳过），逐个读取（同时读太多会触发飞书限频），完成后取消勾选成功的项
+// 文件夹里（含子文件夹）支持导入的文档：用已加载的内容，没加载过的向飞书列出；最多 10 层
+const IMPORT_FOLDER_LIMIT = 50;
+async function folderDocs(token, depth = 0, out = [], stats = { skipped: 0 }) {
+  if (depth > 10) return { docs: out, ...stats };
+  const node = state.driveTree[token];
+  const items = node?.items?.length && !node.error ? node.items
+    : await api(`/feishu/drive/files?folder=${encodeURIComponent(token)}`);
+  for (const x of items) {
+    if (x.kind === "folder") await folderDocs(x.token, depth + 1, out, stats);
+    else if (x.importable) out.push(x);
+    else stats.skipped += 1;
+  }
+  return { docs: out, ...stats };
+}
+
+// 批量导入：文档直接导入；文件夹先列出其中的文档、确认篇数后导入。逐个读取（同时读太多会触发飞书限频），完成后取消勾选成功的项
 $("#drive-import").addEventListener("click", async () => {
   const msg = $("#drive-msg");
-  const entries = [...state.driveSelected.entries()].filter(([, x]) => x.kind !== "folder");
-  const folders = state.driveSelected.size - entries.length;
+  const picked = [...state.driveSelected.entries()];
+  const folderKeys = picked.filter(([, x]) => x.kind === "folder").map(([key]) => key);
+  const jobs = new Map(picked.filter(([, x]) => x.kind !== "folder").map(([key, x]) => [x.url, { key, name: x.name, url: x.url }]));
   $("#drive-import").disabled = true;
-  const results = [];
-  for (const [i, [key, info]] of entries.entries()) {
-    showNotice(msg, `正在导入 ${i + 1}/${entries.length}：${escapeHtml(info.name)}…`);
+  let skipped = 0;
+  if (folderKeys.length) {
+    showNotice(msg, "正在列出所选文件夹里的文档…");
     try {
-      results.push(importedText(await api("/materials/feishu", { method: "POST", json: { url: info.url } })));
-      state.driveSelected.delete(key);
+      let found = 0;
+      for (const key of folderKeys) {
+        const r = await folderDocs(key.slice("folder:".length));
+        skipped += r.skipped;
+        found += r.docs.length;
+        r.docs.forEach((x) => jobs.has(x.url) || jobs.set(x.url, { name: x.name, url: x.url }));
+      }
+      if (!jobs.size) {
+        renderDriveSelection();
+        return showNotice(msg, `所选文件夹里没有能导入的文档${skipped ? `（${skipped} 个条目类型不支持）` : ""}。`, "warn");
+      }
+      if (jobs.size > IMPORT_FOLDER_LIMIT) {
+        renderDriveSelection();
+        return showNotice(msg, `一共 ${jobs.size} 篇文档，超过一次导入的上限 ${IMPORT_FOLDER_LIMIT} 篇。请展开文件夹只勾选需要的文档；需要持续关注整个文件夹，可以用“追踪到周报计划”。`, "warn");
+      }
+      const ok = await uiConfirm(
+        `所选的 ${folderKeys.length} 个文件夹里共有 ${found} 篇可导入的文档${skipped ? `（另有 ${skipped} 个条目类型不支持，会跳过）` : ""}${jobs.size > found ? `，加上单独勾选的，一共 ${jobs.size} 篇` : ""}，每篇成为一份材料。\n\n导入的是现在的内容，之后文档有改动不会自动更新；需要跟踪变化请用“追踪到周报计划”。`,
+        { title: "导入文件夹里的文档", ok: `导入 ${jobs.size} 篇` },
+      );
+      if (!ok) {
+        msg.classList.add("hidden");
+        return renderDriveSelection();
+      }
     } catch (err) {
-      results.push(`<span class="danger">${escapeHtml(info.name)}：${escapeHtml(err.message)}</span>`);
+      renderDriveSelection();
+      return showNotice(msg, `列出文件夹失败：${escapeHtml(err.message)}`, "error");
     }
   }
-  if (folders) results.push(`另有 ${folders} 个文件夹没有导入（文件夹不能直接导入，可以“追踪到周报计划”，或展开后勾选其中的文档）。`);
-  showNotice(msg, results.join("<br>"), results.some((r) => r.includes("danger")) ? "warn" : "");
+  const list = [...jobs.values()];
+  const results = [];
+  let failed = 0;
+  for (const [i, job] of list.entries()) {
+    showNotice(msg, `正在导入 ${i + 1}/${list.length}：${escapeHtml(job.name)}…`);
+    try {
+      results.push(importedText(await api("/materials/feishu", { method: "POST", json: { url: job.url } })));
+      if (job.key) state.driveSelected.delete(job.key);
+    } catch (err) {
+      failed += 1;
+      results.push(`<span class="danger">${escapeHtml(job.name)}：${escapeHtml(err.message)}</span>`);
+    }
+  }
+  if (!failed) folderKeys.forEach((key) => state.driveSelected.delete(key));
+  if (skipped) results.push(`文件夹里另有 ${skipped} 个条目类型不支持（如电子表格、文件），没有导入。`);
+  showNotice(msg, results.join("<br>"), failed ? "warn" : "");
   await loadMaterials();
   renderDrive();
 });
