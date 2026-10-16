@@ -55,6 +55,9 @@ def dispatch(args, svc) -> int | None:
             f"周报准备 {prep.period_start}~{prep.period_end}：新候选 {len(b.created)} 条，未变化 {len(b.unchanged)} 条，"
             f"替换未审核的 {len(b.superseded)} 条，已审核但有新变化 {len(b.updated_reviewed)} 条（模型调用 {b.calls} 次）"
         )
+        t = info.todos
+        if t and (t.created or t.unchanged or t.linked):
+            print(f"  待办：新记录 {len(t.created)} 条，未变化 {len(t.unchanged)} 条，新关联到待办的文件记录 {t.linked} 条（不调用模型）")
         for note in info.notes:
             print(f"  注意：{note}")
         print_items(ReviewService(svc).items(prep.id))
