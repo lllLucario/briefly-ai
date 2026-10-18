@@ -64,6 +64,14 @@ def reply_section_has(head: str, *parts: str) -> Check:
     return Check(f"{head}包含 {'、'.join(parts)}", lambda out, *_: all(_flat(p) in _flat(section_of(out, head)) for p in parts))
 
 
+def reply_risks_none() -> Check:
+    def check(out, *_):
+        risk = re.sub(r"〔[^〕]*〕", "", section_of(out, "【问题与风险】"))
+        return re.sub(r"[\s*\-。]", "", risk) == "无"
+
+    return Check("【问题与风险】为“无”", check)
+
+
 def has_table() -> Check:
     return Check("有表格", lambda out, *_: bool(re.search(r"(?m)^\|.*\|\s*$", out)))
 
@@ -448,3 +456,53 @@ CASES: list[Case] = [
         requires=("files/1-3.pdf",),
     ),
 ]
+
+
+def weekly_rule_cases() -> list[Case]:
+    """同一份材料、同一套内容检查覆盖对话与正式周报；对话再检查一次精简追问。
+
+    关键词反例只查已知的无依据表述，不能证明所有语义都正确，实测还需人工读输出。
+    """
+    heads = sections("【周报标题】", "【本周完成】", "【进行中】", "【问题与风险】", "【下周计划】")
+    scenarios = [
+        ("weekly_issue_only.md", "问题明确但影响和支持未提及", [
+            reply_section_has("【本周完成】", "登录页", "联调"),
+            reply_section_has("【问题与风险】", "接口", "报错"),
+            has_all("老赵"), reply_section_has("【下周计划】", "上线", "测试用例"),
+            lacks("影响上线", "影响下周上线", "上线风险", "上线延期", "需要后端", "需后端", "等待后端", "依赖后端", "后端正在", "排查中"),
+        ]),
+        ("weekly_plan_only.md", "单纯待办不能推断成风险", [
+            reply_section_has("【本周完成】", "设计评审"), reply_risks_none(),
+            reply_section_has("【下周计划】", "上线", "测试", "压测报告"),
+            lacks("影响上线", "影响下周上线", "上线风险", "上线延期", "测试不足", "测试不充分", "需要运维", "需运维"),
+        ]),
+        ("weekly_explicit_risk.md", "原文明示的问题影响和支持必须保留", [
+            reply_section_has("【问题与风险】", "测试环境", "延期", "运维"),
+            reply_section_has("【下周计划】", "压测报告"),
+            reply_section_lacks("【问题与风险】", "压测报告"),
+        ]),
+        ("weekly_resolved_issue.md", "已解决的问题写成果不继续报风险", [
+            reply_section_has("【本周完成】", "接口", "修复", "回归"), reply_risks_none(),
+            reply_section_has("【下周计划】", "接口文档"),
+            lacks("影响上线", "上线风险", "需要后端", "需后端", "仍需关注", "持续关注", "进一步排查"),
+        ]),
+    ]
+    out = []
+    for n, (material, title, checks) in enumerate(scenarios, 1):
+        checks = [heads, *checks]
+        out.append(Case(
+            f"CW{n}", "周报规则一致性", f"对话：{title}",
+            turns=[
+                Turn("请把所选材料整理成周报，周期为 2026-10-05 至 2026-10-11。", materials=(material,), skill="weekly", checks=checks),
+                Turn("再简短一点，保留各栏目与原有事实，不添加推测。", checks=checks),
+            ],
+        ))
+        out.append(Case(
+            f"FW{n}", "周报规则一致性", f"正式：{title}",
+            weekly={"materials": [material], "brief": "", **WEEK},
+            checks=[report_done(), *[Check(c.name, lambda r, c=c: c.fn(r.content)) for c in checks], no_unverified_numbers()],
+        ))
+    return out
+
+
+CASES += weekly_rule_cases()

@@ -7,7 +7,7 @@ from langchain_core.messages import AIMessage
 
 sys.path.insert(0, str(Path(__file__).parent / "eval"))
 
-from cases import CASES, Case, Turn, has_table, no_new_numbers, risks_none, sections, shorter_than_previous  # noqa: E402
+from cases import CASES, Case, Turn, has_table, no_new_numbers, reply_risks_none, risks_none, sections, shorter_than_previous, weekly_rule_cases  # noqa: E402
 from fakes import FunctionModel, structured  # noqa: E402
 from run_eval import run_once  # noqa: E402
 
@@ -34,6 +34,35 @@ def test_simple_checks():
     assert not shorter_than_previous().fn("一样长一样长", ["一样长一样长"])
     report = SimpleNamespace(content="【问题与风险】\n- 无\n【下周计划】\n1. 压测", generation={})
     assert risks_none().fn(report)
+
+
+def test_weekly_empty_risk_check_rejects_added_risks():
+    check = reply_risks_none()
+    assert check.fn("【问题与风险】\n- 无。\n【下周计划】\n- 补测试")
+    assert not check.fn("【问题与风险】\n- 无明确问题，但测试不足可能影响上线。")
+    assert not check.fn("【下周计划】\n- 补测试")
+
+
+def test_weekly_rule_checks_catch_invented_details_and_lost_explicit_risk():
+    cases = {c.id: c for c in weekly_rule_cases()}
+    # 两个入口都必须拒绝“有问题就推断影响 / 已联系就推断支持”；换到别的栏目也不能放过。
+    bad = "【周报标题】周报\n【本周完成】登录页开发与联调完成\n【进行中】无\n【问题与风险】接口报错，已联系老赵\n【下周计划】上线并编写测试用例，需要后端协助，可能影响下周上线"
+    assert not all(c.fn(bad) for c in cases["CW1"].turns[0].checks)
+    report = SimpleNamespace(status="done", content=bad, generation={})
+    assert not all(c.fn(report) for c in cases["FW1"].checks)
+    good = "【周报标题】周报\n【本周完成】登录页开发与联调完成\n【进行中】无\n【问题与风险】接口报错未解决，已联系老赵\n【下周计划】上线并编写测试用例"
+    assert all(c.fn(good) for c in cases["CW1"].turns[0].checks)
+    report.content = good
+    assert all(c.fn(report) for c in cases["FW1"].checks)
+    # 不能把“所有风险都删掉”当作修复：明确的影响和支持被漏掉时也要失败。
+    lost = "【周报标题】周报\n【本周完成】无\n【进行中】无\n【问题与风险】测试环境未恢复\n【下周计划】补齐压测报告"
+    assert not all(c.fn(lost) for c in cases["CW3"].turns[0].checks)
+    report.content = lost
+    assert not all(c.fn(report) for c in cases["FW3"].checks)
+    explicit = lost.replace("测试环境未恢复", "测试环境未恢复，已导致接口联调延期，需要运维协助恢复")
+    assert all(c.fn(explicit) for c in cases["CW3"].turns[0].checks)
+    report.content = explicit
+    assert all(c.fn(report) for c in cases["FW3"].checks)
 
 
 def test_run_once_chat_case():

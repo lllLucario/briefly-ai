@@ -30,7 +30,7 @@ def test_system_prompt_contains_base_and_all_skills():
     assert "# 角色" in prompt
     for skill in SKILLS.values():
         assert f"（{skill.name}）" in prompt
-    assert "本次任务" not in prompt
+    assert "# 本次任务\n" not in prompt
 
 
 def test_system_message_comes_first_and_history_excludes_it():
@@ -45,7 +45,7 @@ def test_forced_skill_is_added_to_system_prompt():
     model = fake(text_msg("ok"))
     Agent(model, tools=[]).chat("hi", skill="todo")
     system = model.calls[0][0].content
-    assert "本次任务" in system and "待办事项梳理" in system
+    assert "# 本次任务\n" in system and "待办事项梳理" in system
 
 
 def test_forced_skill_applies_only_to_that_turn():
@@ -53,7 +53,7 @@ def test_forced_skill_applies_only_to_that_turn():
     agent = Agent(model, tools=[])
     agent.chat("x", skill="todo")
     agent.chat("y")
-    assert "本次任务" not in model.calls[1][0].content
+    assert "# 本次任务\n" not in model.calls[1][0].content
 
 
 def test_unknown_skill_rejected():
