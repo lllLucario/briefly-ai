@@ -36,6 +36,22 @@ def test_simple_checks():
     assert risks_none().fn(report)
 
 
+def test_preference_case_enforces_the_requested_100_character_limit():
+    case = next(c for c in CASES if c.id == "M3")
+    check = case.turns[-1].checks[0]
+    assert check.fn("甲" * 100)
+    assert not check.fn("甲" * 101)
+
+
+def test_task_switch_case_releases_explicit_capability_and_checks_new_task():
+    case = next(c for c in CASES if c.id == "M5")
+    assert case.turns[0].skill == "todo" and case.turns[1].skill is None
+    good = "【优化后】预算尚缺5万元，请审批。\n【主要修改】调整措辞。"
+    assert all(check.fn(good, []) for check in case.turns[1].checks)
+    bad = "【待办清单】\n| 任务 |\n|---|\n| 处理性能告警 |"
+    assert not all(check.fn(bad, []) for check in case.turns[1].checks)
+
+
 def test_weekly_empty_risk_check_rejects_added_risks():
     check = reply_risks_none()
     assert check.fn("【问题与风险】\n- 无。\n【下周计划】\n- 补测试")

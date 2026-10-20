@@ -426,7 +426,7 @@ CASES: list[Case] = [
         "M3", "多轮对话", "偏好持续有效：之后都控制在 100 字以内",
         turns=[
             Turn("接下来我让你处理的内容，输出都控制在100字以内", checks=[]),
-            Turn("帮我把这段话改得正式一点", materials=("polish.txt",), checks=[max_chars(220)]),
+            Turn("帮我把这段话改得正式一点", materials=("polish.txt",), checks=[max_chars(100), has_any("5万", "5 万", "50000", "五万"), no_new_numbers(fixture("polish.txt"))]),
         ],
     ),
     Case(
@@ -434,6 +434,14 @@ CASES: list[Case] = [
         turns=[
             Turn("把这些待办整理成表格", materials=("todo.txt",), checks=[has_table()]),
             Turn("不要表格了，改成编号列表", checks=[no_table(), has_all("张总")]),
+        ],
+    ),
+    Case(
+        "M5", "多轮对话", "下一条能力生效后切换任务：待办 → 润色",
+        turns=[
+            Turn("提取明确待办", skill="todo", materials=("todo.txt",), checks=[TODO]),
+            Turn("现在换个任务：只优化本轮新选的文字，使其更正式，保持原意，不继续整理之前的待办", materials=("polish.txt",),
+                 checks=[POLISH, no_table(), has_any("5万", "5 万", "50000", "五万"), lacks("【待办清单】", "性能告警")]),
         ],
     ),
     # ---- 长材料（本地文件，不在仓库里）

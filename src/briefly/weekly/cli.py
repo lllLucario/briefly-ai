@@ -85,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--audience")
     p.add_argument("--author")
     p.add_argument("--owner", action="append", help="你在文档里的名字（Word 修订作者等），可多次指定")
-    p = sub.add_parser("inbox", help="查看提醒（审核清单已整理好、自动开始失败等）")
+    p = sub.add_parser("inbox", help="查看提醒（审核清单已整理好、自动整理失败等）")
     p.add_argument("--all", action="store_true", help="包括已读的")
     sub.add_parser("run-due", help="执行到期的每日扫描和每周定时（供系统计划任务调用）")
     return ap

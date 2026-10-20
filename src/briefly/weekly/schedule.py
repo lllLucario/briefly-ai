@@ -1,6 +1,6 @@
-"""定时：每周设定的时间（精确到分钟）自动开始这一周的周报——检查更新、整理审核清单，然后提醒你审核。
+"""定时：每周设定的时间（精确到分钟）自动整理这一周的工作——检查更新、整理审核清单，然后提醒你审核。
 
-和手动点“现在生成”走同一个流程（WeeklyService.prepare），只是到点自动开始；不会在你审核之前生成正文。
+和手动点“整理本周工作”走同一个流程（WeeklyService.prepare），只是到点自动整理；不会在你审核之前生成正文。
 后台线程每分钟检查一次，同时负责追踪文件的每日扫描（tracking.scheduler）：
 - 同一个时间点只执行一次（scheduled_runs 有唯一约束，多进程同时检查也不会重复）；
 - 失败按 TRACKING_SCAN_RETRIES 重试，间隔 TRACKING_RETRY_MINUTES，全部失败后提醒你手动开始；
@@ -193,17 +193,17 @@ class Schedule:
         try:
             report, info = self.weekly.prepare(day)
         except Exception as e:  # 包括正在扫描（ScanBusy）：按失败记录，稍后重试
-            log.exception("每周定时开始失败")
+            log.exception("每周自动整理失败")
             error = f"{type(e).__name__}: {e}"[:1000]
             self._finish(run.id, RUN_FAILED, error=error)
             if run.attempt > config.TRACKING_SCAN_RETRIES:
                 notify(
                     self.weekly.engine,
                     "weekly_failed",
-                    "本周周报自动开始失败",
-                    f"已重试 {run.attempt} 次：{error[:200]}\n可以在周报页点“现在生成”，或运行：briefly weekly prepare",
+                    "本周工作自动整理失败",
+                    f"已重试 {run.attempt} 次：{error[:200]}\n可以在周报页点“整理本周工作”，或运行：briefly weekly prepare",
                 )
-            return f"每周定时开始失败（第 {run.attempt} 次）：{error[:100]}"
+            return f"每周自动整理失败（第 {run.attempt} 次）：{error[:100]}"
         self._finish(run.id, RUN_DONE, report_id=report.id)
         with self._session() as s:
             pending = len(s.scalars(select(WorkEvidence.id).where(WorkEvidence.report_id == report.id, WorkEvidence.review_status == PENDING)).all())
@@ -217,7 +217,7 @@ class Schedule:
             body = f"周期 {period}{late}。可以补充文件体现不了的工作、加入材料或写本周说明后生成周报。"
         body += "".join(f"\n注意：{n}" for n in info.notes)
         notify(self.weekly.engine, "weekly_ready", title, body, report.id)
-        return f"每周定时开始完成：待确认 {pending} 条{late}"
+        return f"每周自动整理完成：待确认 {pending} 条{late}"
 
     def _finish(self, run_id: int, status: str, report_id: int | None = None, error: str = "") -> None:
         with self._session() as s:
@@ -230,14 +230,14 @@ class Schedule:
 
 
 def run_due(weekly, now: datetime | None = None) -> list[str]:
-    """到期的每日扫描和每周定时开始。返回给人看的执行记录。"""
+    """到期的每日扫描和每周自动整理。返回给人看的执行记录。"""
     messages = run_due_daily(weekly.tracking, now)
     message = Schedule(weekly).run_due(now)
     return messages + ([message] if message else [])
 
 
 class BackgroundScheduler:
-    """API 进程内的后台线程：每隔 interval 秒检查一次到期的每日扫描和每周定时开始。"""
+    """API 进程内的后台线程：每隔 interval 秒检查一次到期的每日扫描和每周自动整理。"""
 
     def __init__(self, weekly, interval: float = 60) -> None:
         self.weekly = weekly
@@ -255,7 +255,7 @@ class BackgroundScheduler:
         while not self._stop.is_set():
             try:
                 for line in run_due(self.weekly):
-                    ran = any(w in line for w in ("每日扫描完成", "每日扫描失败", "每周定时"))
+                    ran = any(w in line for w in ("每日扫描完成", "每日扫描失败", "每周自动整理"))
                     log.log(logging.INFO if ran else logging.DEBUG, "定时：%s", line)
             except Exception:
                 log.exception("定时检查失败")

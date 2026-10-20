@@ -13,26 +13,58 @@ function useMaterial(id, skill = "") {
 }
 
 function resultActions(el, message) {
-  if (!message.message_id) return;
+  if (!message.message_id && !message.system_reply) return;
   document.querySelectorAll(".result-action").forEach((b) => { b.disabled = true; });
+  const kinds = new Set(message.result_kinds || []);
+  const saved = message.saved_todo_ids?.length || 0;
+  const actionable = !message.system_reply && kinds.size > 0;
+  const todoMain = actionable && (kinds.has("todo") || kinds.has("minutes"));
+  const weekMain = actionable && kinds.has("weekly");
+  const todoButton = `<button class="${todoMain ? "primary" : "ghost"} small result-action" data-todos>预览并保存待办</button>`;
+  const weekButton = `<button class="${weekMain ? "primary" : "ghost"} small result-action" data-week>带入周报页</button>`;
   const box = document.createElement("div");
   box.className = "row gap wrap msg-actions";
-  box.innerHTML = `<button class="ghost small" data-copy>复制结果</button>
-    <button class="ghost small result-action" data-todos>预览并保存待办</button>
-    <button class="ghost small result-action" data-week>带入周报页</button>
-    <span class="muted small">${message.saved_todo_ids?.length ? `已保存 ${message.saved_todo_ids.length} 条待办` : "待办尚未保存"}；会话周报是草稿，正式周报需另行核对生成</span>`;
+  const secondary = [!todoMain ? todoButton : "", !weekMain ? weekButton : ""].filter(Boolean).join("");
+  const status = saved ? `已保存 ${saved} 条待办。` : todoMain ? "行动项尚未保存到待办。" : "";
+  box.innerHTML = `<button class="${!todoMain && !weekMain ? "primary" : "ghost"} small" data-copy>复制结果</button>
+    ${todoMain ? todoButton : ""}${weekMain ? weekButton : ""}
+    ${actionable && secondary ? `<details class="result-more"><summary>更多操作</summary><div class="row gap wrap">${secondary}</div></details>` : ""}
+    <span class="muted small" data-save-state>${status}${weekMain ? "对话周报是草稿，正式周报需核对后生成。" : !status ? "当前回复保存在会话中。" : ""}</span>`;
   el.appendChild(box);
   box.querySelector("[data-copy]").onclick = async () => {
     try { await navigator.clipboard.writeText(message.text); box.querySelector("[data-copy]").textContent = "已复制"; }
     catch (_) { await uiAlert("浏览器未允许剪贴板，请选中结果后复制。"); }
   };
   const thread = state.threadId;
-  box.querySelector("[data-todos]").onclick = () => previewTodos(thread, message.message_id, box);
-  if (message.saved_todo_ids?.length) {
-    box.querySelector("[data-todos]").textContent = "这些候选已保存";
-    box.querySelector("[data-todos]").disabled = true;
+  const todo = box.querySelector("[data-todos]");
+  if (todo) todo.onclick = () => previewTodos(thread, message.message_id, box);
+  if (saved && todo) {
+    todo.textContent = "这些候选已保存";
+    todo.disabled = true;
   }
-  box.querySelector("[data-week]").onclick = () => transferToWeek({ thread_id: thread, message_id: message.message_id });
+  const week = box.querySelector("[data-week]");
+  if (week) week.onclick = () => transferToWeek({ thread_id: thread, message_id: message.message_id });
+  if (message.warnings?.length || message.system_reply || !actionable) {
+    const warning = document.createElement("div");
+    warning.className = message.warnings?.length ? "notice warn result-warning" : "result-help";
+    warning.innerHTML = `${(message.warnings || []).map((w)=>`<p>${escapeHtml(w)}</p>`).join("")}
+      ${message.warnings?.length ? "<p>此回答仍需核对，建议修正后再使用。</p>" : message.system_reply ? "<p>本次未生成可用结果，可调整内容或范围后重试。</p>" : ""}
+      <button class="ghost small result-action" data-retry>修改要求后重试</button>
+      <button class="ghost small result-action" data-supplement>补充信息</button>`;
+    el.appendChild(warning);
+    // 只把原请求填回输入区，不自动发起模型调用或覆盖用户正在编辑的要求。
+    const original = state.lastRequest ? {...state.lastRequest, material_ids:[...state.lastRequest.material_ids]} : null;
+    warning.querySelector("[data-retry]").disabled = !original;
+    warning.querySelector("[data-retry]").onclick = async () => {
+      if (!original) return;
+      if ($("#input").value.trim() && $("#input").value !== original.text && !(await uiConfirm("替换输入框中尚未发送的内容，填回这次原始请求？"))) return;
+      $("#input").value = original.text;
+      $("#skill").value = original.skill || "";
+      state.picked = new Set(original.material_ids); renderPicked();
+      $("#input").focus();
+    };
+    warning.querySelector("[data-supplement]").onclick = () => $("#input").focus();
+  }
 }
 
 function actionDialog(title) {
@@ -62,7 +94,7 @@ async function previewTodos(thread, message, resultBox) {
     if (draft.saved) { body.innerHTML = `<p>这次候选已保存 ${draft.saved.count} 条。可在待办页查看；修改内容需重新提问后预览。</p>`; return; }
     const parents = (await api("/todos")).filter((t) => !t.parent_id && !t.archived_at);
     if (!dialog.open) return;
-    body.innerHTML = `<p>尚未保存到待办。请核对并勾选；他人负责的事项保留负责人，请自行决定是否记录。</p>
+    body.innerHTML = `<p>这是根据原始信息重新核对的候选，尚未保存。请确认任务含义、负责人和期限后勾选；相对期限保留原话，他人负责的事项不会自动变成你的任务。</p>
       ${draft.warnings.map((w) => `<p class="notice warn">${escapeHtml(w)}</p>`).join("")}
       ${draft.items.length ? "" : "<p>未找到有原文依据的明确行动项。可以补充任务要求后重新提问。</p>"}
       ${draft.items.map((x,i) => `<section class="week-section" data-item="${i}">
@@ -91,7 +123,7 @@ async function previewTodos(thread, message, resultBox) {
         error.classList.add("hidden");
         draft.saved = receipt;
         if (resultBox.isConnected) {
-          resultBox.querySelector("span").textContent = `已保存 ${receipt.count} 条待办；正式周报尚未生成`;
+          resultBox.querySelector("[data-save-state]").textContent = `已保存 ${receipt.count} 条待办，原始来源已保留。`;
           resultBox.querySelector("[data-todos]").disabled = true;
           resultBox.querySelector("[data-todos]").textContent = "这些候选已保存";
         }

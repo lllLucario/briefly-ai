@@ -29,12 +29,12 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from . import config
 from .compaction import Compactor
 from .context import Context
-from .context_builder import CONTEXT_OVERFLOW, ContextBuilder
+from .context_builder import CONTEXT_OVERFLOW, ContextBuilder, system_reply
 from .context_store import ContextStore
 from .db import create_db_engine
 from .llm import create_chat_model
 from .materials import MaterialStore, wrap_material
-from .output_check import InternalTermCheck
+from .output_check import InternalTermCheck, reply_char_limit
 from .skills import SKILLS, read_prompt
 from .tokens import TokenCounter
 from .tool_budget import ToolBudgetMiddleware, turn_key
@@ -86,7 +86,7 @@ def _limit_tool_rounds(state, runtime):
     last_human = max(i for i, m in enumerate(messages) if isinstance(m, HumanMessage))
     rounds = sum(isinstance(m, AIMessage) for m in messages[last_human:])
     if rounds >= config.MAX_TOOL_ROUNDS:
-        return {"jump_to": "end", "messages": [AIMessage(TOOL_ROUNDS_EXCEEDED)]}
+        return {"jump_to": "end", "messages": [system_reply(TOOL_ROUNDS_EXCEEDED)]}
     return None
 
 
@@ -141,7 +141,7 @@ class Agent:
             tools=tools,
             middleware=[  # 列表中靠前的包在外层：先定提示词，再由 Context Builder 组装上下文并检查预算
                 _system_prompt,
-                InternalTermCheck(self._check_sources),  # 在 Context Builder 外层：重试也经过预算检查
+                InternalTermCheck(self._check_sources, self._reply_limit),  # 在 Context Builder 外层：重试也经过预算检查
                 self.builder,
                 _limit_tool_rounds,
                 self.tool_budget,  # 包在报错回传外层，报错文字也计入预算
@@ -199,6 +199,7 @@ class Agent:
                 thread_id=thread_id,
                 run_id=run_id,
                 compacted=compacted,
+                reply_limit=reply_char_limit([*self.history_of(thread_id), message]),
             ),
         )
         return result["messages"][-1].text
@@ -263,6 +264,11 @@ class Agent:
             ids = context.material_ids if context else None
             texts += [m.content for m in self.store.list_materials(ids)]
         return texts
+
+    def _reply_limit(self, request) -> int | None:
+        # chat 已从完整原始历史计算，早期对话压缩后也保留明确上限。
+        context = request.runtime.context
+        return context.reply_limit if context else reply_char_limit(request.messages)
 
     def _task_state(self, context: Context, state) -> str:
         """当前任务状态：指定能力、本次所选材料、本轮工具预算余量。"""

@@ -129,3 +129,50 @@ def test_skills_and_web_page(chat_client):
     assert script.status_code == 200
     assert page.headers["cache-control"] == script.headers["cache-control"] == "no-cache"  # 更新后刷新即生效
     assert "cache-control" not in client.get("/skills").headers
+
+
+def test_unresolved_output_checks_reach_history_without_exposing_internal_details():
+    engine, model, client = make_client(text_msg("【一句话总结】见第 2 块。"), text_msg("【一句话总结】仍见第 2 块。"))
+    try:
+        with client:
+            result = client.post("/chat", json={"text":"总结", "skill":"summarize"}).json()
+            answer = client.get(f"/chat/sessions/{result['thread_id']}").json()["messages"][-1]
+            assert len(model.calls) == 2
+            assert answer["warnings"] and "请核对原文" in answer["warnings"][0]
+            assert "第 2 块" not in "".join(answer["warnings"])
+            assert answer["result_kinds"] == ["summarize"]
+            assert answer["skill"] == "summarize"
+            assert client.get(f"/chat/sessions/{result['thread_id']}").json()["messages"][-1]["warnings"] == answer["warnings"]
+    finally:
+        engine.dispose()
+
+
+def test_presentation_detects_results_not_requested_skill_and_keeps_recovery_information():
+    from langchain_core.messages import AIMessage, HumanMessage
+    from briefly.api import visible_messages
+    from briefly.context_builder import system_reply
+
+    messages = [
+        HumanMessage("原请求", additional_kwargs={"skill":"todo", "material_ids":[3]}),
+        HumanMessage("不显示的内部提示", additional_kwargs={"internal":True}),
+        AIMessage("【会议信息】会议\n【行动项】整理记录\n【待办清单】整理记录", id="answer", response_metadata={"missing_conflicts":["私有原文片段"]}),
+        HumanMessage("换个任务"),
+        system_reply("本次预算不足"),
+    ]
+    result = visible_messages(messages)
+    assert len(result) == 4
+    assert result[1].result_kinds == ["minutes", "todo"]
+    assert len(result[1].warnings) == 1 and "私有原文片段" not in result[1].warnings[0]
+    assert result[-1].system_reply and not result[-1].result_kinds and result[-1].skill is None
+
+
+@pytest.mark.parametrize(("text","kinds"), [
+    ("【优化后】已润色\n【主要修改】措辞", ["polish"]),
+    ("【周报标题】本周", ["weekly"]),
+    ("## **【行动项】**\n- 整理记录", ["minutes"]),
+    ("请提供可处理的内容", []),
+])
+def test_result_kinds_do_not_depend_on_stale_explicit_capability(text, kinds):
+    from langchain_core.messages import AIMessage, HumanMessage
+    from briefly.api import visible_messages
+    assert visible_messages([HumanMessage("请求", additional_kwargs={"skill":"todo"}), AIMessage(text)])[-1].result_kinds == kinds

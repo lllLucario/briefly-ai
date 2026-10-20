@@ -10,6 +10,9 @@ const state = {
   activeMaterial: null,
   feishu: null, // 飞书配置状态（/feishu/status）
   mail: null, // 邮件配置状态（/mail/status）
+  lastRequest: null,
+  viewRevision: 0,
+  drafts: new Map(), // 未发送输入按会话保存，不带到其他会话
 };
 
 // ---------- 通用 ----------
@@ -813,10 +816,22 @@ function setSessionButtons() {
   $("#context-box").classList.add("hidden");
 }
 
+function rememberComposer() {
+  state.drafts.set(state.threadId || "new", {text:$("#input").value, skill:$("#skill").value, material_ids:[...state.picked]});
+}
+
 async function openSession(threadId) {
+  rememberComposer();
+  const view = ++state.viewRevision;
+  const draft = state.drafts.get(threadId);
+  state.picked = new Set(draft?.material_ids || []); renderPicked();
+  $("#skill").value = draft?.skill || "";
+  $("#input").value = draft?.text || "";
+  state.lastRequest = null;
   state.threadId = threadId;
   setSessionButtons();
   const detail = await api(`/chat/sessions/${threadId}`);
+  if (state.viewRevision !== view) return;
   $("#session-title").textContent = detail.title;
   $("#messages").innerHTML = "";
   detail.messages.forEach(appendMessage);
@@ -825,10 +840,14 @@ async function openSession(threadId) {
 }
 
 function newSession() {
+  rememberComposer();
+  state.viewRevision++;
   state.threadId = null;
   setSessionButtons();
   $("#session-title").textContent = "新会话";
   state.picked.clear(); renderPicked(); $("#skill").value = "";
+  state.lastRequest = null;
+  $("#input").value = "";
   $("#messages").innerHTML = `<div class="empty">粘贴内容或添加材料，选择要完成的工作。结果先留在会话中，保存前会请你确认。</div>`;
   loadSessions();
   $("#input").focus();
@@ -842,6 +861,7 @@ function appendMessage(m) {
   el.className = `msg ${m.role}${m.pending ? " pending" : ""}`;
   const meta = [];
   if (m.role === "user") {
+    state.lastRequest = {text:m.text, material_ids:m.material_ids || [], skill:m.skill || null};
     if (m.material_ids?.length) meta.push(`材料：${m.material_ids.map(materialTitle).map(escapeHtml).join("、")}`);
     if (m.skill) meta.push(`能力：${escapeHtml(state.skills.find((s) => s.name === m.skill)?.description || m.skill)}`);
   } else if (m.tools?.length) {
@@ -863,10 +883,13 @@ function scrollMessages() {
 
 $("#composer").addEventListener("submit", async (e) => {
   e.preventDefault();
+  if ($("#send").disabled) return;
   const text = $("#input").value.trim();
   if (!text) return;
   const material_ids = [...state.picked];
   const skill = $("#skill").value || null;
+  const requestThread = state.threadId;
+  const view = state.viewRevision;
   appendMessage({ role: "user", text, material_ids, skill });
   const pending = appendMessage({ role: "assistant", text: "思考中…（读取材料或长文档时可能需要一两分钟）", pending: true });
   scrollMessages();
@@ -875,20 +898,28 @@ $("#composer").addEventListener("submit", async (e) => {
   const previousActions = [...document.querySelectorAll(".result-action")].map((button) => ({button, disabled:button.disabled}));
   previousActions.forEach(({button}) => button.disabled = true);
   try {
-    const r = await api("/chat", { method: "POST", json: { text, thread_id: state.threadId, material_ids, skill } });
-    const isNew = !state.threadId;
+    const r = await api("/chat", { method: "POST", json: { text, thread_id: requestThread, material_ids, skill } });
+    // 等待期间用户切换了会话时，不把旧任务的结果和能力设置带到新会话。
+    if (state.viewRevision !== view) { loadSessions(); return; }
+    const isNew = !requestThread;
     state.threadId = r.thread_id;
     setSessionButtons();
     // 重新取历史，拿到本轮调用的工具名
     const detail = await api(`/chat/sessions/${r.thread_id}`);
+    if (state.viewRevision !== view) return;
     pending.remove();
-    appendMessage(detail.messages[detail.messages.length - 1]);
+    // 预检拒绝可能没有新增模型历史；仍显示这次实际返回的说明，不能误用上一条回答。
+    const answer = [...detail.messages].reverse().find((m) => m.role === "assistant" && m.text === r.reply);
+    appendMessage(answer || {role:"assistant", text:r.reply, system_reply:true});
     if (isNew) $("#session-title").textContent = detail.title;
     state.picked.clear();
+    $("#skill").value = "";
+    state.drafts.delete(requestThread || "new");
     renderPicked();
     loadSessions();
   } catch (err) {
     pending.remove();
+    if (state.viewRevision !== view) return;
     const el = appendMessage({ role: "assistant", text: `出错了：${err.message}`, pending: true });
     el.querySelector(".bubble").classList.add("danger");
     $("#input").value = text; // 失败时把输入放回去
@@ -1002,7 +1033,7 @@ $("#mat-picker").addEventListener("close", () => {
   pickResolve = null;
 });
 
-// ---------- 提醒（审核清单已整理好、自动开始失败等）----------
+// ---------- 提醒（审核清单已整理好、自动整理失败等）----------
 async function loadInbox() {
   let items = [];
   try {

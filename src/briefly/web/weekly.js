@@ -1,9 +1,9 @@
-// 周报页：一周一份周报。到点自动开始，或右下角“整理本周工作”——两者都是 检查更新 → 整理审核清单 → 你审核 → 生成。
+// 周报页：一周一份周报。到点自动整理，或右下角“整理本周工作”——两者都是 检查更新 → 整理审核清单 → 你审核 → 生成。
 // 左栏：本周 + 周报历史 + 周报设置。右侧：这一周的审核清单、本周材料、本周说明、周报正文。
 // 依赖 app.js 里的 $、api、state、escapeHtml、renderMarkdown、showNotice、fmtTime、fileIcon、materialTitle、ui*、pickMaterials、loadMaterials。
 "use strict";
 
-const weekly = { list: [], current: null, day: null, settings: null, selected: new Set(), editing: null, timer: null };
+const weekly = { list: [], current: null, day: null, settings: null, selected: new Set(), expanded: new Set(), editing: null, timer: null };
 const WEEK_STATUS = { none: "还没生成", pending: "排队中", running: "生成中", done: "已生成", failed: "生成失败" };
 const EV_STATUS = { PENDING: "待确认", CONFIRMED: "已确认", REJECTED: "已排除" };
 const EV_CATEGORY = { done: "已完成", in_progress: "进行中", plan: "计划", issue: "问题风险", other: "其他" };
@@ -106,7 +106,7 @@ function renderWeek() {
   $("#week-status").className = `status-pill ${r.status}`;
   $("#week-status").textContent = stale ? "已生成 · 清单有改动" : WEEK_STATUS[r.status] || r.status;
   const s = weekly.settings?.schedule;
-  $("#week-auto").textContent = thisWeek && s?.enabled && s.next ? `下次自动开始：${fmtTime(s.next)}` : thisWeek && s && !s.enabled ? "未开启每周定时" : "";
+  $("#week-auto").textContent = thisWeek && s?.enabled && s.next ? `下次自动整理：${fmtTime(s.next)}；核对后生成正文` : thisWeek && s && !s.enabled ? "未开启每周自动整理" : "";
   $("#week-delete").classList.toggle("hidden", !r.id);
   $("#week-notes").innerHTML = (r.prep_notes || []).map((n) => `<div class="notice warn">${escapeHtml(n)}</div>`).join("");
   renderChecklist();
@@ -125,7 +125,7 @@ function renderWeek() {
   if (r.status === "pending" || r.status === "running") weekly.timer = setTimeout(async () => { await refreshWeek(); loadWeekly(false); }, 3000);
 }
 
-// 右下角按钮：自动和手动只差“是不是到点自动开始”。没整理过 → 整理本周工作（先整理清单）；有待确认 → 先审核；审核完 → 确认并生成
+// 右下角按钮：自动和手动只差“是不是到点自动整理”。没整理过 → 整理本周工作（先整理清单）；有待确认 → 先审核；审核完 → 确认并生成
 function footState() {
   const r = weekly.current;
   if (r.status === "pending" || r.status === "running") return { label: "生成中…", disabled: true, hint: "逐条提取并核对，材料多时需要几分钟" };
@@ -204,8 +204,8 @@ function evidenceTodos(e) {
     const sync = t.synced_at ? `<span class="badge ok">已同步到待办</span>`
       : differs && editable ? `<button class="ghost" data-sync="${t.todo_id}" title="把本次的状态写回待办（会先确认）">同步到待办</button>` : "";
     return `<span class="ev-todo" title="${escapeHtml(via)}">待办：<b>${path}</b>${t.archived ? "（已归档）" : ""}
-      <span class="muted">现在${TODO_STATUS_TEXT[t.status] || t.status}</span>
-      ${editable ? `<select data-todo-status="${t.todo_id}" title="这一份周报里这项工作的状态；只影响这一份周报，不改待办">${options}</select>` : ""}${sync}</span>`;
+      <span class="muted">待办当前：${TODO_STATUS_TEXT[t.status] || t.status}</span>
+      ${editable ? `<label>本周报表述：<select data-todo-status="${t.todo_id}" title="只修改本周报中的状态表述；同步到待办需另行确认">${options}</select></label>` : ""}${sync}</span>`;
   }).join("")}</div>`;
 }
 
@@ -226,11 +226,11 @@ function evidenceHtml(e) {
   return `<div class="ev ${cls}" data-ev="${e.id}">
     <div class="ev-head"><input type="checkbox" data-pick="${e.id}" ${weekly.selected.has(e.id) ? "checked" : ""}>
       <b>${escapeHtml(e.title)}${e.user_edited && !["manual", "todo"].includes(e.origin) ? ' <span class="badge">你改过</span>' : ""}${e.has_update ? ' <span class="badge warn">有新变化，见新的待确认项</span>' : ""}</b>
-      <span class="badge">${EV_CATEGORY[e.category] || e.category}</span></div>
+      </div>
     <div>${escapeHtml(e.description)}</div>
     <div class="ev-meta">来源：${source} ${flags}</div>
-    <details class="meta"><summary>查看来源与调整周报中的状态表述</summary>
-    <p class="muted small">记录类别和任务当前状态分别保留；本次状态只影响周报，明确同步后才修改待办。</p>
+    <details class="meta" data-detail="${e.id}" ${weekly.expanded.has(e.id) ? "open" : ""}><summary>查看来源与调整周报中的状态表述</summary>
+    <p class="muted small">周报分类：${EV_CATEGORY[e.category] || e.category}。这里的表述只影响本周报；点击同步并确认后才修改待办当前状态。</p>
     ${evidenceEvents(e)}归属：${attr}${basis}${evidenceTodos(e)}</details>
     <div class="ev-actions">
       ${e.review_status !== "CONFIRMED" ? `<button class="ghost" data-act="confirm">${["todo", "manual"].includes(e.origin) || ["ATTRIBUTED", "USER_CONFIRMED"].includes(e.attribution) ? "纳入本周" : "确认是我的并纳入"}</button>` : ""}
@@ -269,6 +269,13 @@ async function reviewAction(action, ids, note = "") {
     loadWeekly(false);
   } catch (err) { uiAlert(err.message, "出错了"); }
 }
+
+$("#week-checklist").addEventListener("toggle", (e) => {
+  const detail = e.target;
+  if (!detail.isConnected || !detail.matches("details[data-detail]")) return;
+  const id = Number(detail.dataset.detail);
+  if (detail.open) weekly.expanded.add(id); else weekly.expanded.delete(id);
+}, true);
 
 $("#week-checklist").addEventListener("change", async (e) => {
   const sel = e.target.closest("[data-todo-status]");
@@ -402,7 +409,7 @@ function renderWeekMaterials() {
   const hint = suggested.length
     ? `<div class="row gap"><span class="muted small">本周有进展的待办关联了 ${suggested.length} 份不随追踪更新的材料。</span><button class="ghost small" id="add-todo-materials">加入它们</button></div>` : "";
   const body = [...rows, ...removed].join("");
-  const empty = `<p class="muted small">没有。追踪中的文件和待办已经在审核清单里；会议纪要等其他材料可以在这里加入。</p>`;
+  const empty = `<p class="muted small">尚未加入整份材料。会议纪要等来源可在这里选择；文件变化和待办进展通过“整理本周工作”进入上方核对清单。</p>`;
   $("#week-materials").innerHTML = (body || (hint ? "" : empty)) + hint;
 }
 
@@ -491,8 +498,8 @@ function renderWeeklyTodos(r) {
   if (!refs.length) return;
   const groups = {};
   for (const x of refs) (groups[x.todo.parent_title || x.todo.title] ??= []).push(x);
-  box.innerHTML = `<details class="meta" open><summary>关联的待办（生成时的记录）</summary>${Object.entries(groups).map(([name, xs]) => `<div><b>${escapeHtml(name)}</b>：${xs.map((x) => {
-    const status = x.report_status ? `本次${TODO_STATUS_TEXT[x.report_status]}` : `当时${TODO_STATUS_TEXT[x.todo.status] || ""}`;
+  box.innerHTML = `<details class="meta"><summary>关联待办与生成时状态（历史记录）</summary>${Object.entries(groups).map(([name, xs]) => `<div><b>${escapeHtml(name)}</b>：${xs.map((x) => {
+    const status = x.report_status ? `本周报表述：${TODO_STATUS_TEXT[x.report_status]}` : `生成时待办：${TODO_STATUS_TEXT[x.todo.status] || ""}`;
     const who = x.todo.parent_title ? `${escapeHtml(x.todo.title)} · ` : "";
     return `<span class="badge">${who}${escapeHtml(x.evidence?.title || "")}（E${x.evidence_id} · ${status}${x.relation === "material" ? " · 关联文件" : ""}${x.synced ? " · 已同步" : ""}）</span>`;
   }).join(" ")}</div>`).join("")}</details>`;

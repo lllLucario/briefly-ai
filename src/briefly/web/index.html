@@ -51,10 +51,11 @@
           <button type="button" id="chat-add" class="ghost">添加文件 / 链接</button>
           <button type="button" id="pick-materials" class="ghost">📎 选择材料</button>
           <div id="picked" class="chips"></div>
-          <select id="skill" title="指定能力（不指定则由模型判断）">
+          <select id="skill" title="仅指定下一条消息的能力；成功发送后恢复自动判断">
             <option value="">自动判断能力</option>
           </select>
         </div>
+        <small class="muted">能力选择仅用于下一条消息；成功发送后恢复自动判断，追问仍保留会话上下文。</small>
         <div class="row gap">
           <textarea id="input" rows="3" placeholder="输入问题或粘贴文字，Ctrl+Enter 发送"></textarea>
           <button id="send" class="primary">发送</button>
@@ -176,7 +177,7 @@
     </section>
   </main>
 
-  <!-- 周报：一周一份。到点自动开始，或右下角“现在生成”；两者都是 检查更新 → 审核清单 → 生成 -->
+  <!-- 周报：一周一份。自动或手动整理清单，用户核对后生成正文。 -->
   <main id="tab-weekly" class="tab">
     <aside class="sidebar weekly-side">
       <ul id="week-current" class="list"></ul>
@@ -205,10 +206,11 @@
           <button id="week-prepare" class="ghost small" title="检查文件更新，把这一周新的文件变化和待办进展整理进清单">检查更新并整理</button>
         </div>
         <div id="week-checklist"></div>
+        <p class="muted small">文件变化、待办进展和补充工作记录在这里逐条核对；下方整份材料与说明会在生成时参与提取，不会自动变成已核对条目。</p>
       </section>
 
       <section class="week-section">
-        <div class="section-head"><h4>本周材料 <span class="muted small">（可选，整份纳入，生成时逐条提取）</span></h4>
+        <div class="section-head"><h4>本周材料 <span class="muted small">（可选，整份作为来源，生成后核对正文）</span></h4>
           <button id="week-pick" class="ghost small">加入材料</button></div>
         <div id="week-materials"></div>
       </section>
@@ -352,7 +354,7 @@
     <div class="dialog-head"><h3>周报设置</h3><button type="button" class="ghost small" data-close>✕</button></div>
     <div class="stack">
       <h4>每周定时</h4>
-      <label class="toggle"><input type="checkbox" id="set-schedule-on"> 每周到点自动开始：检查更新、整理审核清单，然后提醒你审核（不会在你审核前生成）</label>
+      <label class="toggle"><input type="checkbox" id="set-schedule-on"> 每周自动整理：检查更新、整理清单并提醒你核对；确认后才生成正文</label>
       <div class="row gap wrap"><select id="set-weekday"></select><input type="time" id="set-time" value="16:30"></div>
       <small class="muted" id="set-next"></small>
       <div id="set-runs" class="small"></div>

@@ -1,4 +1,4 @@
-"""每周定时：到点自动开始这一周的周报（检查更新 + 整理审核清单）、补做、重试、提醒。用假模型，不调用真实 API。"""
+"""每周定时：到点自动整理这一周的工作（检查更新 + 整理审核清单）、补做、重试、提醒。用假模型，不调用真实 API。"""
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -81,7 +81,7 @@ def test_due_schedule_prepares_once_and_notifies(env):
     message = schedule.run_due()
     again = schedule.run_due()
 
-    assert "每周定时开始完成：待确认 1 条" in message and again is None
+    assert "每周自动整理完成：待确认 1 条" in message and again is None
     [run] = schedule.runs()
     assert run.status == RUN_DONE and run.late_minutes == 0 and run.report_id
     report = weekly.week(create=False)
@@ -135,7 +135,7 @@ def test_failure_is_retried_then_reported(env, monkeypatch):
         s.commit()
     assert "失败（第 2 次）" in schedule.run_due()
     [n] = notifications(env.svc.engine)
-    assert n.kind == "weekly_failed" and "现在生成" in n.body and "briefly weekly prepare" in n.body
+    assert n.kind == "weekly_failed" and "整理本周工作" in n.body and "briefly weekly prepare" in n.body
     with sessionmaker(env.svc.engine)() as s:
         s.execute(update(ScheduledRun).values(finished_at=datetime.now() - timedelta(minutes=11)))
         s.commit()
@@ -155,7 +155,7 @@ def test_running_elsewhere_is_skipped_and_crash_recovered(env, monkeypatch):
         s.execute(update(ScheduledRun).values(started_at=datetime.now() - timedelta(hours=1)))
         s.commit()
     monkeypatch.setattr(config, "TRACKING_RETRY_MINUTES", 0)
-    assert "每周定时开始完成" in schedule.run_due()
+    assert "每周自动整理完成" in schedule.run_due()
     assert sorted(r.status for r in schedule.runs()) == [RUN_DONE, RUN_INTERRUPTED]
 
 
@@ -174,7 +174,7 @@ def test_run_due_runs_daily_scan_and_weekly_start(env, monkeypatch):
     monkeypatch.setattr(config, "TRACKING_WORKDAYS_ONLY", False)
     monkeypatch.setattr(config, "TRACKING_DAILY_TIME", "23:59")  # 每日扫描不到期
     messages = run_due(weekly)
-    assert any("每周定时开始完成" in m for m in messages)
+    assert any("每周自动整理完成" in m for m in messages)
 
 
 def test_cli_schedule_settings_and_inbox(env, capsys):

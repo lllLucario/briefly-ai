@@ -1,7 +1,7 @@
 """周报的接口（/weekly/...）：一周一份周报——整理审核清单、审核、本周材料与说明、生成、正文与历史版本；
 周报设置（定时、读者、署名、你在文档里的名字）与提醒。
 
-到点自动开始（schedule.py）和手动“现在生成”调用的是同一组接口背后的同一个流程。
+到点自动整理（schedule.py）和手动“整理本周工作”调用的是同一组接口背后的同一个流程。
 接口函数用 def：整理清单要扫描文件、调模型，FastAPI 放进线程池执行；生成正文放在后台，前端轮询详情。
 """
 from datetime import date
@@ -322,7 +322,7 @@ def register(app: FastAPI) -> None:
         Schedule(weekly()).disable()
         return settings_out()
 
-    @app.get("/notifications", tags=[docs.SCHEDULE], summary="提醒（审核清单已整理好、自动开始失败等）")
+    @app.get("/notifications", tags=[docs.SCHEDULE], summary="提醒（审核清单已整理好、自动整理失败等）")
     def list_notifications(unread_only: bool = True):
         return [
             {"id": n.id, "kind": n.kind, "title": n.title, "body": n.body, "report_id": n.report_id, "created_at": n.created_at, "read_at": n.read_at}

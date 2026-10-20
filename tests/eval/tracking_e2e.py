@@ -2,7 +2,7 @@
 
     python tests/eval/tracking_e2e.py [--keep-server]
 
-覆盖：追踪文件（混合添加、基线、扫描、各类变化、Diff、暂停恢复）、每日扫描与每周定时开始（API 后台线程实际触发）、
+覆盖：追踪文件（混合添加、基线、扫描、各类变化、Diff、暂停恢复）、每日扫描与每周自动整理（API 后台线程实际触发）、
 提醒（API 与 inbox）、交互审核（stdin 输入）、生成周报、幂等、run-due、prune，以及对话、材料、周报接口。
 全部数据在临时目录，独立数据库，端口 8765，不碰 data/。结果写到 files/eval/tracking-e2e-<时间>.md。
 会调用 .env 中配置的模型，产生少量费用。
@@ -248,7 +248,7 @@ def scenario(e: Env):
     code, out = e.run("weekly", "prepare")
     step("再次整理：不重复生成、已审核不被覆盖", code == 0 and "文件变化新记录 0 条" in out and "待办新记录 0 条" in out, out)
     code, out = e.run("weekly", "run-due")
-    step("run-due：今天的扫描已完成，定时不重复执行", code == 0 and "每日扫描已完成" in out and "每周定时开始完成" not in out, out)
+    step("run-due：今天的扫描已完成，定时不重复执行", code == 0 and "每日扫描已完成" in out and "每周自动整理完成" not in out, out)
     code, out = e.run("track", "prune", "--keep-days", "30")
     step("清理旧版本", code == 0 and "清理了" in out, out)
 

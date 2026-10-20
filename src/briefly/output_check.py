@@ -11,6 +11,40 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 log = logging.getLogger(__name__)
 
+
+def reply_char_limit(messages) -> int | None:
+    """从用户原始要求读取明确字数上限，不读取工具、助手或标明的材料正文。
+
+    默认沿用到用户更改；“仅本次/这次/本轮”只约束当轮。自然语言中未能
+    确定识别的要求仍交给模型，不从上下限范围或材料里的数字猜测。
+    """
+    persistent = current = None
+    for message in messages:
+        if not isinstance(message, HumanMessage) or message.additional_kwargs.get("internal"):
+            continue
+        current = persistent
+        text = message.additional_kwargs.get("display", message.text)
+        text = re.sub(r"```.*?```", "", text, flags=re.S)
+        text = re.split(r"(?:原文|材料|正文|待处理内容)\s*[:：]|【材料开始】", text, maxsplit=1)[0]
+        text = re.sub(r'“[^”]*”|「[^」]*」|『[^』]*』|"[^"\n]*"|\x27[^\x27\n]*\x27|`[^`\n]*`', "", text)
+        text = re.sub(r"(?:不要|不用|不必|无需)\s*(?:再)?\s*(?:控制在|限制在|遵守)\s*\d+\s*字(?:以内|以下|内)?", "取消字数限制", text)
+        text = re.sub(r"\d+\s*[-—–~～至到]\s*\d+\s*字(?:以内|以下|内)?", "", text)
+        local = bool(re.search(r"仅本次|这次|本轮", text))
+        if re.search(r"(?:取消|解除|不再限制|不限制|不限|不用控制)\s*(?:输出|回复|回答)?\s*字数(?:限制)?", text):
+            current = None
+            if not local:
+                persistent = None
+        matches = list(re.finditer(r"(?:不要超过|不超过|最多|控制在|限制在|精简到|压缩到)\s*(\d{1,5})\s*字(?:以内|以下|内)?|(\d{1,5})\s*字(?:以内|以下)", text))
+        if matches:
+            current = int(matches[-1].group(1) or matches[-1].group(2)) or None
+            if not local:
+                persistent = current
+    return current
+
+
+def reply_chars(text: str) -> int:
+    return len(re.sub(r"\s+", "", text))
+
 INTERNAL_PATTERNS = [
     re.compile(r"第\s*\d+\s*(?:[–—\-~～至到]\s*\d+\s*)?块"),  # 第 3 块、第 7–9 块
     re.compile(r"共\s*\d+\s*块"),
@@ -83,14 +117,15 @@ class InternalTermCheck(AgentMiddleware):
 
     - 含内部处理信息（块号等，Bug 1）；
     - 本轮工具结果里有看不出哪个为准的冲突，回答却只写了其中一种说法（Agent 改写工具结果时把矛盾“统一”了，Bug 4）。
-    两类问题合并成一次重试。
+    也核对用户明确给出的字数上限；所有问题合并成最多一次重试。
 
     sources(request) 返回判断依据的原文（本轮用户输入、可访问材料的正文）。放在 ContextBuilder 外层：重试也经过预算检查。
     """
 
-    def __init__(self, sources) -> None:
+    def __init__(self, sources, length_limit=None) -> None:
         super().__init__()
         self.sources = sources
+        self.length_limit = length_limit or (lambda request: reply_char_limit(request.messages))
 
     def wrap_model_call(self, request, handler):
         response = handler(request)
@@ -100,24 +135,32 @@ class InternalTermCheck(AgentMiddleware):
         conflicts = turn_conflicts(request.messages)
         terms = find_internal_terms(answer.text, self._sources(request))
         missing = missing_conflict_values(answer.text, conflicts)
-        if not terms and not missing:
+        limit = self.length_limit(request)
+        too_long = limit is not None and reply_chars(answer.text) > limit
+        if not terms and not missing and not too_long:
             return response
-        log.warning("回答检查未通过（内部信息 %s，缺少的冲突说法 %s），重试一次", terms, missing)
+        log.warning("回答检查未通过（内部信息 %s，缺少的冲突说法 %s，超出字数上限 %s），重试一次", terms, missing, limit if too_long else None)
         hints = []
         if terms:
             hints.append(RETRY_HINT.format(terms="、".join(terms)))
         if missing:
             hints.append(CONFLICT_HINT.format(missing="、".join(missing)))
+        if too_long:
+            hints.append(f"上一条回复共 {reply_chars(answer.text)} 字，违反用户仍有效的整条回复最多 {limit} 字要求。请重新压缩，所有标题、正文、说明和注合计不得超过 {limit} 字（不计空白）。保留原文事实、数字、日期和确定程度；精简修改说明，不添加可选的注，不截断或删除关键事实。")
         hint = HumanMessage("\n".join(hints), additional_kwargs={"internal": True})
         retry = handler(request.override(messages=[*request.messages, answer, hint]))
         second = _final_answer(retry)
         if second is None:
-            return response
+            # 重试可能因预算被拒绝，或需要继续读取工具；不能悄悄退回已知有问题的原回答。
+            return retry
         left = find_internal_terms(second.text, self._sources(request))
         left_conflicts = missing_conflict_values(second.text, conflicts)
-        if left or left_conflicts:
-            log.warning("重试后回答仍未通过检查（内部信息 %s，缺少的冲突说法 %s），需要人工排查", left, left_conflicts)
+        left_length = limit is not None and reply_chars(second.text) > limit
+        if left or left_conflicts or left_length:
+            log.warning("重试后回答仍未通过检查（内部信息 %s，缺少的冲突说法 %s，超出字数上限 %s），需要人工排查", left, left_conflicts, limit if left_length else None)
             second.response_metadata = {**second.response_metadata, "internal_terms": left, "missing_conflicts": left_conflicts}
+            if left_length:
+                second.response_metadata.update({"length_limit": limit, "actual_chars": reply_chars(second.text)})
         return retry
 
     def _sources(self, request) -> list[str]:

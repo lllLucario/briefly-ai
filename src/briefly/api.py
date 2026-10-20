@@ -3,6 +3,7 @@
 接口函数用 def 而不是 async def：解析文件是耗时的同步操作，FastAPI 会放进线程池执行，不阻塞其他请求。
 """
 import logging
+import re
 import threading
 from collections import defaultdict
 from collections.abc import Callable
@@ -21,6 +22,7 @@ from pydantic import BaseModel
 from . import api_docs as docs
 from . import config, mail
 from .agent import Agent, new_thread_id, sqlite_checkpointer
+from .context_builder import SYSTEM_REPLY
 from .db import create_db_engine
 from .feishu import FeishuClient, client_from_config
 from .llm import create_chat_model
@@ -118,6 +120,9 @@ class MessageOut(BaseModel):
     tools: list[str] = []  # 给出这条回答之前调用过的工具
     message_id: str | None = None
     saved_todo_ids: list[int] = []
+    warnings: list[str] = []
+    result_kinds: list[str] = []  # 只用于安排结果操作，不作为业务保存或事实依据
+    system_reply: bool = False
 
 
 class SessionDetail(SessionOut):
@@ -160,9 +165,13 @@ def visible_messages(messages: list[AnyMessage]) -> list[MessageOut]:
     """checkpointer 里的完整历史 → 网页显示的消息：用户的原始输入、模型的最终回答，工具交互只记名称。"""
     out: list[MessageOut] = []
     tools: list[str] = []
+    skill = None
     for m in messages:
         if isinstance(m, HumanMessage):
             meta = m.additional_kwargs
+            if meta.get("internal"):
+                continue
+            skill = meta.get("skill")
             out.append(
                 MessageOut(
                     role="user",
@@ -176,7 +185,19 @@ def visible_messages(messages: list[AnyMessage]) -> list[MessageOut]:
             if m.tool_calls:
                 tools += [c["name"] for c in m.tool_calls]
             elif m.text:
-                out.append(MessageOut(role="assistant", text=m.text, tools=tools, message_id=m.id))
+                warnings = []
+                if m.response_metadata.get("internal_terms"):
+                    warnings.append("回答中仍含有未能清除的处理信息，请核对原文；可以重试原任务或补充要求。")
+                if m.response_metadata.get("missing_conflicts"):
+                    warnings.append("回答可能未完整保留材料中相互冲突的说法，请核对双方原文后再使用。")
+                if m.response_metadata.get("length_limit"):
+                    warnings.append(f"回答仍超过你要求的 {m.response_metadata['length_limit']} 字上限（当前 {m.response_metadata['actual_chars']} 字），可以精简要求后重试。")
+                system = bool(m.response_metadata.get(SYSTEM_REPLY))
+                # 仅识别栏目以安排界面动作；不从 Markdown 提取任务或保存业务事实。
+                markers = {"summarize": "一句话总结", "minutes": "会议信息|行动项", "weekly": "周报标题", "todo": "待办清单", "polish": "优化后"}
+                kinds = [k for k, marker in markers.items() if re.search(rf"(?m)^\s*(?:#{{1,6}}\s*)?(?:\*\*)?【(?:{marker})】", m.text)] if not system else []
+                out.append(MessageOut(role="assistant", text=m.text, tools=tools, message_id=m.id,
+                                      skill=skill, warnings=warnings, result_kinds=kinds, system_reply=system))
                 tools = []
     return out
 
@@ -191,7 +212,7 @@ def create_app(
 ) -> FastAPI:
     """store、model_factory、agent_factory 可注入，便于测试用内存库和假模型。智能体在第一次用到时才创建。
 
-    tracking_scheduler：是否在本进程内启动定时线程（每日扫描、每周定时开始；briefly-api 按配置开启，测试默认关闭）；
+    tracking_scheduler：是否在本进程内启动定时线程（每日扫描、每周自动整理；briefly-api 按配置开启，测试默认关闭）；
     开启时若配置了飞书，提醒同时由飞书机器人发送。feishu_factory 创建应用身份的飞书客户端，
     feishu_tokens 是飞书用户授权的令牌存储（默认 data/feishu_user_token.json），测试时注入模拟响应。
     """
