@@ -88,6 +88,17 @@ def test_run_once_chat_case():
     assert record["error"] is None and record["checks"] == [{"turn": 1, "name": "有表格", "ok": True}]
 
 
+def test_undecided_proposal_checks_preserve_assigned_task_and_separate_reminder():
+    cases = {c.id:c for c in weekly_rule_cases()}
+    good = "【周报标题】周报\n【本周完成】退款接口联调完成\n【进行中】无\n【问题与风险】无\n【下周计划】赵琳更新接口文档，期限待定\n【给用户的提醒】竞品分析尚未决定是否做"
+    for text, expected in [(good,True),
+                           (good.replace("赵琳更新接口文档，期限待定", "赵琳更新接口文档，期限待定；考虑竞品分析，尚未决定"),False),
+                           (good.replace("赵琳更新接口文档，期限待定", "无"),False)]:
+        assert all(c.fn(text) for c in cases["CW5"].turns[0].checks) == expected
+        report = SimpleNamespace(status="done",content=text,generation={})
+        assert all(c.fn(report) for c in cases["FW5"].checks) == expected
+
+
 def test_run_once_weekly_case():
     def respond(messages):
         if "撰写周报" in messages[0].content:

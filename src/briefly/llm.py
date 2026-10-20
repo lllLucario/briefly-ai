@@ -5,15 +5,22 @@ from langchain_openai import ChatOpenAI
 from . import config
 
 
-def create_chat_model() -> BaseChatModel:
+def create_chat_model(*, max_retries: int | None = None, timeout: float | None = None) -> BaseChatModel:
     if not config.API_KEY or not config.MODEL:
         raise RuntimeError("请在 .env 中设置 BRIEFLY_API_KEY 和 BRIEFLY_MODEL（可选 BRIEFLY_BASE_URL）")
+    # 必须在创建SDK客户端之前设置；创建后修改模型字段不会重建连接层。
+    options = {}
+    if max_retries is not None:
+        options["max_retries"] = max_retries
+    if timeout is not None:
+        options["timeout"] = timeout
     return ChatOpenAI(
         model=config.MODEL,
         api_key=config.API_KEY,
         base_url=config.BASE_URL,
         max_tokens=config.MAX_TOKENS,
         extra_body=_thinking_body(),
+        **options,
     )
 
 

@@ -3,7 +3,7 @@
 // 依赖 app.js 里的 $、api、state、escapeHtml、renderMarkdown、showNotice、fmtTime、fileIcon、materialTitle、ui*、pickMaterials、loadMaterials。
 "use strict";
 
-const weekly = { list: [], current: null, day: null, settings: null, selected: new Set(), expanded: new Set(), editing: null, timer: null };
+const weekly = { list: [], current: null, day: null, settings: null, selected: new Set(), expanded: new Set(), editing: null, timer: null, loading: true, view: 0 };
 const WEEK_STATUS = { none: "还没生成", pending: "排队中", running: "生成中", done: "已生成", failed: "生成失败" };
 const EV_STATUS = { PENDING: "待确认", CONFIRMED: "已确认", REJECTED: "已排除" };
 const EV_CATEGORY = { done: "已完成", in_progress: "进行中", plan: "计划", issue: "问题风险", other: "其他" };
@@ -33,11 +33,16 @@ function isThisWeek(r) {
 
 // ---------- 左栏
 async function loadWeekly(open = true) {
-  const [list, current, settings] = await Promise.all([api("/weekly"), api("/weekly/week"), api("/weekly-settings")]);
-  weekly.list = list;
-  weekly.settings = settings;
-  renderWeekSide(current);
-  if (open) await openWeek(weekly.current?.id ? { id: weekly.current.id } : {});
+  const selected = weekly.current?.id;
+  const view = open ? beginWeekLoad() : weekly.view;
+  try {
+    const [list, current, settings] = await Promise.all([api("/weekly"), api("/weekly/week"), api("/weekly-settings")]);
+    if (view !== weekly.view) return;
+    weekly.list = list;
+    weekly.settings = settings;
+    renderWeekSide(current);
+    if (open) await openWeek(selected ? { id: selected } : {});
+  } catch (err) { if (view === weekly.view) weekMsg(`加载周报失败：${escapeHtml(err.message)}，请重新选择这一周重试。`, "error"); }
 }
 
 function renderWeekSide(current) {
@@ -62,9 +67,12 @@ $("#weekly-list").addEventListener("click", (e) => {
 
 // 从提醒条、待办页跳到某一周
 async function gotoWeek(reportId) {
-  await activateTab("weekly", false);
-  await Promise.all([loadMaterials(), loadWeekly(false)]);
-  await openWeek(reportId ? { id: reportId } : {});
+  const view = beginWeekLoad();
+  try {
+    await activateTab("weekly", false);
+    await Promise.all([loadMaterials(), loadWeekly(false)]);
+    if (view === weekly.view) await openWeek(reportId ? { id: reportId } : {});
+  } catch (err) { if (view === weekly.view) weekMsg(`加载周报失败：${escapeHtml(err.message)}`, "error"); }
 }
 
 // ---------- 打开一周
@@ -73,21 +81,38 @@ function stopPolling() {
   weekly.timer = null;
 }
 
-async function openWeek({ id = null, day = null } = {}) {
+function beginWeekLoad() {
   stopPolling();
+  weekly.loading = true;
+  $("#week-panel").inert = true;
+  renderFoot();
+  return ++weekly.view;
+}
+
+async function openWeek({ id = null, day = null } = {}) {
+  const view = beginWeekLoad();
   weekly.selected.clear();
   exitEdit();
   $("#week-msg").classList.add("hidden");
-  const r = id ? await api(`/weekly/${id}`) : await api(`/weekly/week${day ? `?day=${day}` : ""}`);
-  weekly.current = r;
-  renderWeek();
-  renderWeekSide(id ? await api("/weekly/week") : r);
+  try {
+    const r = id ? await api(`/weekly/${id}`) : await api(`/weekly/week${day ? `?day=${day}` : ""}`);
+    const current = id ? await api("/weekly/week") : r;
+    if (view !== weekly.view) return;
+    weekly.current = r;
+    weekly.loading = false;
+    $("#week-panel").inert = false;
+    renderWeek();
+    renderWeekSide(current);
+  } catch (err) { if (view === weekly.view) weekMsg(`加载周报失败：${escapeHtml(err.message)}，请重新选择这一周重试。`, "error"); }
 }
 
 async function refreshWeek() {
   const r = weekly.current;
-  if (!r?.id) return;
-  weekly.current = await api(`/weekly/${r.id}`);
+  const view = weekly.view;
+  if (!r?.id || weekly.loading) return;
+  const updated = await api(`/weekly/${r.id}`);
+  if (view !== weekly.view || weekly.current?.id !== r.id) return;
+  weekly.current = updated;
   renderWeek();
 }
 
@@ -128,6 +153,7 @@ function renderWeek() {
 // 右下角按钮：自动和手动只差“是不是到点自动整理”。没整理过 → 整理本周工作（先整理清单）；有待确认 → 先审核；审核完 → 确认并生成
 function footState() {
   const r = weekly.current;
+  if (weekly.loading || !r) return { label: "正在加载…", disabled: true, hint: "请等待本周内容加载完成" };
   if (r.status === "pending" || r.status === "running") return { label: "生成中…", disabled: true, hint: "逐条提取并核对，材料多时需要几分钟" };
   if (!r.prepared_at) {  // 手动和自动一样：先检查更新、整理审核清单，审核之后才生成
     return { label: "整理本周工作", action: "prepare", hint: "检查更新并整理清单，核对后再生成正文" };

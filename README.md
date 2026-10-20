@@ -80,10 +80,16 @@ briefly track add https://xxx.feishu.cn/wiki/...          # 追踪飞书文档�
 
 ```bash
 pytest -W error                           # 单元测试，用假模型，不调用真实 API
+pip install -e ".[dev,browser]"           # 可选：安装网页回归依赖
+python -m playwright install chromium     # 安装回归使用的浏览器
+pytest tests/browser --run-browser -W error  # 实际浏览器 + 假模型 + 隔离数据库
 python tests/eval/run_eval.py -n 3        # 实测用例集：真实模型，每个用例跑 3 次统计通过率
+python tests/eval/journey_browser.py --real-model -n 2  # 真实模型完整网页走查，会产生API费用
 ```
 
 实测用例集（`tests/eval/`）覆盖周报、五项能力、异常输入（乱码、超出范围、提示词注入、超长）、多轮对话、长材料、对话与正式周报规则一致性，以及行动项预览的来源与最新修订，用例材料均为虚构。实测会向配置的模型服务发送提示词与用例内容，并产生 API 费用；单元测试不调用真实 API。
+
+网页回归默认跳过，显式加 `--run-browser` 才运行。已有Edge时可设置环境变量 `BRIEFLY_BROWSER_CHANNEL=msedge`，真实走查脚本对应 `--channel msedge`，无需另装Chromium。回归覆盖会议修订、预览取消与保存、断网重试去重、进展记录、周报审核、状态隔离、版本和导出，也检查加载失败恢复、旧响应覆盖及手机宽度。真实走查默认每轮最多12次逻辑模型调用，SDK不自动重试，失败后停止后续轮次；不连接飞书或发送邮件。
 
 ## 结构
 

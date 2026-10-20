@@ -495,6 +495,14 @@ def weekly_rule_cases() -> list[Case]:
             reply_section_has("【下周计划】", "接口文档"),
             lacks("影响上线", "上线风险", "需要后端", "需后端", "仍需关注", "持续关注", "进一步排查"),
         ]),
+        ("weekly_undecided.md", "未决定提议不成为承诺安排，明确任务仍保留", [
+            reply_section_has("【本周完成】", "退款接口", "联调"),
+            reply_section_has("【下周计划】", "赵琳", "接口文档"),
+            reply_section_lacks("【本周完成】", "竞品"),
+            reply_section_lacks("【进行中】", "竞品"),
+            reply_section_lacks("【下周计划】", "竞品"),
+            reply_risks_none(),
+        ]),
     ]
     out = []
     for n, (material, title, checks) in enumerate(scenarios, 1):

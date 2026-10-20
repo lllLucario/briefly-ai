@@ -167,6 +167,7 @@ async function transferToWeek(origin) {
       const zone = body.querySelector("[data-preview]");
       zone.innerHTML = `<h4>${escapeHtml(preview.period_start)} 至 ${escapeHtml(preview.period_end)}</h4>
         <p>已有说明（仅展示，不覆盖）：${escapeHtml(preview.existing_note || "无")}</p>
+        <p class="muted small">勾选的材料会整份参与正式周报，不沿用聊天里的删减范围。只需部分内容时，可取消勾选材料，核对并补充下面的工作说明。</p>
         ${sourceMaterials.map((m)=>`<label class="toggle"><input type="checkbox" data-mid="${m.id}" ${origin.material_ids?.includes(m.id)?"checked":""}>${escapeHtml(m.title)}${preview.existing_material_ids.includes(m.id)?"（本周已加入）":""}</label>`).join("")}
         <details><summary>选择要追加的用户原始输入</summary>${preview.source_inputs.map((s,i)=>`<p>${escapeHtml(s.title)} <button class="ghost small" data-use-input="${i}">追加这段原文</button></p><pre class="content-box">${escapeHtml(s.content)}</pre>`).join("")}</details>
         <label>要追加的工作说明（可编辑；空白则只加入材料）<textarea data-note class="block" rows="5"></textarea></label>

@@ -24,6 +24,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+browser = ["playwright>=1.64,<2"]
 
 [project.scripts]
 briefly = "briefly.cli:main"
@@ -38,3 +39,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 briefly = ["prompts/*.md", "web/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["browser: 本机浏览器回归，使用 --run-browser 显式运行，不调用真实模型"]
