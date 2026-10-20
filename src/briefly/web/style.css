@@ -358,7 +358,7 @@ dialog.wide { width: min(760px, 94vw); }
 .drive-nav { min-height: 30px; }
 .drive-nav button:disabled { opacity: .45; cursor: default; }
 .drive-head { display: flex; align-items: center; justify-content: space-between; padding: 0 10px; font-size: 13px; }
-#drive-dialog .drive-list { max-height: min(52vh, 460px); }
+#drive-panel .drive-list { max-height: min(52vh, 460px); }
 .drive-list li.selectable, .drive-list li.folder { cursor: pointer; }
 .drive-list li.selectable:hover, .drive-list li.folder:hover { background-color: var(--bg); }
 .drive-list li.selected { background-color: var(--accent-soft); }
@@ -378,13 +378,13 @@ dialog.wide { width: min(760px, 94vw); }
 button.danger-solid { background: var(--danger); border-color: var(--danger); color: #fff; }
 
 /* 云空间弹窗里的文件夹树：原地展开，每一级缩进 18px 并画竖线 */
-#drive-dialog .drive-list li {
+#drive-panel .drive-list li {
   padding-left: calc(10px + var(--depth, 0) * 18px);
   background-image: repeating-linear-gradient(to right, transparent 0 17px, var(--line) 17px 18px);
   background-size: calc(var(--depth, 0) * 18px) 100%; background-position: 14px 0; background-repeat: no-repeat;
 }
-#drive-dialog .drive-list li.folder .name { color: var(--text); font-weight: 500; }
-#drive-dialog .drive-list li .twisty { width: 12px; }
+#drive-panel .drive-list li.folder .name { color: var(--text); font-weight: 500; }
+#drive-panel .drive-list li .twisty { width: 12px; }
 /* 助理结果与业务动作分开；技术信息和历史状态按需展开。 */
 .msg-actions { margin-top: 10px; }
 .msg-actions .small { font-size: 12px; }
@@ -622,4 +622,93 @@ dialog h3 { font-size: 18px; font-weight: 600; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; }
+}
+
+
+/* 待办中央卡片、统一材料入口与节点式周报进度。 */
+#tab-todos { overflow-y: auto; }
+.todo-board { max-width: 1160px; margin: 0 auto; width: 100%; padding: 4px 8px 28px; }
+.todo-board-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin-bottom: 24px; }
+.todo-board-head h2 { margin: 0 0 6px; font-size: 21px; font-weight: 600; }
+.todo-board-head p { margin: 0; }
+.todo-board-head .primary { padding: 10px 20px; }
+.todo-cards { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+.todo-cards > li { min-width: 0; }
+.todo-card { text-align: left; width: 100%; height: 100%; min-height: 216px; padding: 22px; white-space: normal; display: flex; flex-direction: column; gap: 13px; border-radius: 16px; background: var(--panel); box-shadow: var(--shadow); }
+.todo-card:hover { border-color: var(--accent); background: var(--accent-soft); }
+.todo-cards .active .todo-card { border-color: var(--accent); }
+.card-top, .card-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; }
+.card-status-icon { width: 23px; height: 23px; border: 1.5px solid var(--muted); border-radius: 50%; color: var(--on-accent); display: grid; place-items: center; font-size: 13px; }
+.todo-cards .doing .card-status-icon { border: 6px solid var(--accent); }
+.todo-cards .done .card-status-icon { background: var(--accent); border-color: var(--accent); }
+.todo-cards .done .todo-name { text-decoration: line-through; color: var(--muted); }
+.todo-name { font-size: 16px; line-height: 1.6; overflow-wrap: anywhere; }
+.card-description { font-size: 12px; color: var(--muted); line-height: 1.8; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.card-parent { font-size: 11px; color: var(--muted); }
+.card-footer { margin-top: auto; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; flex-wrap: wrap; }
+.card-children { color: var(--accent); }
+.cards-empty { grid-column: 1 / -1; text-align: center; font-size: 12px; padding: 0 0 12px; }
+#todo-empty-panel { min-height: 480px; }
+#todo-load-msg { margin: 0 0 18px; }
+dialog.todo-drawer { width: min(760px, 94vw); max-width: none; height: calc(100dvh - 40px); max-height: none; margin: 20px 20px 20px auto; padding: 24px 30px; }
+.todo-drawer-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 18px; margin-bottom: 20px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.todo-drawer .chat-head h3 { font-size: 20px; white-space: normal; overflow-wrap: anywhere; }
+.todo-drawer .chat-head { align-items: flex-start; flex-wrap: wrap; }
+#todo-panel[aria-busy="true"] #todo-detail-body { opacity: .45; }
+.child-card { display: flex; align-items: center; width: 100%; gap: 10px; padding: 13px 14px; margin: 8px 0; background: var(--bg); white-space: normal; text-align: left; }
+.child-card:hover { border-color: var(--accent); }
+.child-card .grow { font-size: 13px; }
+#add-dialog.material-intake { width: min(1160px, 96vw); }
+.intake-description { font-size: 12px; margin: -4px 0 22px; }
+.intake-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 28px; }
+.intake-grid > section { min-width: 0; }
+.intake-grid h4 { font-size: 15px; margin: 0 0 18px; display: flex; align-items: center; gap: 7px; }
+#drive-panel { border-left: 1px solid var(--line); padding-left: 28px; }
+.intake-options { margin-bottom: 18px; }
+.intake-options button { font-size: 11px; padding: 7px 9px; }
+.intake-local .drop { min-height: 220px; background: var(--bg); border-width: 1px; }
+.intake-local .drop small { font-size: 11px; }
+#drive-panel .drive-list { max-height: min(40dvh, 330px); }
+#drive-panel .drive-list li { flex-wrap: wrap; }
+#drive-panel .drive-list li .name { min-width: 100px; }
+#drive-panel .drive-list li .kind { font-size: 10px; }
+.cloud-empty { display: flex; align-items: center; flex-direction: column; justify-content: center; min-height: 250px; text-align: center; background: var(--bg); border-radius: 12px; padding: 24px; }
+.cloud-empty p { font-size: 12px; color: var(--muted); line-height: 1.9; }
+#drive-panel .dialog-foot button { font-size: 12px; }
+.week-steps { background: none; border: 0; margin: 6px 0 28px; padding: 10px 0; }
+.week-steps li { position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 0 8px; color: var(--muted); }
+.week-steps li + li { border: 0; }
+.week-steps li::after { content: ""; position: absolute; left: calc(50% + 18px); top: 12px; width: calc(100% - 36px); height: 3px; background: var(--line); border-radius: 3px; }
+.week-steps li:last-child::after { display: none; }
+.week-steps li.is-complete::after { background: var(--accent); }
+.week-steps li[aria-current="step"] { background: none; color: var(--accent); }
+.week-steps .step-dot { width: 26px; height: 26px; padding: 0; border-radius: 50%; background: var(--panel); border: 2px solid var(--line); display: grid; place-items: center; z-index: 1; }
+.week-steps li[aria-current="step"] .step-dot { border: 7px solid var(--accent); box-shadow: 0 0 0 5px var(--accent-soft); }
+.week-steps li.is-complete .step-dot { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.week-steps li.is-complete .step-dot::before { content: "✓"; font-size: 13px; }
+.week-steps b { font-size: 13px; font-weight: 600; }
+.week-steps small { font-size: 10px; font-weight: 400; color: var(--muted); }
+button.material-cta { padding: 10px 20px; font-size: 13px; min-height: 40px; box-shadow: 0 3px 8px #193d2212; }
+@media (max-width: 1050px) {
+  .todo-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .intake-grid { grid-template-columns: 1fr; }
+  #drive-panel { border-left: 0; border-top: 1px solid var(--line); padding: 24px 0 0; }
+}
+@media (max-width: 760px) {
+  #tab-todos { overflow-y: visible; }
+  .todo-board { padding: 0 4px 20px; }
+  .todo-board-head { margin-bottom: 18px; }
+  .todo-board-head h2 { font-size: 18px; }
+  .todo-board-head > .row { width: 100%; }
+  .todo-board-head select { flex: 1; }
+  .todo-cards { grid-template-columns: 1fr; gap: 12px; }
+  .todo-card { min-height: 185px; padding: 20px; }
+  dialog.todo-drawer { width: calc(100vw - 16px); height: calc(100dvh - 16px); margin: 8px; padding: 20px; }
+  .todo-drawer .chat-head h3 { font-size: 18px; }
+  #todo-empty-panel { min-height: 420px; }
+  .week-steps b { font-size: 11px; }
+  .week-steps small { font-size: 9px; }
+  .week-steps { margin-bottom: 20px; }
+  .intake-options button { white-space: normal; }
+  #add-tabs { width: 100%; flex-wrap: wrap; }
 }

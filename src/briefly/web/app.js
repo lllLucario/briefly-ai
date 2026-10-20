@@ -183,6 +183,7 @@ function materialTitle(id) {
 
 // ---------- 标签页 ----------
 async function activateTab(name, load = true) {
+    if (name !== "todos" && $("#todo-panel").open) $("#todo-panel").close();
     const btn = document.querySelector(`.tabs button[data-tab="${name}"]`);
     document.querySelectorAll(".tabs button").forEach((b) => {
       b.classList.toggle("active", b === btn);
@@ -377,11 +378,14 @@ function showAddPane(name) {
   $("#feishu-form").classList.toggle("hidden", name !== "link");
 }
 
-$("#open-add").addEventListener("click", () => {
+$("#open-add").addEventListener("click", async () => {
   addForAssistant = false;
   $("#add-msg").classList.add("hidden");
   showAddPane("upload");
   $("#add-dialog").showModal();
+  await loadFeishu();
+  if (state.feishu?.user && !state.driveTree[""]) loadDriveFolder("");
+  else renderDrive();
 });
 
 $("#add-tabs").addEventListener("click", (e) => {
@@ -461,7 +465,6 @@ async function loadMail() {
 async function loadFeishu() {
   try { state.feishu = await api("/feishu/status"); } catch (_) { state.feishu = null; }
   document.querySelectorAll(".feishu-only").forEach((el) => el.classList.toggle("hidden", !state.feishu?.configured));
-  $("#open-drive").innerHTML = `${fileIcon("feishu")} 飞书云空间`;
   renderFeishuAccount();
 }
 
@@ -470,6 +473,10 @@ function renderFeishuAccount() {
   const box = $("#feishu-account");
   const user = state.feishu?.user;
   $("#feishu-browser").classList.toggle("hidden", !user);
+  if (!state.feishu?.configured) {
+    box.innerHTML = `<div class="cloud-empty"><span class="empty-icon">☁</span><b>${state.feishu ? "飞书云空间尚未配置" : "暂时无法连接飞书"}</b><p>${state.feishu ? "配置飞书后，可以在这里选择云文档。" : "请稍后重新打开此窗口重试。"}现在可以继续上传本地文件或粘贴文字。</p></div>`;
+    return;
+  }
   if (user) {
     const missing = user.missing_scopes || [];
     box.innerHTML = `<div class="row gap wrap"><span class="muted">已连接：<b>${escapeHtml(user.name || user.open_id)}</b></span>
@@ -503,14 +510,6 @@ state.driveInherited = new Set(); // 当前显示的行里，随上层文件夹�
 const folderUrl = (token) => `https://feishu.cn/drive/folder/${token}`;
 const pickKey = (x) => (x.kind === "folder" ? `folder:${x.token}` : x.url);
 const pickable = (x) => x.kind === "folder" || x.importable;
-
-$("#open-drive").addEventListener("click", async () => {
-  $("#drive-msg").classList.add("hidden");
-  await loadFeishu();
-  $("#drive-dialog").showModal();
-  if (state.feishu?.user && !state.driveTree[""]) loadDriveFolder("");
-  else renderDrive();
-});
 
 async function loadDriveFolder(token) {
   const node = (state.driveTree[token] ??= { items: [], open: true });
@@ -582,7 +581,7 @@ function renderDrive() {
   $("#drive-back").classList.toggle("hidden", !state.driveSearch);
   const list = $("#drive-list");
   if (!root || root.loading) list.innerHTML = `<li class="muted">加载中…</li>`;
-  else if (root.error) list.innerHTML = `<li class="danger">${escapeHtml(root.error)}</li>`;
+  else if (root.error) list.innerHTML = `<li class="danger">${escapeHtml(root.error)} <button type="button" class="ghost small" data-drive-retry>重试</button></li>`;
   else list.innerHTML = root.items.length ? driveRows(root.items, 0) : `<li class="muted">${state.driveSearch ? "没有搜到结果" : "云空间是空的"}</li>`;
   renderDriveSelection();
 }
@@ -629,6 +628,11 @@ function dropCovered() {
 }
 
 $("#drive-list").addEventListener("click", (e) => {
+  if (e.target.closest("[data-drive-retry]")) {
+    if (state.driveSearch) $("#drive-search").requestSubmit();
+    else loadDriveFolder("");
+    return;
+  }
   const li = e.target.closest("li[data-key]");
   if (!li) return;
   const x = state.driveIndex[li.dataset.key];
@@ -747,7 +751,9 @@ $("#drive-import").addEventListener("click", async () => {
   for (const [i, job] of list.entries()) {
     showNotice(msg, `正在导入 ${i + 1}/${list.length}：${escapeHtml(job.name)}…`);
     try {
-      results.push(importedText(await api("/materials/feishu", { method: "POST", json: { url: job.url } })));
+      const imported = await api("/materials/feishu", { method: "POST", json: { url: job.url } });
+      importedForAssistant(imported.material.id);
+      results.push(importedText(imported));
       if (job.key) state.driveSelected.delete(job.key);
     } catch (err) {
       failed += 1;
@@ -799,7 +805,7 @@ function handleFeishuRedirect() {
   history.replaceState(null, "", "/");
   if (params.has("feishu_error")) return showNotice($("#material-msg"), `连接飞书失败：${escapeHtml(params.get("feishu_error"))}`, "error");
   showNotice($("#material-msg"), `已连接飞书账号：${escapeHtml(params.get("name") || "")}`);
-  $("#open-drive").click();
+  $("#open-add").click();
 }
 
 // ---------- 对话 ----------

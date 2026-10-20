@@ -3,7 +3,7 @@
 // 以及 weekly.js 里的 gotoWeek。
 "use strict";
 
-const todos = { list: [], id: null, filter: "open", detail: null };
+const todos = { list: [], id: null, filter: "open", detail: null, detailOpen: false, detailView: 0 };
 const TODO_STATUS = { todo: "未开始", doing: "进行中", done: "已完成" };
 const TRACK_STATUS = {
   present: ["追踪中", "ok"],
@@ -24,7 +24,7 @@ function shortDay(iso) {
   return `${Number(m)}月${Number(d)}日`;
 }
 
-// ---------- 左栏
+// ---------- 中央卡片列表
 async function loadTodos() {
   const archived = todos.filter === "archived";
   try {
@@ -35,7 +35,7 @@ async function loadTodos() {
     return;
   }
   renderTodoList();
-  if (todos.id && todos.list.some((t) => t.id === todos.id)) openTodo(todos.id, false);
+  if (todos.detailOpen && todos.id && todos.list.some((t) => t.id === todos.id)) openTodo(todos.id, false);
 }
 $("#todo-load-msg").addEventListener("click", (e) => {
   if (e.target.closest("[data-retry-todos]")) loadTodos();
@@ -49,20 +49,29 @@ function visibleTodos() {
   return rows.filter((t) => t.status !== "done" || openChild.has(t.id));
 }
 
-function todoItem(t, child) {
-  const due = t.due_date ? `<small>截止 ${shortDay(t.due_date)}</small>` : "";
-  const progress = t.children_total ? `<span class="badge" title="子待办完成数（不代表工作量完成比例）">${t.children_done}/${t.children_total}</span>` : "";
-  return `<li data-todo="${t.id}" class="${child ? "child" : ""} ${t.status} ${t.archived_at ? "archived" : ""} ${t.id === todos.id ? "active" : ""}">
-    <span class="todo-line"><span class="todo-dot ${t.status}" title="${TODO_STATUS[t.status]}"></span><span class="todo-name">${escapeHtml(t.title)}</span>${progress}</span>${due}</li>`;
+function todoItem(t) {
+  const due = t.due_date ? `<span>截止 ${shortDay(t.due_date)}</span>` : "<span>未设截止日期</span>";
+  const progress = t.children_total ? `<span class="card-children">${t.children_done} / ${t.children_total} 项子待办已完成</span>` : "<span>点击查看详情</span>";
+  const parent = t.parent_id ? todos.list.find((x) => x.id === t.parent_id) : null;
+  const summary = String(t.description || "").split("\n")[0].slice(0, 90);
+  return `<li data-todo="${t.id}" class="${t.status} ${t.archived_at ? "archived" : ""} ${t.id === todos.id ? "active" : ""}">
+    <button type="button" class="todo-card" aria-label="查看待办：${escapeHtml(t.title)}">
+      <span class="card-top"><span class="card-status-icon" aria-hidden="true">${t.status === "done" ? "✓" : ""}</span><span class="status-pill">${t.archived_at ? "已归档" : TODO_STATUS[t.status]}</span></span>
+      ${parent ? `<span class="card-parent">来自 ${escapeHtml(parent.title)}</span>` : ""}
+      <b class="todo-name">${escapeHtml(t.title)}</b><span class="card-description">${escapeHtml(summary || "添加材料或记录进展，让工作有迹可循。")}</span>
+      <span class="card-footer">${due}${progress}</span>
+    </button></li>`;
 }
 
 function renderTodoList() {
   const rows = visibleTodos();
   const ids = new Set(rows.map((t) => t.id));
   const top = rows.filter((t) => !t.parent_id || !ids.has(t.parent_id));
-  const html = top.map((t) => todoItem(t, false) + rows.filter((k) => k.parent_id === t.id).map((k) => todoItem(k, true)).join("")).join("");
+  const html = top.map(todoItem).join("");
   const empty = { open: "没有未完成的待办", all: "还没有待办", archived: "没有归档的待办" }[todos.filter];
-  $("#todo-list").innerHTML = html || `<li class="muted" style="cursor:default">${empty}</li>`;
+  $("#todo-list").innerHTML = html || `<li class="cards-empty muted">${empty}</li>`;
+  $("#todo-empty-panel").classList.toggle("hidden", Boolean(top.length));
+  $("#todo-count").textContent = top.length ? `${top.length} 项工作 · 点击卡片查看材料、进展和子待办` : "把工作放在眼前，一件一件向前推进。";
 }
 
 $("#todo-list").addEventListener("click", (e) => {
@@ -90,23 +99,37 @@ $("#new-todo").addEventListener("click", async () => {
     if (todos.filter === "archived") { todos.filter = "open"; $("#todo-filter").value = "open"; }
     todos.id = t.id;
     await loadTodos();
+    await openTodo(t.id);
   } catch (err) { uiAlert(err.message, "出错了"); }
 });
 
 // ---------- 详情
 async function openTodo(id, scroll = true) {
+  const view = ++todos.detailView;
   todos.id = id;
+  todos.detailOpen = true;
   renderTodoList();
-  $("#todo-empty-panel").classList.add("hidden");
-  $("#todo-panel").classList.remove("hidden");
+  if (!$("#todo-panel").open) $("#todo-panel").showModal();
+  $("#todo-title").textContent = "正在加载…";
+  $("#todo-panel").setAttribute("aria-busy", "true");
+  $("#todo-detail-body").inert = true;
+  $("#todo-detail-body").classList.add("hidden");
+  showNotice($("#todo-loading"), "正在读取任务详情…");
   if (scroll) $("#todo-msg").classList.add("hidden");
   try {
     const [t, timeline, reports] = await Promise.all([api(`/todos/${id}`), api(`/todos/${id}/timeline`), api(`/todos/${id}/reports`)]);
-    if (todos.id !== id) return;
+    if (todos.id !== id || !todos.detailOpen || todos.detailView !== view) return;
     todos.detail = t;
     renderTodo(t, timeline, reports);
-  } catch (err) { todoMsg(escapeHtml(err.message), "error"); }
+    $("#todo-detail-body").inert = false;
+    $("#todo-detail-body").classList.remove("hidden");
+    $("#todo-loading").classList.add("hidden");
+  } catch (err) { if (todos.detailView === view && todos.detailOpen) showNotice($("#todo-loading"), `加载任务失败：${escapeHtml(err.message)}。请关闭后重新打开。`, "error"); }
+  finally { if (todos.detailView === view) $("#todo-panel").removeAttribute("aria-busy"); }
 }
+
+$("#todo-close").addEventListener("click", () => $("#todo-panel").close());
+$("#todo-panel").addEventListener("close", () => { todos.detailOpen = false; todos.detailView++; });
 
 function renderTodo(t, timeline, reports) {
   const archived = Boolean(t.archived_at);
@@ -132,8 +155,8 @@ function renderTodo(t, timeline, reports) {
   $("#todo-children-box").classList.toggle("hidden", Boolean(t.parent_id));
   $("#todo-progress").textContent = t.children_total ? `${t.children_done}/${t.children_total} 个子待办已完成` : "";
   $("#todo-children").innerHTML = t.children.length
-    ? t.children.map((k) => `<div class="todo-row"><span class="todo-dot ${k.status}"></span><a class="grow" data-open-todo="${k.id}">${escapeHtml(k.title)}</a>
-        <span class="badge">${TODO_STATUS[k.status]}</span>${k.due_date ? `<span class="muted">截止 ${shortDay(k.due_date)}</span>` : ""}</div>`).join("")
+    ? t.children.map((k) => `<button type="button" class="child-card" data-open-todo="${k.id}"><span class="todo-dot ${k.status}"></span><span class="grow">${escapeHtml(k.title)}</span>
+        <span class="badge">${TODO_STATUS[k.status]}</span>${k.due_date ? `<span class="muted">截止 ${shortDay(k.due_date)}</span>` : ""}<span aria-hidden="true">→</span></button>`).join("")
     : `<p class="muted small">没有子待办。大的工作可以拆成几个子待办，各自有状态和截止日期。</p>`;
 
   renderTodoMaterials(t);

@@ -109,23 +109,24 @@
 
   <!-- 待办 -->
   <main id="tab-todos" class="tab active">
-    <aside class="sidebar todo-side">
-      <button id="new-todo" class="primary block">＋ 新建待办</button>
-      <div class="side-head">我的待办</div>
-      <div class="row gap">
-        <select id="todo-filter" class="grow small" title="显示哪些待办">
-          <option value="open">未完成</option>
-          <option value="all">全部</option>
-          <option value="archived">已归档</option>
-        </select>
+    <section class="todo-board grow">
+      <div class="todo-board-head">
+        <div><h2>我的待办</h2><p id="todo-count" class="muted small">把工作放在眼前，一件一件向前推进。</p></div>
+        <div class="row gap wrap">
+          <select id="todo-filter" title="显示哪些待办"><option value="open">未完成</option><option value="all">全部</option><option value="archived">已归档</option></select>
+          <button id="new-todo" class="primary">＋ 新建待办</button>
+        </div>
       </div>
       <div id="todo-load-msg" class="notice hidden" role="status"></div>
-      <ul id="todo-list" class="list todo-list"></ul>
-    </aside>
+      <ul id="todo-list" class="todo-cards" aria-label="待办卡片"></ul>
     <section class="panel grow" id="todo-empty-panel">
       <div class="empty workspace-empty"><span class="empty-icon"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span><p class="eyebrow">从一件要推进的工作开始</p><h2>让每一项工作，<br>都有着落。</h2><p>创建待办、关联材料，记录每一步进展。<br>到写周报时，工作已经有迹可循。</p><button type="button" class="primary" id="start-todo">＋ 创建一条待办</button><div class="empty-flow"><span>创建待办</span><i>→</i><span>关联材料</span><i>→</i><span>记录进展</span><i>→</i><span>汇入周报</span></div><small>也可以先到<button type="button" class="text-button" id="start-assistant">办公助理</button>处理文档或会议，再决定是否保存为待办。</small></div>
     </section>
-    <section class="panel grow hidden" id="todo-panel">
+    </section>
+    <dialog class="panel todo-drawer" id="todo-panel" aria-labelledby="todo-title">
+      <div class="todo-drawer-nav"><span>任务详情</span><button id="todo-close" class="ghost small" aria-label="关闭任务详情">返回待办列表 ✕</button></div>
+      <div id="todo-loading" class="notice hidden" role="status"></div>
+      <div id="todo-detail-body">
       <div class="chat-head">
         <h3 id="todo-title"></h3>
         <div class="row gap wrap">
@@ -172,7 +173,8 @@
         <div class="section-head"><h4>相关周报</h4></div>
         <div id="todo-reports"></div>
       </div>
-    </section>
+      </div>
+    </dialog>
   </main>
 
   <!-- 材料 -->
@@ -184,7 +186,6 @@
           <button data-mt="tracked">追踪的文件 <span id="tracked-count" class="muted"></span></button>
         </nav>
         <div class="row gap wrap">
-          <button id="open-drive" class="ghost feishu-only hidden" title="从自己的飞书云空间挑选文档或文件夹：导入为材料，或开始追踪">飞书云空间</button>
           <button id="open-add" class="primary">＋ 添加材料</button>
         </div>
       </div>
@@ -241,7 +242,7 @@
       </div>
       <div id="week-msg" class="notice hidden"></div>
       <div id="week-notes"></div>
-      <ol class="week-steps" aria-label="正式周报流程"><li><span>01</span> 收集素材</li><li><span>02</span> 核对清单</li><li><span>03</span> 生成周报</li></ol>
+      <ol class="week-steps" aria-label="正式周报流程"><li><span class="step-dot" aria-hidden="true"></span><b>收集素材</b><small>汇集本周工作</small></li><li><span class="step-dot" aria-hidden="true"></span><b>核对清单</b><small>确认纳入内容</small></li><li><span class="step-dot" aria-hidden="true"></span><b>生成周报</b><small>查看与交付</small></li></ol>
       <p id="week-stage" class="notice"></p>
 
       <details class="week-section" id="week-inputs" open>
@@ -257,7 +258,7 @@
 
       <section class="week-section">
         <div class="section-head"><h4>本周材料 <span class="muted small">（可选，整份作为来源，生成后核对正文）</span></h4>
-          <button id="week-pick" class="ghost small">加入材料</button></div>
+          <button id="week-pick" class="primary material-cta">加入材料</button></div>
         <div id="week-materials"></div>
       </section>
 
@@ -316,9 +317,12 @@
   </dialog>
 
   <!-- 添加材料 -->
-  <dialog id="add-dialog" class="wide">
-    <div class="dialog-head"><h3>添加材料</h3><button type="button" class="ghost small" data-close>✕</button></div>
-    <div class="row gap"><button type="button" class="ghost" id="add-current">处理当前内容（固定副本）</button><button type="button" class="ghost" id="add-follow">持续关注后续修改</button></div>
+  <dialog id="add-dialog" class="material-intake" aria-labelledby="add-title">
+    <div class="dialog-head"><h3 id="add-title">添加材料</h3><button type="button" class="ghost small" data-close aria-label="关闭添加材料">✕</button></div>
+    <p class="intake-description muted">本地内容和飞书文档可以在这里一起整理，导入后统一保存在材料库。</p>
+    <div class="intake-grid"><section class="intake-local" aria-labelledby="local-title">
+    <h4 id="local-title"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg> 本地文件与文字</h4>
+    <div class="row gap wrap intake-options"><button type="button" class="ghost" id="add-current">处理当前内容（固定副本）</button><button type="button" class="ghost" id="add-follow">持续关注后续修改</button></div>
     <nav class="subtabs" id="add-tabs">
       <button data-add="upload" class="active">上传文件</button>
       <button data-add="paste">粘贴文字</button>
@@ -340,12 +344,10 @@
       <small class="muted">导入的是现在的内容；飞书文档导入后，可以在材料库的“追踪”一栏开启追踪。没连接飞书账号时，需要先在文档右上角“…→ 更多 → 添加文档应用”把应用加进来。要从自己的云空间里挑选，用“飞书云空间”。</small>
       <div class="row end"><button class="primary">读取飞书内容</button></div>
     </form>
-    <div id="add-msg" class="notice hidden"></div>
-  </dialog>
-
-  <!-- 飞书云空间 -->
-  <dialog id="drive-dialog" class="wide">
-    <div class="dialog-head"><h3>飞书云空间</h3><button type="button" class="ghost small" data-close>✕</button></div>
+    <div id="add-msg" class="notice hidden" role="status"></div>
+    </section>
+    <section id="drive-panel" aria-labelledby="drive-title">
+    <h4 id="drive-title"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg> 飞书云空间</h4>
     <div id="feishu-account" class="stack"></div>
     <div id="feishu-browser" class="stack hidden">
       <form id="drive-search" class="row gap"><input id="drive-q" placeholder="搜索云文档、知识库（30 字以内）" style="flex:1"><button class="ghost">搜索</button></form>
@@ -367,8 +369,9 @@
       </div>
       <p class="muted small drive-hint"><b>导入为材料</b>：保存现在的内容，之后不会更新（导入后也可以在材料库里开启追踪）。
         <b>追踪</b>：每个工作日检查修改，变化进入周报的审核清单；文件夹会整个追踪，以后新放进去的文档也会纳入。</p>
-      <div id="drive-msg" class="notice hidden"></div>
+      <div id="drive-msg" class="notice hidden" role="status"></div>
     </div>
+    </section></div>
   </dialog>
 
   <!-- 编辑工作记录 -->
