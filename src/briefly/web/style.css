@@ -625,35 +625,54 @@ dialog h3 { font-size: 18px; font-weight: 600; }
 }
 
 
-/* 待办中央卡片、统一材料入口与节点式周报进度。 */
+/* 横向任务列表、原位概览、详情弹窗与统一材料入口。 */
 #tab-todos { overflow-y: auto; }
 .todo-board { max-width: 1160px; margin: 0 auto; width: 100%; padding: 4px 8px 28px; }
 .todo-board-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin-bottom: 24px; }
 .todo-board-head h2 { margin: 0 0 6px; font-size: 21px; font-weight: 600; }
 .todo-board-head p { margin: 0; }
 .todo-board-head .primary { padding: 10px 20px; }
-.todo-cards { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
-.todo-cards > li { min-width: 0; }
-.todo-card { text-align: left; width: 100%; height: 100%; min-height: 216px; padding: 22px; white-space: normal; display: flex; flex-direction: column; gap: 13px; border-radius: 16px; background: var(--panel); box-shadow: var(--shadow); }
-.todo-card:hover { border-color: var(--accent); background: var(--accent-soft); }
-.todo-cards .active .todo-card { border-color: var(--accent); }
-.card-top, .card-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; }
-.card-status-icon { width: 23px; height: 23px; border: 1.5px solid var(--muted); border-radius: 50%; color: var(--on-accent); display: grid; place-items: center; font-size: 13px; }
-.todo-cards .doing .card-status-icon { border: 6px solid var(--accent); }
-.todo-cards .done .card-status-icon { background: var(--accent); border-color: var(--accent); }
-.todo-cards .done .todo-name { text-decoration: line-through; color: var(--muted); }
-.todo-name { font-size: 16px; line-height: 1.6; overflow-wrap: anywhere; }
-.card-description { font-size: 12px; color: var(--muted); line-height: 1.8; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.card-parent { font-size: 11px; color: var(--muted); }
-.card-footer { margin-top: auto; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; flex-wrap: wrap; }
-.card-children { color: var(--accent); }
-.cards-empty { grid-column: 1 / -1; text-align: center; font-size: 12px; padding: 0 0 12px; }
+.todo-tickets { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); overflow: hidden; }
+.todo-tickets > li { min-width: 0; }
+.todo-tickets > li + li { border-top: 1px solid var(--line); }
+.todo-ticket-row { display: flex; align-items: center; gap: 18px; min-height: 88px; padding: 18px 22px; list-style: none; cursor: pointer; }
+.todo-ticket-row::-webkit-details-marker { display: none; }
+.todo-ticket-row:hover { background: var(--bg); }
+.todo-ticket[open] > summary { background: var(--accent-soft); }
+.ticket-chevron { font-size: 25px; line-height: 1; color: var(--muted); width: 12px; flex: none; transition: transform .15s; }
+.todo-ticket[open] .ticket-chevron { transform: rotate(90deg); }
+.ticket-copy { display: flex; flex-direction: column; min-width: 0; flex: 1; gap: 5px; }
+.todo-name { font-size: 15px; line-height: 1.5; font-weight: 600; overflow-wrap: anywhere; }
+.ticket-subtitle { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ticket-meta { display: flex; align-items: center; justify-content: flex-end; gap: 20px; flex: none; font-size: 11px; color: var(--muted); }
+.ticket-child-count { min-width: 68px; }
+.ticket-status { display: inline-flex; justify-content: center; width: 28px; flex: none; color: var(--muted); }
+.card-status-icon { width: 19px; height: 19px; border: 1.5px solid var(--muted); border-radius: 50%; color: var(--on-accent); display: grid; place-items: center; font-size: 11px; }
+.todo-tickets .doing > .todo-ticket > summary .card-status-icon, .inline-children .doing .card-status-icon { border: 5px solid var(--accent); }
+.todo-tickets .done > .todo-ticket > summary .card-status-icon, .inline-children .done .card-status-icon { background: var(--accent); border-color: var(--accent); }
+.todo-tickets .done > .todo-ticket > summary .todo-name { color: var(--muted); text-decoration: line-through; }
+.ticket-expanded { border-top: 1px solid var(--line); padding: 20px 26px 24px 52px; }
+.ticket-overview-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 20px; }
+.ticket-overview-head .eyebrow { margin: 0; letter-spacing: .8px; }
+.ticket-overview-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 34px; }
+.ticket-overview-grid h4 { margin: 0 0 10px; font-size: 12px; font-weight: 600; }
+.ticket-overview-grid h4 small { font-size: 10px; margin-left: 7px; color: var(--muted); font-weight: 400; }
+.ticket-points { padding-left: 17px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.9; max-height: 240px; overflow: auto; overflow-wrap: anywhere; }
+.ticket-points li + li { margin-top: 6px; }
+.inline-children { list-style: none; margin: 0; padding: 0; }
+.inline-children li + li { margin-top: 7px; }
+.inline-children button { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 10px 12px; background: var(--bg); border-color: transparent; white-space: normal; }
+.inline-children button:hover { border-color: var(--line); }
+.inline-child-title { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+.inline-child-hint { font-size: 10px; color: var(--muted); flex: none; }
+.inline-children .done .inline-child-title { color: var(--muted); text-decoration: line-through; }
+.cards-empty { text-align: center; font-size: 12px; padding: 12px; }
 #todo-empty-panel { min-height: 480px; }
 #todo-load-msg { margin: 0 0 18px; }
-dialog.todo-drawer { width: min(760px, 94vw); max-width: none; height: calc(100dvh - 40px); max-height: none; margin: 20px 20px 20px auto; padding: 24px 30px; }
-.todo-drawer-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 18px; margin-bottom: 20px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
-.todo-drawer .chat-head h3 { font-size: 20px; white-space: normal; overflow-wrap: anywhere; }
-.todo-drawer .chat-head { align-items: flex-start; flex-wrap: wrap; }
+dialog.todo-modal { width: min(850px, 94vw); max-width: none; height: auto; max-height: 90dvh; margin: auto; padding: 24px 30px; }
+.todo-modal-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 18px; margin-bottom: 20px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.todo-modal .chat-head h3 { font-size: 20px; white-space: normal; overflow-wrap: anywhere; }
+.todo-modal .chat-head { align-items: flex-start; flex-wrap: wrap; }
 #todo-panel[aria-busy="true"] #todo-detail-body { opacity: .45; }
 .child-card { display: flex; align-items: center; width: 100%; gap: 10px; padding: 13px 14px; margin: 8px 0; background: var(--bg); white-space: normal; text-align: left; }
 .child-card:hover { border-color: var(--accent); }
@@ -690,7 +709,6 @@ dialog.todo-drawer { width: min(760px, 94vw); max-width: none; height: calc(100d
 .week-steps small { font-size: 10px; font-weight: 400; color: var(--muted); }
 button.material-cta { padding: 10px 20px; font-size: 13px; min-height: 40px; box-shadow: 0 3px 8px #193d2212; }
 @media (max-width: 1050px) {
-  .todo-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .intake-grid { grid-template-columns: 1fr; }
   #drive-panel { border-left: 0; border-top: 1px solid var(--line); padding: 24px 0 0; }
 }
@@ -701,10 +719,16 @@ button.material-cta { padding: 10px 20px; font-size: 13px; min-height: 40px; box
   .todo-board-head h2 { font-size: 18px; }
   .todo-board-head > .row { width: 100%; }
   .todo-board-head select { flex: 1; }
-  .todo-cards { grid-template-columns: 1fr; gap: 12px; }
-  .todo-card { min-height: 185px; padding: 20px; }
-  dialog.todo-drawer { width: calc(100vw - 16px); height: calc(100dvh - 16px); margin: 8px; padding: 20px; }
-  .todo-drawer .chat-head h3 { font-size: 18px; }
+  .todo-ticket-row { padding: 15px 12px; gap: 10px; min-height: 82px; }
+  .todo-name { font-size: 13px; }
+  .ticket-subtitle { font-size: 11px; }
+  .ticket-meta { flex-direction: column; align-items: flex-end; gap: 4px; font-size: 10px; }
+  .ticket-child-count { min-width: 0; }
+  .ticket-status { width: 22px; }
+  .ticket-expanded { padding: 18px; }
+  .ticket-overview-grid { grid-template-columns: 1fr; gap: 22px; }
+  dialog.todo-modal { width: calc(100vw - 20px); height: auto; max-height: calc(100dvh - 24px); margin: auto; padding: 20px; }
+  .todo-modal .chat-head h3 { font-size: 18px; }
   #todo-empty-panel { min-height: 420px; }
   .week-steps b { font-size: 11px; }
   .week-steps small { font-size: 9px; }

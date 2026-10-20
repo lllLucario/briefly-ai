@@ -118,13 +118,13 @@
         </div>
       </div>
       <div id="todo-load-msg" class="notice hidden" role="status"></div>
-      <ul id="todo-list" class="todo-cards" aria-label="待办卡片"></ul>
+      <ul id="todo-list" class="todo-tickets" aria-label="待办任务列表"></ul>
     <section class="panel grow" id="todo-empty-panel">
       <div class="empty workspace-empty"><span class="empty-icon"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span><p class="eyebrow">从一件要推进的工作开始</p><h2>让每一项工作，<br>都有着落。</h2><p>创建待办、关联材料，记录每一步进展。<br>到写周报时，工作已经有迹可循。</p><button type="button" class="primary" id="start-todo">＋ 创建一条待办</button><div class="empty-flow"><span>创建待办</span><i>→</i><span>关联材料</span><i>→</i><span>记录进展</span><i>→</i><span>汇入周报</span></div><small>也可以先到<button type="button" class="text-button" id="start-assistant">办公助理</button>处理文档或会议，再决定是否保存为待办。</small></div>
     </section>
     </section>
-    <dialog class="panel todo-drawer" id="todo-panel" aria-labelledby="todo-title">
-      <div class="todo-drawer-nav"><span>任务详情</span><button id="todo-close" class="ghost small" aria-label="关闭任务详情">返回待办列表 ✕</button></div>
+    <dialog class="panel todo-modal" id="todo-panel" aria-labelledby="todo-title">
+      <div class="todo-modal-nav"><span>任务详情</span><button id="todo-close" class="ghost small" aria-label="关闭任务详情">关闭详情 ✕</button></div>
       <div id="todo-loading" class="notice hidden" role="status"></div>
       <div id="todo-detail-body">
       <div class="chat-head">

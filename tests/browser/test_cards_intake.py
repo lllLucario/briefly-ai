@@ -1,4 +1,4 @@
-"""中央卡片及单窗多来源导入；云端响应均为模拟，不连接真实飞书。"""
+"""横向待办概览及单窗多来源导入；云端响应均为模拟，不连接真实飞书。"""
 import pytest
 from playwright.sync_api import expect
 
@@ -13,12 +13,16 @@ def test_closed_drawer_response_cannot_replace_next_task(web_page):
     page.reload()
     held=[]
     page.route(f"**/todos/{first['id']}",lambda route:held.append(route))
+    first_row = page.locator(f"#todo-list [data-todo='{first['id']}']")
+    first_row.locator("summary").click()
     with page.expect_request(f"**/todos/{first['id']}"):
-        page.locator(f"#todo-list [data-todo='{first['id']}'] button").click()
+        first_row.locator(".ticket-overview-head [data-inline-detail]").click()
     expect(page.locator("#todo-loading")).to_contain_text("正在读取")
     expect(page.locator("#todo-detail-body")).to_be_hidden()
     page.locator("#todo-close").click()
-    page.locator(f"#todo-list [data-todo='{second['id']}'] button").click()
+    second_row = page.locator(f"#todo-list [data-todo='{second['id']}']")
+    second_row.locator("summary").click()
+    second_row.locator(".ticket-overview-head [data-inline-detail]").click()
     expect(page.locator("#todo-title")).to_have_text("当前查看的任务")
     with page.expect_response(f"**/todos/{first['id']}"):
         held[0].continue_()
@@ -26,7 +30,7 @@ def test_closed_drawer_response_cannot_replace_next_task(web_page):
     expect(page.locator("#todo-title")).to_have_text("当前查看的任务")
 
 
-def test_card_opens_children_and_closes_back_to_board(web_page):
+def test_row_expands_children_then_detail_modal_and_returns_to_list(web_page):
     page = web_page
     page.locator("#new-todo").click()
     page.locator('#ui-fields [data-ui="0"]').fill("本周发布准备")
@@ -45,10 +49,13 @@ def test_card_opens_children_and_closes_back_to_board(web_page):
     expect(page.locator("#todo-msg")).to_contain_text("已完成")
     page.keyboard.press("Escape")
     expect(page.locator("#todo-panel")).not_to_be_visible()
-    expect(page.locator(".todo-card")).to_have_count(1)
-    expect(page.locator(".todo-card")).to_contain_text("1 / 1 项子待办已完成")
-    page.locator(".todo-card").focus()
+    expect(page.locator(".todo-ticket")).to_have_count(1)
+    page.locator(".todo-ticket-row").focus()
     page.keyboard.press("Enter")
+    expect(page.locator(".todo-ticket")).to_have_attribute("open", "")
+    expect(page.locator("#todo-panel")).not_to_be_visible()
+    expect(page.locator(".ticket-expanded")).to_contain_text("1 / 1 项已完成")
+    page.locator(".ticket-overview-head [data-inline-detail]").click()
     expect(page.locator("#todo-title")).to_have_text("本周发布准备")
     expect(page.locator("#todo-children")).to_contain_text("已完成")
     page.locator("#todo-close").click()
