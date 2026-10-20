@@ -39,6 +39,8 @@ class StatusIn(BaseModel):
 
 class NoteIn(BaseModel):
     text: str
+    status: str | None = None
+    confirm: bool = False
 
 
 class LinkIn(BaseModel):
@@ -174,7 +176,8 @@ def register(app: FastAPI) -> None:
     # ---- 活动
     @app.post("/todos/{todo_id}/notes", tags=[docs.TODOS], status_code=201, summary="添加进展说明（简短、带时间，可选）")
     def add_note(todo_id: int, body: NoteIn):
-        return activity_out(svc().add_note(todo_id, body.text))
+        activity, notices = svc().record_progress(todo_id, body.text, body.status, confirm=body.confirm)
+        return {**activity_out(activity), "notices": notices}
 
     @app.get("/todos/{todo_id}/activities", tags=[docs.TODOS], summary="活动记录（可按日期范围查询）")
     def activities(todo_id: int, start: date | None = None, end: date | None = None):

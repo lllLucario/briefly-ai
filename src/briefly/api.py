@@ -116,6 +116,8 @@ class MessageOut(BaseModel):
     material_ids: list[int] = []
     skill: str | None = None
     tools: list[str] = []  # 给出这条回答之前调用过的工具
+    message_id: str | None = None
+    saved_todo_ids: list[int] = []
 
 
 class SessionDetail(SessionOut):
@@ -174,7 +176,7 @@ def visible_messages(messages: list[AnyMessage]) -> list[MessageOut]:
             if m.tool_calls:
                 tools += [c["name"] for c in m.tool_calls]
             elif m.text:
-                out.append(MessageOut(role="assistant", text=m.text, tools=tools))
+                out.append(MessageOut(role="assistant", text=m.text, tools=tools, message_id=m.id))
                 tools = []
     return out
 
@@ -279,7 +281,15 @@ def create_app(
     @app.get("/chat/sessions/{thread_id}", tags=[docs.CHAT], response_model=SessionDetail, summary="会话历史")
     def get_session(thread_id: str, sessions: Sessions, agent: AgentDep):
         s = session_out(sessions.get(thread_id))
-        return SessionDetail(**s.model_dump(), messages=visible_messages(agent.history_of(thread_id)))
+        messages = visible_messages(agent.history_of(thread_id))
+        from sqlalchemy import select
+        from sqlalchemy.orm import Session
+        from .handoffs import TodoImportDraft
+        with Session(app.state.store.engine) as db:
+            drafts = list(db.scalars(select(TodoImportDraft).where(TodoImportDraft.thread_id == thread_id, TodoImportDraft.receipt.is_not(None))))
+            for message in messages:
+                message.saved_todo_ids = list(dict.fromkeys(i for d in drafts if d.data["message_id"] == message.message_id and d.receipt for i in d.receipt["todo_ids"]))
+        return SessionDetail(**s.model_dump(), messages=messages)
 
     @app.get("/chat/sessions/{thread_id}/context", tags=[docs.CHAT], response_model=ContextOut, summary="上下文用量")
     def get_context(thread_id: str, sessions: Sessions, agent: AgentDep):
@@ -402,6 +412,8 @@ def create_app(
     register_tracking(app)  # 追踪：追踪源、文件、版本与差异、检查更新、材料的追踪开关
     register_weekly(app)  # 周报：一周一份，审核清单 → 生成；定时、设置、提醒
     register_todos(app)  # 待办：父子结构、材料关联、活动；进展进入周报的审核清单
+    from .handoffs import register as register_handoffs
+    register_handoffs(app, get_agent, thread_locks, model_factory)
 
     @app.get("/", include_in_schema=False)
     def index():

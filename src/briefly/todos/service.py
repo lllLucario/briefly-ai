@@ -6,6 +6,7 @@
 - 活动只追加，按时间窗口查询，供周报准备使用；文件内容的版本和变化仍在文件追踪模块，这里只引用。
 """
 from dataclasses import dataclass
+from contextlib import nullcontext
 from datetime import date, datetime
 
 from sqlalchemy import Engine, func, or_, select, update
@@ -123,12 +124,13 @@ class TodoService:
         status: str = TODO,
         due_date: date | None = None,
         parent_id: int | None = None,
+        session=None,
     ) -> Todo:
         title = title.strip()
         if not title:
             raise ValueError("待办标题不能为空")
         _check_status(status)
-        with self._session() as s:
+        with self._session() if session is None else nullcontext(session) as s:
             if parent_id is not None:
                 parent = self._valid_parent(s, parent_id)
             todo = Todo(
@@ -144,7 +146,8 @@ class TodoService:
             s.add(TodoActivity(todo_id=todo.id, event_type=CREATED, new_value=_values(todo)))
             if parent_id is not None:
                 s.add(TodoActivity(todo_id=parent.id, event_type=CHILD_ADDED, new_value={"child_id": todo.id, "title": todo.title}))
-            s.commit()
+            if session is None:
+                s.commit()
             return todo
 
     def update(
@@ -186,7 +189,7 @@ class TodoService:
             s.commit()
             return todo
 
-    def set_status(self, todo_id: int, status: str, *, confirm: bool = False, note: str = "", event: str | None = None, extra: dict | None = None) -> tuple[Todo, list[str]]:
+    def set_status(self, todo_id: int, status: str, *, confirm: bool = False, note: str = "", event: str | None = None, extra: dict | None = None, session=None) -> tuple[Todo, list[str]]:
         """改状态，返回 (待办, 给用户的提示)。不会连带修改父待办或子待办的状态。
 
         - 完成父待办但还有未完成的子待办：需要 confirm=True（子待办状态不变）。
@@ -196,7 +199,7 @@ class TodoService:
         """
         _check_status(status)
         notices: list[str] = []
-        with self._session() as s:
+        with self._session() if session is None else nullcontext(session) as s:
             todo = self._active(s, todo_id)
             if todo.status == status:
                 return todo, notices
@@ -224,7 +227,8 @@ class TodoService:
                 parent = s.get(Todo, todo.parent_id)
                 if all(k.status == DONE for k in siblings) and parent.status != DONE:
                     notices.append(f"「{parent.title}」的 {len(siblings)} 个子待办都已完成，可以考虑把它也标为完成")
-            s.commit()
+            if session is None:
+                s.commit()
             return todo, notices
 
     def promote(self, todo_id: int) -> Todo:
@@ -282,19 +286,31 @@ class TodoService:
             return todo
 
     # ---- 进展说明与活动
-    def add_note(self, todo_id: int, text: str) -> TodoActivity:
+    def add_note(self, todo_id: int, text: str, *, session=None) -> TodoActivity:
         text = text.strip()
         if not text:
             raise ValueError("进展说明不能为空")
         if len(text) > MAX_NOTE:
             raise ValueError(f"进展说明请控制在 {MAX_NOTE} 字以内")
-        with self._session() as s:
+        with self._session() if session is None else nullcontext(session) as s:
             self._active(s, todo_id)
             row = TodoActivity(todo_id=todo_id, event_type=NOTE, note=text)
             s.add(row)
             s.execute(update(Todo).where(Todo.id == todo_id).values(updated_at=datetime.now()))
-            s.commit()
+            s.flush()
+            if session is None:
+                s.commit()
             return row
+
+    def record_progress(self, todo_id: int, text: str, status: str | None = None, *, confirm: bool = False) -> tuple[TodoActivity, list[str]]:
+        """用户可选同时改状态；进展和状态同一事务，父任务完成确认规则不变。"""
+        with self._session() as s:
+            notices = []
+            if status:
+                _, notices = self.set_status(todo_id, status, confirm=confirm, session=s)
+            activity = self.add_note(todo_id, text, session=s)
+            s.commit()
+            return activity, notices
 
     def activities(self, todo_ids: list[int] | None = None, start: datetime | None = None, end: datetime | None = None) -> list[TodoActivity]:
         """按时间窗口查活动（含两端），按时间先后排列。"""
@@ -309,22 +325,26 @@ class TodoService:
             return list(s.scalars(query))
 
     # ---- 材料
-    def link(self, todo_id: int, material_id: int) -> tuple[TodoMaterial, bool]:
+    def link(self, todo_id: int, material_id: int, *, session=None) -> tuple[TodoMaterial, bool]:
         """从材料库选择：只建关联，不复制材料。重复关联返回已有的那条。"""
-        material = self.store.get(material_id)
-        with self._session() as s:
+        with self._session() if session is None else nullcontext(session) as s:
+            material = s.get(Material, material_id)
+            if material is None:
+                raise MaterialNotFound(f"材料 {material_id} 不存在")
             self._active(s, todo_id)
             key = track_key_of(s, material)
             existing = s.scalar(select(TodoMaterial).where(TodoMaterial.todo_id == todo_id, TodoMaterial.relation == DIRECT, _same_material(material_id, key)))
             if existing is not None:
                 if material_id != existing.material_id and key:  # 同一个追踪文件的新版本：关联指向最新版本
                     existing.material_id = material_id
-                    s.commit()
+                    if session is None:
+                        s.commit()
                 return existing, False
             link = TodoMaterial(todo_id=todo_id, material_id=material_id, relation=DIRECT, track_key=key)
             s.add(link)
             s.add(TodoActivity(todo_id=todo_id, event_type=MATERIAL_LINKED, material_id=material_id, new_value={"title": material.title}))
-            s.commit()
+            if session is None:
+                s.commit()
             return link, True
 
     def upload(self, todo_id: int, filename: str, data: bytes) -> tuple[Material, bool, TodoMaterial]:

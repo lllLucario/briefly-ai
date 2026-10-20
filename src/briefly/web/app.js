@@ -179,14 +179,17 @@ function materialTitle(id) {
 }
 
 // ---------- 标签页 ----------
-document.querySelectorAll(".tabs button").forEach((btn) => {
-  btn.addEventListener("click", () => {
+async function activateTab(name, load = true) {
+    const btn = document.querySelector(`.tabs button[data-tab="${name}"]`);
     document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b === btn));
     document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.id === `tab-${btn.dataset.tab}`));
-    if (btn.dataset.tab === "materials") { loadMaterials(); loadTrackingSummary(); }
-    if (btn.dataset.tab === "todos") { loadMaterials(); loadTodos(); }
-    if (btn.dataset.tab === "weekly") { loadMaterials(); loadWeekly(); }
-  });
+    if (!load) return;
+    if (name === "materials") await Promise.all([loadMaterials(), loadTrackingSummary()]);
+    if (name === "todos") await Promise.all([loadMaterials(), loadTodos()]);
+    if (name === "weekly") await Promise.all([loadMaterials(), loadWeekly()]);
+}
+document.querySelectorAll(".tabs button").forEach((btn) => {
+  btn.addEventListener("click", () => activateTab(btn.dataset.tab));
 });
 
 // ---------- 材料 ----------
@@ -208,18 +211,14 @@ const FILE_TYPES = { feishu: "飞书文档", bitable: "多维表格", minutes: "
 function renderMaterialRows() {
   const rows = $("#material-rows");
   if (!state.materials.length) {
-    rows.innerHTML = `<tr><td colspan="9" class="muted">还没有材料。可以上传文件、粘贴文字，或从飞书导入。</td></tr>`;
+    rows.innerHTML = `<tr><td colspan="5" class="muted">还没有材料。可以上传文件、粘贴文字，或从飞书导入。</td></tr>`;
     return;
   }
   rows.innerHTML = state.materials.map((m) => `
     <tr class="clickable ${state.activeMaterial === m.id ? "active" : ""}" data-id="${m.id}">
-      <td>${m.id}</td>
       <td>${escapeHtml(m.title)} ${m.warnings.length ? `<span class="warn-dot" title="${escapeHtml(m.warnings.join("\n"))}">⚠</span>` : ""}${m.source === "tracked" ? ` <span class="badge" title="随追踪自动更新为最新内容；以前的版本在“追踪的文件”里查看">最新版本</span>` : ""}</td>
       <td class="nowrap">${fileIcon(m.file_type || "paste")} ${escapeHtml(FILE_TYPES[m.file_type] || kindName(m.file_type || "paste"))}</td>
       <td class="track-cell">${trackCell(m)}</td>
-      <td>${m.char_count}</td>
-      <td>${m.chunk_count} / ${m.section_count}</td>
-      <td>${m.structure || "-"}</td>
       <td>${fmtTime(m.created_at)}</td>
       <td>${m.source === "tracked" ? "" : `<button class="ghost danger" data-delete="${m.id}">删除</button>`}</td>
     </tr>`).join("");
@@ -325,10 +324,14 @@ async function showMaterialDetail(id) {
         <h3 style="margin:0">${escapeHtml(m.title)}</h3>
         <div class="row gap">
           <button class="ghost" id="use-in-chat">用于对话</button>
+          <button class="ghost" data-material-skill="summarize">总结</button>
+          <button class="ghost" data-material-skill="minutes">整理纪要</button>
+          <button class="ghost" data-material-skill="todo">提取待办</button>
+          <button class="ghost" id="material-to-week">加入本周材料</button>
           <button class="ghost" id="close-detail">收起</button>
         </div>
       </div>
-      <p class="muted">${m.char_count} 字 · ${m.chunk_count} 块 · ${m.section_count} 个章节 · 结构来源：${m.structure || "-"}</p>
+      <details class="meta"><summary>技术信息</summary>编号 ${m.id} · ${m.char_count} 字 · ${m.chunk_count} 块 · ${m.section_count} 个章节 · 结构来源：${escapeHtml(m.structure || "-")}</details>
       ${warnings}
       <div class="detail-grid">
         <div><b>大纲</b><div class="outline">${outline}</div></div>
@@ -341,6 +344,11 @@ async function showMaterialDetail(id) {
       renderPicked();
       document.querySelector('.tabs button[data-tab="chat"]').click();
     };
+    box.querySelectorAll("[data-material-skill]").forEach((b) => b.onclick = () => {
+      useMaterial(id, b.dataset.materialSkill);
+      $("#input").value = {summarize:"请总结所选材料。", minutes:"请整理所选材料中的会议纪要。", todo:"请提取所选材料中的明确待办。"}[b.dataset.materialSkill];
+    });
+    $("#material-to-week").onclick = () => transferToWeek({material_ids:[id]});
   } catch (err) {
     box.innerHTML = `<div class="notice error">${escapeHtml(err.message)}</div>`;
   }
@@ -355,6 +363,7 @@ function showAddPane(name) {
 }
 
 $("#open-add").addEventListener("click", () => {
+  addForAssistant = false;
   $("#add-msg").classList.add("hidden");
   showAddPane("upload");
   $("#add-dialog").showModal();
@@ -377,6 +386,7 @@ async function uploadFiles(files) {
     form.append("file", file);
     try {
       const r = await api("/materials/upload", { method: "POST", body: form });
+      importedForAssistant(r.material.id);
       results.push(`${r.created ? "已导入" : "已存在"}：${escapeHtml(r.material.title)}（${r.material.char_count} 字）`);
     } catch (err) {
       results.push(`<span class="danger">${escapeHtml(file.name)}：${escapeHtml(err.message)}</span>`);
@@ -398,6 +408,7 @@ $("#paste-form").addEventListener("submit", async (e) => {
   const msg = $("#add-msg");
   try {
     const r = await api("/materials", { method: "POST", json: { title: $("#paste-title").value.trim(), content: $("#paste-content").value } });
+    importedForAssistant(r.material.id);
     showNotice(msg, `${r.created ? "已保存" : "内容相同的材料已存在"}：${escapeHtml(r.material.title)}（${r.material.char_count} 字）`);
     $("#paste-title").value = "";
     $("#paste-content").value = "";
@@ -417,7 +428,9 @@ $("#feishu-form").addEventListener("submit", async (e) => {
   if (!url) return;
   showNotice(msg, "正在读取飞书内容…");
   try {
-    showNotice(msg, importedText(await api("/materials/feishu", { method: "POST", json: { url } })));
+    const imported = await api("/materials/feishu", { method: "POST", json: { url } });
+    importedForAssistant(imported.material.id);
+    showNotice(msg, importedText(imported));
     $("#feishu-url").value = "";
     await loadMaterials();
   } catch (err) { showNotice(msg, escapeHtml(err.message), "error"); }
@@ -815,7 +828,8 @@ function newSession() {
   state.threadId = null;
   setSessionButtons();
   $("#session-title").textContent = "新会话";
-  $("#messages").innerHTML = `<div class="empty">可以直接粘贴文字，或在下方选择材料后提问。<br>能力：文档总结、会议纪要拆解、周报生成、待办梳理、文本优化。</div>`;
+  state.picked.clear(); renderPicked(); $("#skill").value = "";
+  $("#messages").innerHTML = `<div class="empty">粘贴内容或添加材料，选择要完成的工作。结果先留在会话中，保存前会请你确认。</div>`;
   loadSessions();
   $("#input").focus();
 }
@@ -838,6 +852,7 @@ function appendMessage(m) {
     : `<div class="bubble">${escapeHtml(m.text)}</div>`;
   el.innerHTML = body + (meta.length ? `<div class="msg-meta">${meta.join(" · ")}</div>` : "");
   box.appendChild(el);
+  if (m.role === "assistant" && !m.pending) resultActions(el, m);
   return el;
 }
 
@@ -857,6 +872,8 @@ $("#composer").addEventListener("submit", async (e) => {
   scrollMessages();
   $("#input").value = "";
   $("#send").disabled = true;
+  const previousActions = [...document.querySelectorAll(".result-action")].map((button) => ({button, disabled:button.disabled}));
+  previousActions.forEach(({button}) => button.disabled = true);
   try {
     const r = await api("/chat", { method: "POST", json: { text, thread_id: state.threadId, material_ids, skill } });
     const isNew = !state.threadId;
@@ -875,6 +892,7 @@ $("#composer").addEventListener("submit", async (e) => {
     const el = appendMessage({ role: "assistant", text: `出错了：${err.message}`, pending: true });
     el.querySelector(".bubble").classList.add("danger");
     $("#input").value = text; // 失败时把输入放回去
+    previousActions.forEach(({button, disabled}) => { if (button.isConnected) button.disabled = disabled; });
   } finally {
     $("#send").disabled = false;
     scrollMessages();

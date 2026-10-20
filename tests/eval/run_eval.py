@@ -90,6 +90,14 @@ def run_once(case: Case, model_factory) -> dict:
             record["tools"] = [
                 c["name"] for m in agent.history for c in (getattr(m, "tool_calls", None) or [])
             ]
+            if case.todo_preview:
+                from briefly.handoffs import conversation_input, verified_candidates
+                message = next(m for m in reversed(agent.history) if getattr(m, "type", "") == "ai" and not m.tool_calls)
+                snapshot = conversation_input(agent, store, agent.thread_id, message.id)
+                items, warnings = verified_candidates(model_factory(), snapshot)
+                record["todo_preview"] = {"items": items, "warnings": warnings}
+                record["outputs"].append(json.dumps(record["todo_preview"], ensure_ascii=False))
+                record["checks"] += [{"turn":len(case.turns)+1,"name":c.name,"ok":bool(c.fn(items))} for c in case.checks]
     except Exception as e:
         record["error"] = f"{type(e).__name__}: {e}\n{traceback.format_exc(limit=3)}"
     finally:

@@ -44,6 +44,7 @@ from .tools import DEFAULT_TOOLS
 from .tools.context import context_tools
 from .tools.feishu import feishu_tools
 from .tools.materials import material_tools
+from .tools.business import business_tools
 
 __all__ = [
     "Agent",
@@ -131,6 +132,7 @@ class Agent:
         tools = list(DEFAULT_TOOLS if tools is None else tools)
         tools += context_tools(self.context_store)
         if store is not None:
+            tools += business_tools(store)
             tools += material_tools(store, model, self.context_store)  # 完整提炼工具与智能体用同一个模型
             if feishu_factory is not None or feishu_configured():
                 tools += feishu_tools(store, feishu_factory or default_client)

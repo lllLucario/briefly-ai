@@ -18,6 +18,30 @@ LOG = "# 周报素材\n## 周三\n定位到支付回调超时的原因。\n## �
 REPORT = "【周报标题】2026-10-12 至 2026-10-18\n【本周完成】\n- 支付回调耗时从 1.8 秒降到 200 毫秒〔#1〕\n【下周计划】\n1. 支付上线〔简述〕"
 
 
+def test_first_settings_read_is_safe_when_requests_race(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from sqlalchemy import event
+
+    engine = create_db_engine(f"sqlite:///{(tmp_path / 'settings.db').as_posix()}")
+    service = WeeklyService(MaterialStore(engine), model_factory=make_model)
+    barrier = Barrier(2)
+
+    def synchronize_inserts(conn, cursor, statement, parameters, context, executemany):
+        if statement.startswith("INSERT INTO weekly_settings"):
+            barrier.wait(timeout=10)
+
+    event.listen(engine, "before_cursor_execute", synchronize_inserts)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            rows = list(pool.map(lambda _: service.settings(), range(2)))
+        assert [row.id for row in rows] == [1, 1]
+        assert service.settings().schedule_enabled is False
+    finally:
+        event.remove(engine, "before_cursor_execute", synchronize_inserts)
+        engine.dispose()
+
+
 def resolved(material_id: int, text: str = REPORT) -> str:
     """模型写的编号〔#1〕换回出处后的周报。"""
     return text.replace("〔#1〕", f"〔{material_id}-1〕")

@@ -1,4 +1,4 @@
-// 周报页：一周一份周报。到点自动开始，或右下角“现在生成”——两者都是 检查更新 → 整理审核清单 → 你审核 → 生成。
+// 周报页：一周一份周报。到点自动开始，或右下角“整理本周工作”——两者都是 检查更新 → 整理审核清单 → 你审核 → 生成。
 // 左栏：本周 + 周报历史 + 周报设置。右侧：这一周的审核清单、本周材料、本周说明、周报正文。
 // 依赖 app.js 里的 $、api、state、escapeHtml、renderMarkdown、showNotice、fmtTime、fileIcon、materialTitle、ui*、pickMaterials、loadMaterials。
 "use strict";
@@ -62,7 +62,8 @@ $("#weekly-list").addEventListener("click", (e) => {
 
 // 从提醒条、待办页跳到某一周
 async function gotoWeek(reportId) {
-  document.querySelector('.tabs button[data-tab="weekly"]').click();
+  await activateTab("weekly", false);
+  await Promise.all([loadMaterials(), loadWeekly(false)]);
   await openWeek(reportId ? { id: reportId } : {});
 }
 
@@ -101,6 +102,7 @@ function renderWeek() {
   const thisWeek = isThisWeek(r);
   $("#week-title").textContent = `周报 ${shortDate(r.period_start)}–${shortDate(r.period_end)}${thisWeek ? "（本周）" : ""}`;
   const stale = r.status === "done" && r.checklist === "draft";
+  if (r.status === "done") $("#week-msg").classList.add("hidden");
   $("#week-status").className = `status-pill ${r.status}`;
   $("#week-status").textContent = stale ? "已生成 · 清单有改动" : WEEK_STATUS[r.status] || r.status;
   const s = weekly.settings?.schedule;
@@ -111,20 +113,28 @@ function renderWeek() {
   renderWeekMaterials();
   if (document.activeElement !== $("#week-note")) $("#week-note").value = r.note || "";
   renderReportBox();
+  $("#week-stage").textContent = r.status === "done" && r.checklist === "confirmed"
+    ? "③ 查看与交付：核对正文后，可修改、导出或发送。原始输入与核对清单可展开查看。"
+    : r.prepared_at ? `② 核对纳入内容：${r.pending ? `还有 ${r.pending} 条待核对` : "清单已处理，可确认并生成周报"}`
+    : "① 收集本周信息：加入材料和说明，再整理本周工作；此步不会直接生成正文。";
+  if (weekly.inputsFor !== r.id || weekly.inputsStatus !== r.checklist + r.status) {
+    $("#week-inputs").open = !(r.status === "done" && r.checklist === "confirmed");
+    weekly.inputsFor = r.id; weekly.inputsStatus = r.checklist + r.status;
+  }
   renderFoot();
   if (r.status === "pending" || r.status === "running") weekly.timer = setTimeout(async () => { await refreshWeek(); loadWeekly(false); }, 3000);
 }
 
-// 右下角按钮：自动和手动只差“是不是到点自动开始”。没整理过 → 现在生成（先整理清单）；有待确认 → 先审核；审核完 → 确认并生成
+// 右下角按钮：自动和手动只差“是不是到点自动开始”。没整理过 → 整理本周工作（先整理清单）；有待确认 → 先审核；审核完 → 确认并生成
 function footState() {
   const r = weekly.current;
   if (r.status === "pending" || r.status === "running") return { label: "生成中…", disabled: true, hint: "逐条提取并核对，材料多时需要几分钟" };
   if (!r.prepared_at) {  // 手动和自动一样：先检查更新、整理审核清单，审核之后才生成
-    return { label: "现在生成", action: "prepare", hint: "先检查更新，把这周的文件变化和待办进展整理成清单交给你确认" };
+    return { label: "整理本周工作", action: "prepare", hint: "检查更新并整理清单，核对后再生成正文" };
   }
-  if (r.pending) return { label: "确认并生成", disabled: true, hint: `还有 ${r.pending} 条待确认` };
+  if (r.pending) return { label: "确认并生成周报", disabled: true, hint: `还有 ${r.pending} 条待核对，请先纳入或排除` };
   if (r.status === "done" && r.checklist === "confirmed") return { label: "重新生成", action: "generate", hint: r.generated_at ? `已生成 · ${fmtTime(r.generated_at)}` : "" };
-  return { label: r.status === "done" ? "重新生成" : "确认并生成", action: "generate", hint: r.status === "done" ? "清单有改动，可以重新生成" : "用已确认的记录、本周材料和本周说明生成" };
+  return { label: r.status === "done" ? "重新生成" : "确认并生成周报", action: "generate", hint: r.status === "done" ? "清单有改动，可以重新生成" : "用已确认的记录、本周材料和本周说明生成" };
 }
 
 function renderFoot() {
@@ -217,10 +227,13 @@ function evidenceHtml(e) {
     <div class="ev-head"><input type="checkbox" data-pick="${e.id}" ${weekly.selected.has(e.id) ? "checked" : ""}>
       <b>${escapeHtml(e.title)}${e.user_edited && !["manual", "todo"].includes(e.origin) ? ' <span class="badge">你改过</span>' : ""}${e.has_update ? ' <span class="badge warn">有新变化，见新的待确认项</span>' : ""}</b>
       <span class="badge">${EV_CATEGORY[e.category] || e.category}</span></div>
-    <div>${escapeHtml(e.description)}</div>${evidenceEvents(e)}
-    <div class="ev-meta">归属：${attr}${basis} · 依据：${source} ${flags}</div>${evidenceTodos(e)}
+    <div>${escapeHtml(e.description)}</div>
+    <div class="ev-meta">来源：${source} ${flags}</div>
+    <details class="meta"><summary>查看来源与调整周报中的状态表述</summary>
+    <p class="muted small">记录类别和任务当前状态分别保留；本次状态只影响周报，明确同步后才修改待办。</p>
+    ${evidenceEvents(e)}归属：${attr}${basis}${evidenceTodos(e)}</details>
     <div class="ev-actions">
-      ${e.review_status !== "CONFIRMED" ? `<button class="ghost" data-act="confirm">确认是我的</button>` : ""}
+      ${e.review_status !== "CONFIRMED" ? `<button class="ghost" data-act="confirm">${["todo", "manual"].includes(e.origin) || ["ATTRIBUTED", "USER_CONFIRMED"].includes(e.attribution) ? "纳入本周" : "确认是我的并纳入"}</button>` : ""}
       ${e.review_status !== "REJECTED" ? `<button class="ghost" data-act="exclude">排除</button>` : ""}
       ${e.review_status !== "PENDING" && e.origin !== "manual" ? `<button class="ghost" data-act="reset">撤销</button>` : ""}
       <button class="ghost" data-act="edit">修改</button>
@@ -235,7 +248,7 @@ function renderChecklist() {
   $("#week-prepare").classList.toggle("hidden", !r.prepared_at);
   const box = $("#week-checklist");
   if (!r.prepared_at && !items.length) {
-    box.innerHTML = `<p class="muted">还没有整理。点右下角“现在生成”：检查追踪的文件有没有更新，把这一周的文件变化和待办进展整理成清单交给你确认（文件变化会调用模型）。
+    box.innerHTML = `<p class="muted">还没有整理。点右下角“整理本周工作”：检查追踪的文件有没有更新，把这一周的文件变化和待办进展整理成清单交给你确认（文件变化会调用模型）。
       ${isThisWeek(r) && weekly.settings?.schedule?.enabled ? "到了设定的时间也会自动整理。" : ""}</p>`;
     return;
   }
@@ -244,7 +257,7 @@ function renderChecklist() {
       <button class="ghost" id="bulk-confirm">确认所选</button><button class="ghost" id="bulk-exclude">排除所选</button>
       <button class="ghost" id="bulk-merge">合并所选</button></div>` : `<p class="muted">这一周没有发现文件变化，待办也没有进展。</p>`}
     ${groups.filter(([, xs]) => xs.length).map(([s, xs]) => `<div class="ev-group"><h5>${EV_STATUS[s]}（${xs.length}）</h5>${xs.map(evidenceHtml).join("")}</div>`).join("")}
-    <button class="ghost" id="add-evidence">＋ 补充文件和待办体现不了的工作</button>`;
+    <button class="ghost" id="add-evidence">＋ 补充工作记录（逐条核对）</button>`;
 }
 
 async function reviewAction(action, ids, note = "") {

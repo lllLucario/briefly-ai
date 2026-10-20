@@ -319,11 +319,18 @@ $("#todo-note-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const text = $("#todo-note").value.trim();
   if (!text) return;
+  const button = e.target.querySelector("button"); button.disabled = true;
   try {
-    await api(`/todos/${todos.id}/notes`, { method: "POST", json: { text } });
+    const status = $("#todo-note-status").value || null;
+    const saved = await withConfirm((confirm) => api(`/todos/${todos.id}/notes`, { method: "POST", json: { text, status, confirm } }), "记录进展并更新状态");
+    if (!saved) return;
     $("#todo-note").value = "";
+    $("#todo-note-status").value = "";
+    await loadTodos();
     openTodo(todos.id, false);
+    todoMsg(saved.notices?.length ? saved.notices.map(escapeHtml).join("<br>") : "进展已记录。", saved.notices?.length ? "warn" : "");
   } catch (err) { todoMsg(escapeHtml(err.message), "error"); }
+  finally { button.disabled = false; }
 });
 
 // ---------- 材料：上传（存进材料库并关联）、从材料库选择（只建关联）

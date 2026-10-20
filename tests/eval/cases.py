@@ -238,6 +238,7 @@ class Case:
     weekly: dict | None = None  # 周报用例：materials、brief、period_start、period_end；evidence：已确认的工作记录（含所属待办）
     checks: list[Check] = field(default_factory=list)  # 周报用例的检查
     requires: tuple[str, ...] = ()  # 需要的本地文件（相对仓库根目录），缺失时跳过
+    todo_preview: bool = False  # 对话后从原始来源结构化提取可保存候选，checks 检查候选列表
 
 
 def _report() -> str:  # 报告里的季度写作“第二季度”，模型常写成 Q2，所以数字检查额外允许 2
@@ -506,3 +507,19 @@ def weekly_rule_cases() -> list[Case]:
 
 
 CASES += weekly_rule_cases()
+
+CASES += [
+    Case("H1", "业务衔接", "行动项预览：保留他人负责人和明确日期，不导入未确定建议",
+         turns=[Turn("提取这份会议材料里的待办", skill="todo", materials=("handoff_tasks.md",), checks=[TODO])], todo_preview=True,
+         checks=[Check("仅有两个明确任务", lambda items: len(items)==2),
+                 Check("李强的任务与日期关联正确", lambda items: any(x["owner"]=="李强" and "测试记录" in x["title"] and x["due_date"]=="2026-10-23" for x in items)),
+                 Check("赵琳的任务保留且不猜期限", lambda items: any(x["owner"]=="赵琳" and "接口文档" in x["title"] and x["due_date"] is None for x in items)),
+                 Check("没有导入竞品建议", lambda items: all("竞品" not in x["title"] for x in items))]),
+    Case("H2", "业务衔接", "多轮修订：预览只保留最新回答的任务",
+         turns=[Turn("提取会议材料里的待办", skill="todo", materials=("handoff_tasks.md",)),
+                Turn("这次只保留李强负责的任务，删除赵琳的，不要加入其他任务。", skill="todo")], todo_preview=True,
+         checks=[Check("只保留李强的一项", lambda items: len(items)==1 and items[0]["owner"]=="李强" and "测试记录" in items[0]["title"])]),
+    Case("H3", "业务衔接", "信息不足：未知负责人和期限保持待定",
+         turns=[Turn("请提取待办：需要整理周报素材；负责人和期限未提及。", skill="todo")], todo_preview=True,
+         checks=[Check("缺失字段不补全", lambda items: len(items)==1 and items[0]["owner"]=="待定" and items[0]["due_date"] is None)]),
+]

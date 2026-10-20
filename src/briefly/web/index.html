@@ -12,7 +12,7 @@
   <header class="topbar">
     <div class="brand">Briefly <span>AI</span></div>
     <nav class="tabs">
-      <button data-tab="chat" class="active">对话</button>
+      <button data-tab="chat" class="active">助理</button>
       <button data-tab="todos">待办</button>
       <button data-tab="materials">材料</button>
       <button data-tab="weekly">周报</button>
@@ -37,10 +37,18 @@
       </div>
       <div id="context-box" class="notice hidden"></div>
       <div id="messages" class="messages">
-        <div class="empty">可以直接粘贴文字，或在下方选择材料后提问。<br>能力：文档总结、会议纪要拆解、周报生成、待办梳理、文本优化。</div>
+        <div class="empty">粘贴内容或添加材料，选择要完成的工作。结果先留在会话中，保存前会请你确认。</div>
       </div>
       <form id="composer" class="composer">
+        <div id="quick-actions" class="row gap wrap">
+          <button type="button" class="ghost" data-quick="summarize">总结文档</button>
+          <button type="button" class="ghost" data-quick="minutes">整理会议纪要</button>
+          <button type="button" class="ghost" data-quick="todo">提取待办</button>
+          <button type="button" class="ghost" data-quick="polish">优化文本</button>
+          <button type="button" class="ghost" data-quick="weekly">起草周报</button>
+        </div>
         <div class="row gap wrap">
+          <button type="button" id="chat-add" class="ghost">添加文件 / 链接</button>
           <button type="button" id="pick-materials" class="ghost">📎 选择材料</button>
           <div id="picked" class="chips"></div>
           <select id="skill" title="指定能力（不指定则由模型判断）">
@@ -109,6 +117,7 @@
         <div class="section-head"><h4>进展与活动</h4></div>
         <form id="todo-note-form" class="row gap">
           <input id="todo-note" class="grow" maxlength="500" placeholder="简短的进展说明（可选），如：完成竞品数据收集，等待财务提供报价">
+          <select id="todo-note-status" title="记录进展时是否同时修改任务状态"><option value="">不修改任务状态</option><option value="doing">同时设为进行中</option><option value="done">同时设为已完成</option><option value="todo">同时设为未开始</option></select>
           <button class="ghost">记录</button>
         </form>
         <div id="todo-timeline" class="timeline"></div>
@@ -141,7 +150,7 @@
         <div id="material-msg" class="notice hidden"></div>
         <div class="table-wrap">
           <table class="table">
-            <thead><tr><th>编号</th><th>标题</th><th>类型</th><th>追踪</th><th>字数</th><th>块 / 章节</th><th>结构来源</th><th>添加时间</th><th></th></tr></thead>
+            <thead><tr><th>标题</th><th>来源 / 类型</th><th>更新方式</th><th>添加时间</th><th></th></tr></thead>
             <tbody id="material-rows"></tbody>
           </table>
         </div>
@@ -186,10 +195,13 @@
       </div>
       <div id="week-msg" class="notice hidden"></div>
       <div id="week-notes"></div>
+      <p id="week-stage" class="notice"></p>
 
+      <details class="week-section" id="week-inputs" open>
+        <summary>收集信息与核对清单</summary>
       <section class="week-section">
         <div class="section-head">
-          <h4>审核清单 <span id="week-counts" class="muted small"></span></h4>
+          <h4>核对纳入内容 <span id="week-counts" class="muted small"></span></h4>
           <button id="week-prepare" class="ghost small" title="检查文件更新，把这一周新的文件变化和待办进展整理进清单">检查更新并整理</button>
         </div>
         <div id="week-checklist"></div>
@@ -202,9 +214,10 @@
       </section>
 
       <section class="week-section">
-        <div class="section-head"><h4>本周说明 <span class="muted small">（可选）</span></h4><span id="week-note-state" class="muted small"></span></div>
+        <div class="section-head"><h4>本周说明 <span class="muted small">（汇报重点与补充信息；逐条核对的工作请用“补充工作记录”）</span></h4><span id="week-note-state" class="muted small"></span></div>
         <textarea id="week-note" rows="3" placeholder="这周的重点、材料里没有的工作，如：主要做支付改造，另外和李经理对了上线时间"></textarea>
       </section>
+      </details>
 
       <section class="week-section hidden" id="week-report-box">
         <div class="section-head">
@@ -235,7 +248,7 @@
 
       <div class="week-foot">
         <span id="week-hint" class="muted"></span>
-        <button id="week-go" class="primary">现在生成</button>
+        <button id="week-go" class="primary">整理本周工作</button>
       </div>
     </section>
   </main>
@@ -257,6 +270,7 @@
   <!-- 添加材料 -->
   <dialog id="add-dialog" class="wide">
     <div class="dialog-head"><h3>添加材料</h3><button type="button" class="ghost small" data-close>✕</button></div>
+    <div class="row gap"><button type="button" class="ghost" id="add-current">处理当前内容（固定副本）</button><button type="button" class="ghost" id="add-follow">持续关注后续修改</button></div>
     <nav class="subtabs" id="add-tabs">
       <button data-add="upload" class="active">上传文件</button>
       <button data-add="paste">粘贴文字</button>
@@ -374,5 +388,6 @@
   <script src="/web/tracking.js"></script>
   <script src="/web/weekly.js"></script>
   <script src="/web/todos.js"></script>
+  <script src="/web/handoffs.js"></script>
 </body>
 </html>

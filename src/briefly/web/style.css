@@ -378,3 +378,10 @@ button.danger-solid { background: var(--danger); border-color: var(--danger); co
 }
 #drive-dialog .drive-list li.folder .name { color: var(--text); font-weight: 500; }
 #drive-dialog .drive-list li .twisty { width: 12px; }
+/* 助理结果与业务动作分开；技术信息和历史状态按需展开。 */
+.msg-actions { margin-top: 10px; }
+.msg-actions .small { font-size: 12px; }
+#quick-actions { margin-bottom: 8px; }
+#week-inputs > summary { cursor: pointer; padding: 12px 0; font-weight: 600; }
+#todo-note-form { flex-wrap: wrap; }
+[data-item] input[data-title], [data-item] textarea, [data-preview] textarea { width: 100%; box-sizing: border-box; }

@@ -14,8 +14,8 @@ from .materials import RETRIEVAL_INFO
 
 
 def feishu_tools(store: MaterialStore, client_factory: Callable = default_client) -> list[BaseTool]:
-    @tool
-    def read_feishu_link(url: str, runtime: ToolRuntime[Context]) -> str:
+    @tool(response_format="content_and_artifact")
+    def read_feishu_link(url: str, runtime: ToolRuntime[Context]) -> tuple[str, dict]:
         """读取飞书新版文档、知识库页面、多维表格或妙记（会议录音的文字稿）的当前内容，并存为材料。用户消息里有飞书链接（feishu.cn、larksuite.com）时调用，
         url 填用户给的完整链接。内容较短时直接返回全文；较长时返回材料编号，再用 get_outline、read_material、summarize_materials 读取。"""
         try:
@@ -30,12 +30,13 @@ def feishu_tools(store: MaterialStore, client_factory: Callable = default_client
         name = f"材料 {material.id}《{material.title}》"
         if material.char_count <= config.SECTION_READ_CHARS:
             body = wrap_material(f"【{name}（读取自飞书）】", material.content)
-            return "\n".join([body, *(f"解析提示：{n}" for n in notes)])
+            return "\n".join([body, *(f"解析提示：{n}" for n in notes)]), {"material_ids": [material.id]}
         sections = len(store.sections(material.id))
         outline = "有章节大纲，可先用 get_outline 查看" if sections else "没有识别出章节，可用 search_materials 检索或按块读取"
-        return "\n".join(
+        content = "\n".join(
             [f"已读取飞书内容并存为{name}，内容较长，{outline}；需要完整提炼时用 summarize_materials（{RETRIEVAL_INFO}）。",
              *(f"解析提示：{n}" for n in notes)]
         )  # fmt: skip
+        return content, {"material_ids": [material.id]}
 
     return [read_feishu_link]

@@ -12,6 +12,7 @@ from datetime import date, datetime, timedelta
 
 from langchain_core.language_models import BaseChatModel
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from ..llm import create_chat_model
@@ -91,7 +92,14 @@ class WeeklyService:
             if row is None:
                 row = WeeklySettings(id=1)
                 s.add(row)
-                s.commit()
+                try:
+                    s.commit()
+                except IntegrityError:
+                    # 首次打开页面会并发读取周报与设置，另一个请求可能已创建单例。
+                    s.rollback()
+                    row = s.get(WeeklySettings, 1)
+                    if row is None:
+                        raise
             return row
 
     def update_settings(self, *, audience: str | None = None, author: str | None = None, owner_names: list[str] | None = None) -> WeeklySettings:
