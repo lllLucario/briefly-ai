@@ -12,6 +12,8 @@ const TRACK_STATUS = {
   untracked: ["已停止追踪", ""],
 };
 
+$("#todo-week").addEventListener("click", () => gotoWeek());
+
 function todoMsg(html, kind = "") {
   showNotice($("#todo-msg"), html, kind);
 }
@@ -25,10 +27,19 @@ function shortDay(iso) {
 // ---------- 左栏
 async function loadTodos() {
   const archived = todos.filter === "archived";
-  try { todos.list = await api(`/todos?archived=${archived}`); } catch (err) { todos.list = []; todoMsg(escapeHtml(err.message), "error"); }
+  try {
+    todos.list = await api(`/todos?archived=${archived}`);
+    $("#todo-load-msg").classList.add("hidden");
+  } catch (err) {
+    showNotice($("#todo-load-msg"), `加载待办失败：${escapeHtml(err.message)} <button class="ghost small" data-retry-todos>重试</button>`, "error");
+    return;
+  }
   renderTodoList();
   if (todos.id && todos.list.some((t) => t.id === todos.id)) openTodo(todos.id, false);
 }
+$("#todo-load-msg").addEventListener("click", (e) => {
+  if (e.target.closest("[data-retry-todos]")) loadTodos();
+});
 
 function visibleTodos() {
   const rows = todos.list.filter((t) => (todos.filter === "archived" ? t.archived_at : !t.archived_at));

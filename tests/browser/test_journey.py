@@ -36,6 +36,7 @@ def test_save_network_failure_keeps_preview_and_retry_does_not_duplicate(web_pag
 def test_model_failure_and_warning_recover_without_auto_resend(web_page):
     from .flows import send
     page = web_page
+    page.locator('[data-tab="chat"]').click()
     from playwright.sync_api import expect
     page.locator("#input").fill("模拟失败")
     page.locator("#send").click()

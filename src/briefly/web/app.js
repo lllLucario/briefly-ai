@@ -184,8 +184,20 @@ function materialTitle(id) {
 // ---------- 标签页 ----------
 async function activateTab(name, load = true) {
     const btn = document.querySelector(`.tabs button[data-tab="${name}"]`);
-    document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b === btn));
+    document.querySelectorAll(".tabs button").forEach((b) => {
+      b.classList.toggle("active", b === btn);
+      if (b === btn) b.setAttribute("aria-current", "page");
+      else b.removeAttribute("aria-current");
+    });
     document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.id === `tab-${btn.dataset.tab}`));
+    const headings = {
+      chat: ["办公助理", "从一段文字、一份文档，开始今天的工作。"],
+      todos: ["待办与进展", "明确任务，关联材料，留下每一步进展。"],
+      materials: ["你的材料库", "把工作素材放在一起，随时取用、持续关注。"],
+      weekly: ["本周，值得记录", "收集、核对、生成。每一份周报，都有据可依。"],
+    };
+    $("#page-title").textContent = headings[name][0];
+    $("#page-description").textContent = headings[name][1];
     if (!load) return;
     if (name === "materials") await Promise.all([loadMaterials(), loadTrackingSummary()]);
     if (name === "todos") await Promise.all([loadMaterials(), loadTodos()]);
@@ -848,11 +860,15 @@ function newSession() {
   state.picked.clear(); renderPicked(); $("#skill").value = "";
   state.lastRequest = null;
   $("#input").value = "";
-  $("#messages").innerHTML = `<div class="empty">粘贴内容或添加材料，选择要完成的工作。结果先留在会话中，保存前会请你确认。</div>`;
+  showWelcome();
   loadSessions();
   $("#input").focus();
 }
 $("#new-session").addEventListener("click", newSession);
+
+function showWelcome() {
+  $("#messages").replaceChildren($("#chat-welcome").content.cloneNode(true));
+}
 
 function appendMessage(m) {
   const box = $("#messages");
@@ -870,7 +886,7 @@ function appendMessage(m) {
   const body = m.role === "assistant" && !m.pending
     ? `<div class="bubble markdown">${renderMarkdown(m.text)}</div>`
     : `<div class="bubble">${escapeHtml(m.text)}</div>`;
-  el.innerHTML = body + (meta.length ? `<div class="msg-meta">${meta.join(" · ")}</div>` : "");
+  el.innerHTML = `<div class="message-author">${m.role === "user" ? "你" : 'Briefly <span>办公助理</span>'}</div>` + body + (meta.length ? `<div class="msg-meta">${meta.join(" · ")}</div>` : "");
   box.appendChild(el);
   if (m.role === "assistant" && !m.pending) resultActions(el, m);
   return el;
@@ -1067,11 +1083,13 @@ $("#inbox").addEventListener("click", async (e) => {
 
 // ---------- 启动 ----------
 (async function init() {
+  showWelcome();
   try {
     await Promise.all([loadSkills(), loadMaterials(), loadSessions(), loadInbox(), loadFeishu(), loadMail()]);
+    await activateTab(document.querySelector(".tabs button.active").dataset.tab);
     handleFeishuRedirect();
     setInterval(loadInbox, 60000);
   } catch (err) {
-    showNotice($("#context-box"), `连接后端失败：${escapeHtml(err.message)}`, "error");
+    showNotice($("#app-status"), `连接服务失败：${escapeHtml(err.message)}。请刷新页面重试。`, "error");
   }
 })();

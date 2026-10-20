@@ -142,6 +142,12 @@ function renderWeek() {
     ? "③ 查看与交付：核对正文后，可修改、导出或发送。原始输入与核对清单可展开查看。"
     : r.prepared_at ? `② 核对纳入内容：${r.pending ? `还有 ${r.pending} 条待核对` : "清单已处理，可确认并生成周报"}`
     : "① 收集本周信息：加入材料和说明，再整理本周工作；此步不会直接生成正文。";
+  const step = ["pending", "running"].includes(r.status) || (r.status === "done" && r.checklist === "confirmed") ? 2 : r.prepared_at ? 1 : 0;
+  document.querySelectorAll(".week-steps li").forEach((el, i) => {
+    el.classList.toggle("is-complete", i < step);
+    if (i === step) el.setAttribute("aria-current", "step");
+    else el.removeAttribute("aria-current");
+  });
   if (weekly.inputsFor !== r.id || weekly.inputsStatus !== r.checklist + r.status) {
     $("#week-inputs").open = !(r.status === "done" && r.checklist === "confirmed");
     weekly.inputsFor = r.id; weekly.inputsStatus = r.checklist + r.status;

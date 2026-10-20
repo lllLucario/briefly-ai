@@ -194,13 +194,18 @@ async function transferToWeek(origin) {
   body.querySelector("[data-load]").click();
 }
 
-$("#quick-actions").addEventListener("click", (e) => {
-  const button = e.target.closest("[data-quick]");
-  if (!button) return;
-  $("#skill").value = button.dataset.quick;
-  if (!$("#input").value.trim()) $("#input").value = {summarize:"请总结所选材料。", minutes:"请整理成会议纪要。", todo:"请提取明确的待办事项。", polish:"请优化这段文字，保持事实不变。", weekly:"请根据所选材料起草周报。"}[button.dataset.quick];
+function chooseQuickAction(e) {
+  const button = e.target.closest("[data-quick], [data-start]");
+  if (!button || !button.closest(".welcome, #quick-actions")) return;
+  const skill = button.dataset.quick || button.dataset.start;
+  $("#skill").value = skill;
+  if (!$("#input").value.trim()) $("#input").value = {summarize:"请总结所选材料。", minutes:"请整理成会议纪要。", todo:"请提取明确的待办事项。", polish:"请优化这段文字，保持事实不变。", weekly:"请根据所选材料起草周报。"}[skill];
   $("#input").focus();
-});
+}
+$("#quick-actions").addEventListener("click", chooseQuickAction);
+$("#messages").addEventListener("click", chooseQuickAction);
+$("#start-todo").onclick = () => $("#new-todo").click();
+$("#start-assistant").onclick = () => activateTab("chat");
 $("#chat-add").onclick = () => { $("#open-add").click(); addForAssistant = true; };
 $("#add-current").onclick = () => showAddPane("upload");
 $("#add-follow").onclick = () => {

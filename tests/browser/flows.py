@@ -20,6 +20,7 @@ def send(page, text, skill=None):
 
 
 def start_meeting(page):
+    page.locator('[data-tab="chat"]').click()
     page.locator("#chat-add").click()
     page.locator('[data-add="paste"]').click()
     page.locator("#paste-title").fill("支付改造会议（虚构）")
