@@ -11,6 +11,7 @@
 """
 import logging
 import re
+from datetime import date
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Literal
@@ -22,7 +23,7 @@ from .summarize import WorkItem
 
 log = logging.getLogger(__name__)
 
-ATTRIBUTES = {"date": "日期", "amount": "金额", "quantity": "数量", "status": "状态", "owner": "负责人", "progress": "进度"}
+ATTRIBUTES = {"date": "日期", "amount": "金额", "quantity": "数量", "status": "状态", "owner": "负责人", "progress": "进度", "timeline": "时间与状态"}
 UNRESOLVED, SUPERSEDED, CONTEXT, NOT_SAME = "unresolved", "superseded", "context_difference", "not_same"
 MATERIAL, BRIEF, EVIDENCE = "material", "brief", "evidence"
 CHANGE_WORDS = ("改为", "改成", "改到", "推迟", "延期", "延后", "提前到", "顺延", "更新为", "调整为", "调整到", "变更为", "变为", "最新")
@@ -55,6 +56,7 @@ class FactConflict:
     aspect: str = ""
     subjects: list[str] = field(default_factory=list)  # 各成员原本的主体写法
     needs_identity: bool = False  # 主体或含义写法不同，需要模型确认是不是同一对象
+    possible: bool = False  # 跨属性的时间/状态线索，只提示待核对，不宣称已经证明矛盾
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -248,9 +250,9 @@ def _conflict(attribute: str, members: list[tuple[int, WorkItem]], pairs: list[s
     )
 
 
-def detect_conflicts(items: list[WorkItem], brief_items: list[WorkItem] | None = None) -> list[FactConflict]:
+def detect_conflicts(items: list[WorkItem], brief_items: list[WorkItem] | None = None, *, reference_numbers: dict[str, int] | None = None, as_of: date | None = None) -> list[FactConflict]:
     """items 为正文工作项（编号 #1…#n）；brief_items 为从简述提取的事实（只用于冲突检测，不进正文，编号记 0）。"""
-    members = [(n, i) for n, i in enumerate(items, start=1)] + [(0, i) for i in brief_items or []]
+    members = [((reference_numbers or {}).get(i.fact_id, n), i) for n, i in enumerate(items, start=1)] + [(0, i) for i in brief_items or []]
     keyed = [
         (n, i) for n, i in members if i.attribute in ATTRIBUTES and i.subject.strip() and i.value.strip()
     ]
@@ -280,7 +282,49 @@ def detect_conflicts(items: list[WorkItem], brief_items: list[WorkItem] | None =
                 candidates.append(_conflict(attr_a, merged, pairs, needs_identity=True))
     if len(candidates) > MAX_CANDIDATES:
         log.info("主体候选 %s 个，只确认前 %s 个", len(candidates), MAX_CANDIDATES)
-    return conflicts + candidates[:MAX_CANDIDATES]
+    return conflicts + candidates[:MAX_CANDIDATES] + _timeline_candidates(keyed, as_of)
+
+
+def _timeline_candidates(members: list[tuple[int, WorkItem]], as_of: date | None) -> list[FactConflict]:
+    """同一对象已上线/交付，与另一来源晚于本周截止的对应日期可能不一致。
+
+    只检查明确年份日期，或与截止日期同月的月日；不猜跨年，不把提测/开发完成
+    和上线混为一谈。没有原文变更关系时保留疑点，交由用户核对。
+    """
+    if as_of is None:
+        return []
+    groups: dict[str, list[tuple[int, WorkItem]]] = {}
+    for member in members:
+        groups.setdefault(normalize_subject(member[1].subject), []).append(member)
+    out = []
+    for group in groups.values():
+        for n, state in group:
+            status = parse_value("status", state.value)
+            if state.attribute != "status" or status.key not in {("launched",), ("done",)}:
+                continue
+            aspects = {"上线", "发布"} if status.key == ("launched",) else {"完成", "交付"}
+            if state.aspect and normalize_aspect(state.aspect) not in aspects | {"状态", "完成状态", "交付状态", "上线状态", "发布状态"}:
+                continue  # “测试已完成”不能用来质疑未来的交付/上线日期
+            for m, dated in group:
+                if dated.attribute != "date" or dated.source == state.source or normalize_aspect(dated.aspect) not in aspects:
+                    continue
+                raw = re.sub(r"\s+", "", dated.value)
+                full = re.search(r"(\d{4})[年/.\-](\d{1,2})[月/.\-](\d{1,2})", raw)
+                short = re.fullmatch(r"(\d{1,2})月(\d{1,2})[日号]?", raw)
+                try:
+                    when = date(*(int(x) for x in full.groups())) if full else date(as_of.year, *(int(x) for x in short.groups())) if short and int(short[1]) == as_of.month else None
+                except ValueError:
+                    continue
+                if when is None or when <= as_of:
+                    continue
+                pair = "_vs_".join(sorted([origin_of(state), origin_of(dated)], key=[BRIEF, EVIDENCE, MATERIAL].index))
+                conflict = _conflict("timeline", [(n, state), (m, dated)], [pair], False)
+                conflict.possible = True
+                conflict.aspect = f"截至 {as_of.isoformat()}，完成状态与后续日期"
+                out.append(conflict)
+                if len(out) >= MAX_CANDIDATES:
+                    return out
+    return out
 
 
 # ---------- 归类（一次模型调用；主体候选的同一性也在这里确认）
@@ -301,7 +345,8 @@ class _Judgments(BaseModel):
     judgments: list[_Judgment]
 
 
-JUDGE_PROMPT = """你负责判断几处“同一主体、同一属性却有不同说法”的情况属于哪一类。
+JUDGE_PROMPT = """你负责判断几处“同一主体的事实可能不一致”的情况属于哪一类。
+- 时间与状态疑点：一个来源已上线/已完成，另一个来源给出晚于本周截止的对应日期。可能是提前完成、旧计划或不同阶段，但原文没明示就不能自行解释为已更新或不同场景；无依据保持 unresolved。
 - 标了“需先确认是否同一对象”的：名称或含义写法不同，先判断是不是同一个对象的同一项属性（如“支付改造”与“支付系统改造”、“上线日期”与未写明含义的日期）；不是的选 not_same。
 - superseded：原文明确写了变更关系（如“改为”“推迟到”“调整为”），说明后一个说法取代了前一个。没有这类字样时不能选；不能根据材料先后顺序推断谁更新。
 - context_difference：两个说法适用的对象、环境、阶段或时间段不同（如测试环境与生产环境、一期与二期），其实不矛盾。依据必须是原文里写明的区别。
@@ -379,10 +424,12 @@ def describe(conflicts: list[FactConflict], items: list[WorkItem]) -> str:
     """给写作模型看的冲突记录（用 #编号；简述的说法标“简述”）。"""
     if not conflicts:
         return ""
-    lines = ["说法不一致的地方（程序已核对，必须按处理方式写）："]
+    lines = ["多来源核对结果（包括确定的不一致与待核对疑点，必须按各项处理方式写）："]
     for c in conflicts:
         aspect = f"（{c.aspect}）" if c.aspect else ""
         head = f"- {c.subject} 的{ATTRIBUTES[c.attribute]}{aspect}：{'；'.join(_side(c, k) for k in range(len(c.values)))}。"
+        if c.possible:
+            head += "这是时间与状态的待核对疑点，不能宣称已证明矛盾，也不能自行解释为提前完成或旧计划。"
         if c.resolution == SUPERSEDED:
             k = c.fact_ids.index(c.current)
             target = "简述" if c.origins[k] == BRIEF else f"#{c.numbers[k]}"
@@ -390,8 +437,8 @@ def describe(conflicts: list[FactConflict], items: list[WorkItem]) -> str:
         elif c.resolution == CONTEXT:
             head += f"适用场景不同（“{c.evidence}”），各说法分别写清适用范围。"
         else:
-            if "material_vs_material" in c.pairs or "evidence_vs_material" in c.pairs:
-                head += "材料之间看不出哪个为准：正文同时写出各材料的说法并分别标注编号，不能只写其中一个，并在【给用户的提醒】里列出。"
+            if any(p in c.pairs for p in ("material_vs_material", "evidence_vs_material", "evidence_vs_evidence")):
+                head += "各来源之间看不出哪个为准：正文同时写出各来源的说法并分别标注编号，不能只写其中一个，并在【给用户的提醒】里列出。"
             if any(p.startswith("brief_vs_") for p in c.pairs):
                 head += (
                     "简述与材料不一致：正文只采用其中一种说法，出处如实标注（采用简述的标〔简述〕，采用材料的标该材料编号），"

@@ -49,6 +49,14 @@ class _Item(BaseModel):
         default="medium",
         description="按“用途”判断的候选重要度：high 读者必须知道（结果、决定、关键数据、问题）/ medium 一般工作 / low 日常琐事",
     )
+    key_details: list[str] = Field(default_factory=list, description="最多8个必须保留的人名、事项对象或关键限定词，逐字摘录名词短语，不含完成/复核等动作动词；用于检查纯文字遗漏，不抄整句")
+
+    @field_validator("key_details", mode="before")
+    @classmethod
+    def _lenient_details(cls, value):
+        if isinstance(value, str):
+            value = [value]
+        return [x for x in value if isinstance(x, str) and x.strip()][:8] if isinstance(value, list) else []
 
 
     # 次要字段宽松解析：取值不合法时置空或用默认值，不让一个次要字段拖垮整块的提取（核心字段 category / point / quote 仍严格校验）
@@ -114,6 +122,7 @@ class WorkItem:
     value: str = ""
     aspect: str = ""  # 属性的具体含义（上线 / 提测 / 交付……），避免把不同的日期当成同一属性
     group: str = ""  # 所属待办（父待办 › 子待办），周报按父待办分组；不是工作内容本身
+    key_details: tuple[str, ...] = ()  # 已逐字核对的关键短语，不把模型补出的词作为覆盖要求
 
     @property
     def verified_risk(self) -> bool:
@@ -142,6 +151,7 @@ class ExtractionResult:
     usage: Usage = field(default_factory=Usage)
     cached: int = 0  # 直接用了缓存结果的块数
     incomplete: list[dict] = field(default_factory=list)  # 提取遗漏：原文摘录里有、要点里都没写的数字等，{fact_ids, quote, missing}
+    unverified_facts: list[dict] = field(default_factory=list)  # 主体/取值不在原文，保留工作项但不让它制造冲突
 
     @property
     def processed(self) -> int:
@@ -257,6 +267,10 @@ def extract_items(
                 review = item.category == "issue" and not (reason and _norm(reason) in content)
                 k = sum(1 for i in result.items if i.source == source.tag) + 1
                 at = source.content.find(item.quote.strip())
+                grounded_fact = bool(item.subject.strip() and _norm(item.subject) in content and item.value.strip() and _norm(item.value) in quote)
+                if item.attribute and not grounded_fact:
+                    result.unverified_facts.append({"source": source.tag, "quote": item.quote, "reason": "主体或取值无法逐字核对"})
+                details = key_details(item.key_details, quote)
                 result.items.append(
                     WorkItem(
                         item.category,
@@ -268,10 +282,11 @@ def extract_items(
                         f"{source.tag}.{k}",
                         source.offset + at if at >= 0 else -1,
                         item.importance,
-                        item.subject.strip(),
-                        item.attribute,
-                        item.value.strip(),
+                        item.subject.strip() if grounded_fact else "",
+                        item.attribute if grounded_fact else "",
+                        item.value.strip() if grounded_fact else "",
                         item.aspect.strip(),
+                        key_details=details,
                     )
                 )
     result.incomplete = map_omissions(result.items)
@@ -284,6 +299,25 @@ _HARD = re.compile(r"\d+(?:[.:：/\-]\d+)*\s*%?|[A-Za-z][A-Za-z0-9_\-]{1,}|《[^
 
 def hard_terms(text: str) -> list[str]:
     return list(dict.fromkeys(re.sub(r"\s+", "", t) for t in _HARD.findall(text)))
+
+
+def key_details(details: list[str], quote: str) -> tuple[str, ...]:
+    """只接受原文短语；去掉常见前置动作，避免主被动语序变化造成误报。
+
+    这些锚点只辅助发现对象遗漏，不能证明动作、否定或整句话的语义正确。
+    """
+    out = []
+    for raw in details:
+        text = raw.strip()
+        if not 1 < len(text) <= 24 or _norm(text) not in quote:
+            continue
+        noun = re.sub(r"^(?:完成|复核|补齐|确认|修复|新增|整理|优化|提交|核对)(?=.{2})", "", text)
+        out.append(noun)
+    return tuple(dict.fromkeys(out))
+
+
+def coverage_terms(item: WorkItem) -> list[str]:
+    return list(dict.fromkeys([*hard_terms(item.point), *item.key_details]))
 
 
 def missing_terms(terms: list[str], text: str) -> list[str]:
@@ -303,7 +337,8 @@ def map_omissions(items: list[WorkItem]) -> list[dict]:
         groups.setdefault(_norm(item.quote), []).append(item)
     out = []
     for group in groups.values():
-        lost = missing_terms(hard_terms(group[0].quote), " ".join(i.point for i in group))
+        terms = list(dict.fromkeys([*hard_terms(group[0].quote), *(t for i in group for t in i.key_details)]))
+        lost = missing_terms(terms, " ".join(i.point for i in group))
         if lost:
             out.append({"fact_ids": [i.fact_id for i in group], "quote": group[0].quote, "missing": lost})
     return out
@@ -330,6 +365,8 @@ def format_items(items: list[WorkItem]) -> str:
         line = f"- #{n} 【{_label(i)}】{i.point}\n  原文：{i.quote}"
         if i.fact_id in lost:  # 提取时可能遗漏：让写作时回到原文写全
             line += f"\n  （原文中还写了 {'、'.join(lost[i.fact_id])}，概括里没有，写的时候请按原文写全）"
+        if i.key_details:
+            line += f"\n  需保留的原文要点：{'、'.join(i.key_details)}（可调整句式，不要漏掉这些人名、对象或限定词）"
         if i.verified_risk and i.risk_reason:
             line += f"\n  风险依据：{i.risk_reason}"
         if i.group:

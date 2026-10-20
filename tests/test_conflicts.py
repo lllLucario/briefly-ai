@@ -107,7 +107,7 @@ BOTH = "【本周完成】\n- 项目A 交付时间：10 月 20 日〔#1〕/ 10 �
 
 def test_weekly_keeps_both_sides_and_reminds(store):
     done, calls = weekly_run(store, [ONE, BOTH])
-    assert "说法不一致的地方" in calls[0][-1].content and "#1 写的是 10 月 20 日" in calls[0][-1].content
+    assert "多来源核对结果" in calls[0][-1].content and "#1 写的是 10 月 20 日" in calls[0][-1].content
     assert len(calls) == 2 and "正文缺少 #1（10 月 20 日）" in calls[1][-1].content  # 只写一个说法：重写
     assert "10 月 20 日" in done.content and "10 月 25 日" in done.content
     [c] = done.generation["conflicts"]

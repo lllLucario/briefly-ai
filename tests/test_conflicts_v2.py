@@ -63,7 +63,7 @@ def test_mixed_sources_keep_both_rules():
     [c] = detect_conflicts(items, [brief_fact("10 月 25 日")])
     assert c.pairs == ["brief_vs_material", "material_vs_material"]
     text = describe([c], items)
-    assert "正文同时写出各材料的说法" in text and "正文只采用其中一种说法" in text
+    assert "正文同时写出各来源的说法" in text and "正文只采用其中一种说法" in text
 
 
 BRIEF_CONFLICT = None

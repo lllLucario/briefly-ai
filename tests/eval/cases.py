@@ -516,6 +516,34 @@ def weekly_rule_cases() -> list[Case]:
 
 CASES += weekly_rule_cases()
 
+# 可靠性补强仅使用虚构短材料；比较字段、正文、提醒分别检查。
+CASES += [
+    Case("R1", "事实可靠性", "已确认工作记录与材料日期不同：保留双方和出处",
+         weekly={"materials": ["reliability_launch.md"], "brief": "", **WEEK,
+                 "evidence": [{"title": "退款改造", "description": "退款改造计划于2026-10-23上线。",
+                               "category": "plan"}]},
+         checks=[report_done(), report_has("2026-10-23", "2026-10-25"),
+                 Check("工作记录参与比较且引用原记录", lambda r: any(
+                     "evidence_vs_material" in c["pairs"] and any(s.startswith("E") for s in c["sources"])
+                     and set(c["numbers"]) == {1, 2} for c in r.generation.get("conflicts", []))),
+                 Check("提醒同时列出两方出处", lambda r: any(
+                     "2026-10-23" in x and "2026-10-25" in x and "〔E" in x and "〔1-" in x
+                     for x in r.generation.get("reminders", []))), no_unverified_numbers()]),
+    Case("R2", "事实可靠性", "纯中文动作与人员不能在概括中遗漏",
+         weekly={"materials": ["reliability_chinese.md"], "brief": "", **WEEK},
+         checks=[report_done(), report_has("退款校验", "王敏", "异常分支", "回滚说明", "赵琳", "客服答复口径"),
+                 Check("没有剩余遗漏", lambda r: not any(f.get("missing") for f in r.generation.get("facts", []))),
+                 no_unverified_numbers()]),
+    Case("R3", "事实可靠性", "已上线与未来上线日：保留待核对疑点，不猜提前完成",
+         weekly={"materials": ["reliability_launch.md"], "brief": "退款改造已上线。", **WEEK},
+         checks=[report_done(), Check("识别时间状态疑点", lambda r: any(
+                     c["attribute"] == "timeline" and c.get("possible") and c["resolution"] == "unresolved"
+                     for c in r.generation.get("conflicts", []))),
+                 Check("提醒保留双方", lambda r: any("已上线" in x and "2026-10-25" in x
+                     for x in r.generation.get("reminders", []))),
+                 report_lacks("提前完成", "提前上线", "旧计划"), no_unverified_numbers()]),
+]
+
 CASES += [
     Case("H1", "业务衔接", "行动项预览：保留他人负责人和明确日期，不导入未确定建议",
          turns=[Turn("提取这份会议材料里的待办", skill="todo", materials=("handoff_tasks.md",), checks=[TODO])], todo_preview=True,

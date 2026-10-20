@@ -29,7 +29,7 @@ from ..llm import create_chat_model
 from ..materials import MaterialNotFound, MaterialStore
 from ..output_check import find_internal_terms
 from ..skills import read_prompt
-from ..summarize import CATEGORY_NAMES, Source, WorkItem, extract_items, hard_terms, missing_terms, synthesize
+from ..summarize import CATEGORY_NAMES, ExtractionResult, Source, WorkItem, coverage_terms, extract_items, missing_terms, synthesize
 from .models import CONFIRMED, WeeklyReport, WorkEvidence
 
 # 提取时告诉模型这次的用途：重要度（high / medium / low）按周报的读者判断，与“完整总结”的标准不同
@@ -72,7 +72,7 @@ def section_lines(text: str, heading: str) -> list[str]:
 
 
 # 给写作模型看的说明（format_items 附在工作项后面）：如果出现在周报正文里，说明模型把说明当成了内容
-HINT_PHRASES = ("原文中还写了", "概括里没有", "出自同一句原文", "风险依据", "待复核", "同样要写进周报", "所属待办")
+HINT_PHRASES = ("原文中还写了", "概括里没有", "出自同一句原文", "风险依据", "待复核", "同样要写进周报", "所属待办", "需保留的原文要点")
 
 
 def citing_lines(body: str) -> dict[int, list[str]]:
@@ -87,7 +87,7 @@ def citing_lines(body: str) -> dict[int, list[str]]:
 def partial_terms(item: WorkItem, lines: list[str]) -> list[str]:
     """合并遗漏：引用了这个事实的行里，缺了它的哪些硬信息（数字、日期、英文标识等）。"""
     text = " ".join(re.sub(r"〔[^〕]*〕", "", line) for line in lines)
-    return missing_terms(hard_terms(item.point), text)
+    return missing_terms(coverage_terms(item), text)
 
 
 def report_check(items: list[WorkItem], conflicts: list[FactConflict] | None = None) -> Callable[[str], list[str]]:
@@ -251,9 +251,24 @@ class ReportWriter:
         )
         # 简述里可核实的事实（日期、金额、数量等）：单独提取一次，只用于和材料比对冲突，不进入正文工作项（避免重复）
         brief_items, brief_calls = self._brief_facts(model, report.note, period)
+        comparison = list(extraction.items)
+        references = {i.fact_id: n for n, i in enumerate(extraction.items, 1) if i.fact_id}
+        evidence_fact_calls = evidence_fact_cached = 0
+        # 两条以上记录互相核对；单条只在另一来源有可比对事实时核对。批量提取并复用缓存。
+        if len(evidence_items) > 1 or (evidence_items and any(i.attribute for i in [*extraction.items, *brief_items])):
+            facts = self._evidence_facts(model, evidence_items, period, warnings)
+            evidence_fact_calls, evidence_fact_cached = facts.usage.calls, facts.cached
+            extraction.usage.calls += facts.usage.calls
+            extraction.usage.input_tokens += facts.usage.input_tokens
+            extraction.usage.output_tokens += facts.usage.output_tokens
+            by_source = {i.source: n for n, i in enumerate(extraction.items, 1)}
+            references.update({i.fact_id: by_source[i.source] for i in facts.items})
+            comparison += facts.items
+        if extraction.unverified_facts:
+            warnings.append(f"有 {len(extraction.unverified_facts)} 项主体或取值无法核对，相关事实未参与冲突比较，请核对原文")
         # 多来源冲突：在任何合并之前由代码检测（分批合并可能丢掉其中一种说法），有冲突时调用一次模型归类（含主体候选确认）
-        conflicts = detect_conflicts(extraction.items, brief_items)
-        conflict_calls = classify(model, conflicts, extraction.items, brief_items) + brief_calls
+        conflicts = detect_conflicts(comparison, brief_items, reference_numbers=references, as_of=report.period_end)
+        conflict_calls = classify(model, conflicts, comparison, brief_items) + brief_calls
         if conflicts:
             request += "\n\n" + describe(conflicts, extraction.items)
         system_prompt = read_prompt("weekly") + "\n\n" + read_prompt("weekly_report")
@@ -279,11 +294,16 @@ class ReportWriter:
             materials = [(v, src) for v, src, o in zip(c.values, c.sources, c.origins) if o != BRIEF]
             if "material_vs_material" in c.pairs or "evidence_vs_material" in c.pairs:
                 sides = " / ".join(f"{v}〔{src}〕" for v, src in materials)
-                reminders.append(f"材料之间说法不一致：{name}为 {sides}，未说明哪个为准，请核对")
+                label = "工作记录与其他来源" if any(o == "evidence" for o in c.origins) else "材料之间"
+                reminders.append(f"{label}{'可能' if c.possible else ''}说法不一致：{name}为 {sides}，未说明哪个为准，请核对")
+            if "evidence_vs_evidence" in c.pairs:
+                sides = " / ".join(f"{v}〔{src}〕" for v, src in materials)
+                reminders.append(f"已确认工作记录之间说法不一致：{name}为 {sides}，请核对")
             if any(p.startswith("brief_vs_") for p in c.pairs):
                 said = " / ".join(v for v, o in zip(c.values, c.origins) if o == BRIEF)
                 sides = " / ".join(f"{v}〔{src}〕" for v, src in materials)
-                reminders.append(f"简述与材料说法不一致：{name}，简述写的是 {said}〔简述〕，材料写的是 {sides}；正文只采用了其中一种，请核对")
+                label = "其他来源" if "evidence" in c.origins else "材料"
+                reminders.append(f"简述与{label}{'可能' if c.possible else ''}说法不一致：{name}，简述写的是 {said}〔简述〕，{label}写的是 {sides}；正文应只采用其中一种，请核对")
         facts, partial = fact_trace(extraction.items, synthesis.raw)
         # 合并遗漏：引用了，但只写了一部分
         reminders += [f"这一项只写了一部分，缺少 {'、'.join(lost)}（合成周报时遗漏），请补充：{i.point}〔{i.source}〕" for i, lost in partial]
@@ -293,8 +313,10 @@ class ReportWriter:
             if lost:
                 source = o["fact_ids"][0].rsplit(".", 1)[0]
                 reminders.append(f"原文中的 {'、'.join(lost)} 没有写进周报（提取要点时遗漏），请核对：{o['quote'][:80]}〔{source}〕")
-        # 重写后仍有的问题：风险栏引用不对的写进系统提示；漏写的已由输出覆盖列进提醒，不重复
-        warnings += [f"{p.split('，请移到')[0]}，请核对" for p in synthesis.problems if "请移到" in p]
+        # 遗漏已有逐项提醒；冲突、出处、内部提示泄漏等其余失败也必须显示，不能静默放过。
+        omission_messages = ("是重要内容，没有写进周报", "出自同一句原文", "写进周报时缺少")
+        warnings += [f"重写后仍未通过核对：{p}，请核对" for p in synthesis.problems
+                     if not any(marker in p for marker in omission_messages)]
         if synthesis.invalid_refs:
             warnings.append(f"周报引用了不存在的工作项编号 {synthesis.invalid_refs}，相关内容可能没有依据，请核对")
         if not synthesis.coverage_checked:
@@ -327,11 +349,37 @@ class ReportWriter:
             "seconds": round(time.monotonic() - started, 1),
             "facts": facts,  # 每个事实（fact_id）写进了哪几行、和哪些事实合并、是否只写了一部分，用于定位遗漏发生在哪一步
             "map_omissions": extraction.incomplete,
+            "evidence_fact_calls": evidence_fact_calls,
+            "evidence_fact_cached": evidence_fact_cached,
             "conflicts": [c.to_dict() for c in conflicts],  # 多来源冲突及归类（unresolved / superseded / context_difference）
             "warnings": warnings,  # 系统提示：处理失败、丢弃、未核实数字等
             "reminders": reminders,  # 模型给用户的提醒：可能想补充或核对的地方，不进入周报
         }
         return content, [asdict(i) for i in extraction.items], generation
+
+    def _evidence_facts(self, model: BaseChatModel, items: list[WorkItem], period: str, warnings: list[str]) -> ExtractionResult:
+        """仅补比较字段，不改写已确认工作项、类别或用户选择的本次状态。
+
+        原话只能归属到唯一记录；模糊归属、提取失败不猜测，不阻止原记录进入周报。
+        """
+        text = "\n\n".join(f"【记录 {i.source}】\n{i.point}" for i in items)
+        result = extract_items(model, [Source(0, 0, "已确认工作记录：仅核对事实", text)], period=period,
+                               cache=self.cache, purpose="仅用于多来源冲突比较，逐项提取明确的主体、属性和值；quote不得跨越记录，不改写工作记录")
+        mapped = []
+        for fact in result.items:
+            if not fact.attribute:
+                continue
+            normalized = re.sub(r"\s+", "", fact.quote)
+            matches = [i for i in items if normalized in re.sub(r"\s+", "", i.point) and re.sub(r"\s+", "", fact.subject) in re.sub(r"\s+", "", i.point)]
+            if len(matches) != 1:
+                warnings.append("有工作记录事实无法唯一定位到原话，未参与冲突比较，请核对")
+                continue
+            original = matches[0]
+            mapped.append(replace(fact, source=original.source, fact_id=f"{original.source}.fact.{len(mapped) + 1}"))
+        if result.failed or result.dropped or result.unverified_facts:
+            warnings.append("部分已确认工作记录的事实核对未完成，冲突检测可能不完整；原工作记录仍保留")
+        result.items = mapped
+        return result
 
     def _brief_facts(self, model, brief: str, period: str) -> tuple[list[WorkItem], int]:
         """从简述提取可核实的事实，出处标为“简述”。只用于冲突检测。
