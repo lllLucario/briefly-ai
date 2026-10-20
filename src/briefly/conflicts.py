@@ -473,15 +473,25 @@ def _digits(text: str) -> list[str]:
 
 
 def value_in(text: str, value: str) -> bool:
-    """text 里是否写了这个取值：原样（忽略空白）出现，或数字按顺序连续出现（“10 月 20 日”与“10月20日”）。"""
+    """取值忽略空白原样出现；纯日期容忍分隔符变化，保留明确年份与数字边界。"""
     flat_text, flat_value = re.sub(r"\s+", "", text), re.sub(r"\s+", "", value)
     if flat_value:
         # 数字边界：“110 月 20 日”不算写了“10 月 20 日”
         pattern = ("(?<!\\d)" if flat_value[0].isdigit() else "") + re.escape(flat_value) + ("(?!\\d)" if flat_value[-1].isdigit() else "")
         if re.search(pattern, flat_text):
             return True
-    dv, dt = _digits(value), _digits(text)
-    return bool(dv) and any(dt[i : i + len(dv)] == dv for i in range(len(dt) - len(dv) + 1))
+    # 只对纯日期容忍分隔符变化。不能用散落的数字证明含状态/单位的事实，
+    # 如“未完成3条”不能由“已完成3条”撑起，“8000元”也不是“8000美元”。
+    pattern = r"(?:(\d{4})[年/\-])?(\d{1,2})[月/\-](\d{1,2})[日号]?"
+    expected = re.fullmatch(pattern, flat_value)
+    if expected is None:
+        return False
+    year, month, day = expected.groups()
+    for match in re.finditer(r"(?<!\d)"+pattern+r"(?!\d)",flat_text):
+        y,m,d = match.groups()
+        if (not year or year == y) and int(month)==int(m) and int(day)==int(d):
+            return True
+    return False
 
 
 def brief_conflict_problems(conflicts: list[FactConflict], text: str, reminder_heading: str) -> list[str]:

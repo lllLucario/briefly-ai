@@ -13,6 +13,7 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
+from dataclasses import asdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -87,9 +88,18 @@ def run_once(case: Case, model_factory) -> dict:
                 output = agent.chat(turn.text, turn.skill, material_ids=ids)
                 record["outputs"].append(output)
                 record["checks"] += [{"turn": n, "name": c.name, "ok": bool(c.fn(output, previous))} for c in turn.checks]
+            from briefly.api import visible_messages
+            record["answer_warnings"] = [m.warnings for m in visible_messages(agent.history) if m.role=="assistant"]
             record["tools"] = [
                 c["name"] for m in agent.history for c in (getattr(m, "tool_calls", None) or [])
             ]
+            if case.diagnostic_facts:
+                from briefly.diagnostics import Fact, diagnose, stages_from_history
+                st = stages_from_history(agent.history)
+                record["diagnostic_stages"] = asdict(st)
+                record["diagnosis"] = asdict(diagnose([Fact(**x) for x in case.diagnostic_facts],[],st,
+                    {m.title:m.content for m in store.list_materials()}))
+                record["checks"].append({"turn":len(case.turns),"name":"已执行完整提炼并记录四个阶段","ok":st.tool_called and st.extraction is not None})
             if case.todo_preview:
                 from briefly.handoffs import conversation_input, verified_candidates
                 message = next(m for m in reversed(agent.history) if getattr(m, "type", "") == "ai" and not m.tool_calls)

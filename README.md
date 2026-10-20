@@ -85,6 +85,8 @@ python -m playwright install chromium     # 安装回归使用的浏览器
 pytest tests/browser --run-browser -W error  # 实际浏览器 + 假模型 + 隔离数据库
 python tests/eval/run_eval.py -n 3        # 实测用例集：真实模型，每个用例跑 3 次统计通过率
 python tests/eval/journey_browser.py --real-model -n 2  # 真实模型完整网页走查，会产生API费用
+python tests/eval/run_eval.py -n 2 -k F1 F2 F3 F4  # 事实对应关系、多轮精简与章节编号
+python tests/eval/recall_walkthrough.py -n 2  # 压缩、重开会话、分页回查；仅回查阶段调用真实模型
 ```
 
 实测用例集（`tests/eval/`）覆盖周报、五项能力、异常输入（乱码、超出范围、提示词注入、超长）、多轮对话、长材料、对话与正式周报规则一致性，以及行动项预览的来源与最新修订，用例材料均为虚构。实测会向配置的模型服务发送提示词与用例内容，并产生 API 费用；单元测试不调用真实 API。

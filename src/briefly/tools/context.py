@@ -3,6 +3,8 @@
 上下文里只带会话记忆和最近几轮，原始对话完整保存在 checkpointer 中；这两个工具让模型在需要时取回原文，
 返回量受工具预算（output_limit）限制，超出时分页。
 """
+import re
+
 from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, tool
@@ -27,48 +29,56 @@ def _page(text: str, page: int, chars: int) -> tuple[str, int]:
 
 def _page_chars() -> int:
     # 中文约 1.7 字符/token，按 1.5 取保守值，并给页眉留余量
-    return max(int((output_limit() - 200) * 1.5), 500)
+    return max(int((output_limit() - 200) * 1.5), 32)
 
 
 def context_tools(store: ContextStore) -> list[BaseTool]:
     @tool
-    def recall_conversation(runtime: ToolRuntime[Context], keywords: str = "", turn: int | None = None) -> str:
+    def recall_conversation(runtime: ToolRuntime[Context], keywords: str = "", turn: int | None = None, page: int = 1) -> str:
         """查找本会话较早的原始对话（上下文里只保留了会话记忆和最近几轮）。
-        keywords 用空格分隔多个词，返回包含这些词的用户和助手原话片段及轮次；turn 填轮次时返回那一轮的完整对话。两者填一个。
+        keywords 用空格分隔多个词，搜索任一词的所有命中片段及轮次；turn 填轮次时分页读那一轮的完整原话。两者填一个。
+        page从1开始；结果有下一页时用相同keywords或turn继续读取，页码提示会说明是否读完。用户原话不包括程序附加的材料和内部检查指令。
         需要用户早先说过的原话、之前回答里的具体内容，而会话记忆里没有时调用。"""
         messages = (runtime.state or {}).get("messages", [])
         numbered, n = [], 0
         for m in messages:
             if isinstance(m, HumanMessage):
+                if m.additional_kwargs.get("internal"):
+                    continue
                 n += 1
-                numbered.append((n, "用户", _text(m.content)))
-            elif isinstance(m, AIMessage) and _text(m.content).strip():
+                numbered.append((n, "用户", _text(m.additional_kwargs.get("display", m.content))))
+            elif isinstance(m, AIMessage) and not m.tool_calls and _text(m.content).strip():
                 numbered.append((n, "助手", _text(m.content)))
         if turn is not None:
             hits = [f"{who}：{text}" for t, who, text in numbered if t == turn]
             if not hits:
                 raise ValueError(f"没有第 {turn} 轮，本会话共 {n} 轮")
-            body, pages = _page("\n\n".join(hits), 1, _page_chars())
-            more = f"\n（这一轮较长，只返回了开头部分）" if pages > 1 else ""
-            return f"【第 {turn} 轮原始对话】\n{body}{more}"
+            body, pages = _page("\n\n".join(hits), page, _page_chars())
+            more = f"继续请用 turn={turn}, page={page + 1}" if page < pages else "已读完"
+            return f"【第 {turn} 轮原始对话】\n{body}\n（第 {page}/{pages} 页，{more}）"
         words = [w.lower() for w in keywords.split() if w]
         if not words:
             raise ValueError("keywords 和 turn 至少填一个")
-        out, size, budget = [], 0, _page_chars()
+        out = []
         for t, who, text in reversed(numbered):  # 新的在前
-            lower = text.lower()
-            pos = min((p for w in words if (p := lower.find(w)) >= 0), default=-1)
-            if pos < 0:
-                continue
-            s, e = max(0, pos - SNIPPET_RADIUS), pos + SNIPPET_RADIUS
-            snippet = ("…" if s else "") + text[s:e] + ("…" if e < len(text) else "")
-            line = f"- 第 {t} 轮 {who}：{snippet}"
-            if size + len(line) > budget:
-                out.append("（更多结果因篇幅省略，请换更具体的关键词，或按轮次查看）")
-                break
-            out.append(line)
-            size += len(line)
-        return "\n".join(out) if out else f"本会话中没有找到包含“{keywords}”的对话。"
+            ranges = sorted((max(0,m.start()-SNIPPET_RADIUS),min(len(text),m.end()+SNIPPET_RADIUS))
+                            for w in words for m in re.finditer(re.escape(w),text,re.I))
+            merged = []
+            for s,e in ranges:
+                if merged and s <= merged[-1][1]:
+                    merged[-1] = (merged[-1][0],max(e,merged[-1][1]))
+                else:
+                    merged.append((s,e))
+            for s,e in merged:
+                snippet = ("…" if s else "")+text[s:e]+("…" if e<len(text) else "")
+                out.append(f"- 第 {t} 轮 {who}：{snippet}")
+        if not out:
+            if page != 1:
+                raise ValueError("没有搜索结果，页码超出范围")
+            return f"本会话中没有找到包含“{keywords}”的对话。"
+        body,pages = _page("\n".join(out),page,_page_chars())
+        tail = f"继续请用相同keywords、page={page+1}，也可按轮次读取全文" if page<pages else "已读完"
+        return f"【原始对话搜索】\n{body}\n（第 {page}/{pages} 页，{tail}）"
 
     @tool
     def read_tool_result(result_id: str, runtime: ToolRuntime[Context], page: int = 1) -> str:

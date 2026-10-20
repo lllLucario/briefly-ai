@@ -82,14 +82,12 @@ def turn_conflicts(messages) -> list[dict]:
 
 
 def missing_conflict_values(answer: str, conflicts: list[dict]) -> list[str]:
-    """回答里缺少的冲突说法。日期、金额等按数字比较（“10 月 20 日”与“10月20日”算同一个）。"""
-    flat = _squash(answer)
-    numbers = set(re.findall(r"\d+(?:\.\d+)?", answer))
+    """回答里缺少的冲突原值；纯日期容忍分隔符变化，不用散落数字代替事实。"""
+    from .conflicts import value_in
     missing = []
     for c in conflicts:
         for value in c.get("values", []):
-            digits = re.findall(r"\d+(?:\.\d+)?", value)
-            if _squash(value) in flat or (digits and all(d in numbers for d in digits)):
+            if value_in(answer,value):
                 continue
             missing.append(f"{c.get('subject', '')} 的{_ATTR.get(c.get('attribute'), '')}“{value}”")
     return missing
@@ -117,7 +115,8 @@ class InternalTermCheck(AgentMiddleware):
 
     - 含内部处理信息（块号等，Bug 1）；
     - 本轮工具结果里有看不出哪个为准的冲突，回答却只写了其中一种说法（Agent 改写工具结果时把矛盾“统一”了，Bug 4）。
-    也核对用户明确给出的字数上限；所有问题合并成最多一次重试。
+    也核对明确字数上限、完整提炼事实的事项对应关系及明确要求保留的章节编号。
+    事实检查仅覆盖工具已核实的重要字段，不是通用语义裁判；所有问题合并成最多一次重试。
 
     sources(request) 返回判断依据的原文（本轮用户输入、可访问材料的正文）。放在 ContextBuilder 外层：重试也经过预算检查。
     """
@@ -135,16 +134,19 @@ class InternalTermCheck(AgentMiddleware):
         conflicts = turn_conflicts(request.messages)
         terms = find_internal_terms(answer.text, self._sources(request))
         missing = missing_conflict_values(answer.text, conflicts)
+        fidelity = self._fidelity(answer.text,request)
         limit = self.length_limit(request)
         too_long = limit is not None and reply_chars(answer.text) > limit
-        if not terms and not missing and not too_long:
+        if not terms and not missing and not too_long and not fidelity:
             return response
-        log.warning("回答检查未通过（内部信息 %s，缺少的冲突说法 %s，超出字数上限 %s），重试一次", terms, missing, limit if too_long else None)
+        log.warning("回答检查未通过（内部信息 %s，缺少的冲突说法 %s，超出字数上限 %s，事实/编号问题 %s 项），重试一次", terms, missing, limit if too_long else None,len(fidelity))
         hints = []
         if terms:
             hints.append(RETRY_HINT.format(terms="、".join(terms)))
         if missing:
             hints.append(CONFLICT_HINT.format(missing="、".join(missing)))
+        if fidelity:
+            hints.append("【系统检查】用户本轮明确要求保留事实或原文章节编号，已核实的要点存在遗漏或关联变化："+"；".join(fidelity)+"。请按原始事项保留负责人、日期、状态、否定和编号；数字出现在其他事项下不能代替。若工具内容被截断，请用read_tool_result继续读取。只输出重写后的回答，不把检查说明写进正文。")
         if too_long:
             hints.append(f"上一条回复共 {reply_chars(answer.text)} 字，违反用户仍有效的整条回复最多 {limit} 字要求。请重新压缩，所有标题、正文、说明和注合计不得超过 {limit} 字（不计空白）。保留原文事实、数字、日期和确定程度；精简修改说明，不添加可选的注，不截断或删除关键事实。")
         hint = HumanMessage("\n".join(hints), additional_kwargs={"internal": True})
@@ -156,12 +158,23 @@ class InternalTermCheck(AgentMiddleware):
         left = find_internal_terms(second.text, self._sources(request))
         left_conflicts = missing_conflict_values(second.text, conflicts)
         left_length = limit is not None and reply_chars(second.text) > limit
-        if left or left_conflicts or left_length:
-            log.warning("重试后回答仍未通过检查（内部信息 %s，缺少的冲突说法 %s，超出字数上限 %s），需要人工排查", left, left_conflicts, limit if left_length else None)
+        left_fidelity = self._fidelity(second.text,request)
+        if left or left_conflicts or left_length or left_fidelity:
+            log.warning("重试后回答仍未通过检查（内部信息 %s，缺少的冲突说法 %s，超出字数上限 %s，事实/编号问题 %s 项），需要人工排查", left, left_conflicts, limit if left_length else None,len(left_fidelity))
             second.response_metadata = {**second.response_metadata, "internal_terms": left, "missing_conflicts": left_conflicts}
             if left_length:
                 second.response_metadata.update({"length_limit": limit, "actual_chars": reply_chars(second.text)})
+            if left_fidelity:
+                second.response_metadata["fidelity_issues"] = left_fidelity
         return retry
+
+    def _fidelity(self, text, request) -> list[str]:
+        from .fidelity import current_instruction, fact_problems, outline_problems
+
+        problems = fact_problems(text,request.messages)
+        if "编号" in current_instruction(request.messages):
+            problems += outline_problems(text,request.messages,self._sources(request))
+        return problems
 
     def _sources(self, request) -> list[str]:
         try:

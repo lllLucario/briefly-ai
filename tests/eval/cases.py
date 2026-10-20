@@ -239,6 +239,7 @@ class Case:
     checks: list[Check] = field(default_factory=list)  # 周报用例的检查
     requires: tuple[str, ...] = ()  # 需要的本地文件（相对仓库根目录），缺失时跳过
     todo_preview: bool = False  # 对话后从原始来源结构化提取可保存候选，checks 检查候选列表
+    diagnostic_facts: list[dict] = field(default_factory=list)  # 可选：逐块提取/合成/工具截断/最终回答的分阶段事实诊断
 
 
 def _report() -> str:  # 报告里的季度写作“第二季度”，模型常写成 Q2，所以数字检查额外允许 2
@@ -566,4 +567,47 @@ CASES += [
     Case("H3", "业务衔接", "信息不足：未知负责人和期限保持待定",
          turns=[Turn("请提取待办：需要整理周报素材；负责人和期限未提及。", skill="todo")], todo_preview=True,
          checks=[Check("缺失字段不补全", lambda items: len(items)==1 and items[0]["owner"]=="待定" and items[0]["due_date"] is None)]),
+]
+
+
+def scoped_fact(subject: str, *terms: str, alternatives: dict | None = None) -> Check:
+    from briefly.diagnostics import Fact, has_fact
+    fact = Fact(subject+":"+"/".join(terms),list(terms),subject=subject,alternatives=alternatives or {})
+    return Check(f"{subject}对应{'、'.join(terms)}",lambda out,*_:has_fact(out,fact))
+
+
+def original_outline() -> Check:
+    from briefly.fidelity import outline_problems
+    from langchain_core.messages import HumanMessage
+    source = (FIXTURES / "fidelity_facts.md").read_text(encoding="utf-8")
+    return Check("所有章节保留原编号且没有外层重编号",lambda out,*_:not outline_problems(
+        out,[HumanMessage("保留原文章节编号")],[source]))
+
+
+FIDELITY_FACTS = [
+    {"id":"账单负责人","subject":"账单核对","terms":["王敏"]},
+    {"id":"账单期限","subject":"账单核对","terms":["2026-10-23"]},
+    {"id":"账单状态","subject":"账单核对","terms":["未完成"]},
+    {"id":"回归负责人","subject":"接口回归","terms":["赵琳"]},
+    {"id":"回归期限","subject":"接口回归","terms":["2026-10-26"]},
+    {"id":"回归状态","subject":"接口回归","terms":["已完成"]},
+    {"id":"未上线","subject":"支付改造","terms":["未上线"]},
+    {"id":"灰度不等于上线","subject":"灰度验证","terms":["不代表正式上线"],
+     "alternatives":{"不代表正式上线":["不等同于正式上线","不等于正式上线","不意味着正式上线"]}},
+]
+FIDELITY_CHECKS = [scoped_fact(x["subject"],*x["terms"],alternatives=x.get("alternatives")) for x in FIDELITY_FACTS]
+
+CASES += [
+    Case("F1","事实保真","完整提炼到最终表格：负责人、日期、否定与状态逐项对应",
+         turns=[Turn("请先调用summarize_materials完整提炼所选材料，再完整逐项列成表格，保留所有事实。负责人、截止日期、状态必须对应事项，未上线与灰度限定不能遗漏。",
+                     materials=("fidelity_facts.md",),checks=FIDELITY_CHECKS)],diagnostic_facts=FIDELITY_FACTS),
+    Case("F2","事实保真","多轮精简仍保留两项任务的负责人及日期对应关系",
+         turns=[Turn("请逐项列出所选材料中的任务、负责人、日期及状态。",materials=("fidelity_facts.md",),checks=FIDELITY_CHECKS),
+                Turn("再简短一点，仍用表格并保留每个事项的负责人、期限、状态和未上线限定。",checks=FIDELITY_CHECKS)]),
+    Case("F3","事实保真","文本优化不把未完成和灰度改成已完成或正式上线",
+         turns=[Turn("优化为正式职场表达，保留原意：账单核对由王敏负责，仍未完成；支付改造尚未上线，灰度验证不代表正式上线。",skill="polish",
+                     checks=[scoped_fact("账单核对","王敏","未完成"),scoped_fact("支付改造","未上线"),scoped_fact("灰度验证","不代表正式上线",alternatives=FIDELITY_FACTS[-1]["alternatives"])])]),
+    Case("F4","事实保真","保留原文章节跳号，不把4重编成3",
+         turns=[Turn("请按原文章节逐项总结，保留原文章节编号与章节名称，不要把跳号补齐。",materials=("fidelity_facts.md",),
+                     checks=[has_all("1. 账单核对","2. 接口回归","4. 上线边界"),lacks("3. 上线边界"),original_outline()])]),
 ]
