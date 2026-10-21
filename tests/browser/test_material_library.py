@@ -74,10 +74,27 @@ def test_search_filters_reset_and_empty_states(web_page):
     page.locator("#lib-reset").click()
     expect(rows(page)).to_have_count(3)
 
-    # 点关联待办打开待办详情，不打开材料详情
+    # 点关联待办打开待办详情，不打开材料详情；关闭后回到材料库，条件不变
+    page.locator("#lib-q").fill("接口")
+    expect(rows(page)).to_have_count(2)
     page.locator(f'tr[data-id="{b}"] [data-lib-todo]').first.click()
     expect(page.locator("#todo-title")).to_have_text("接口联调")
     assert page.locator("#material-detail").is_hidden()
+    page.locator("#todo-back").click()  # 详情内转到父待办，仍记得来源
+    expect(page.locator("#todo-title")).to_have_text("支付改造")
+    page.locator("#todo-close").click()
+    expect(page.locator("#tab-materials")).to_be_visible()
+    expect(page.locator('.tabs [data-tab="materials"]')).to_have_attribute("aria-current", "page")
+    expect(page.locator("#lib-q")).to_have_value("接口")
+    expect(rows(page)).to_have_count(2)
+
+    # 在详情里转去别的页面时不跳回材料库
+    page.locator(f'tr[data-id="{b}"] [data-lib-todo]').first.click()
+    expect(page.locator("#todo-title")).to_have_text("接口联调")
+    page.locator("#todo-week").click()
+    expect(page.locator("#tab-weekly")).to_be_visible()
+    page.wait_for_timeout(300)
+    expect(page.locator("#tab-weekly")).to_be_visible()
 
 
 def test_pagination_and_deleting_last_item_on_last_page(web_page):

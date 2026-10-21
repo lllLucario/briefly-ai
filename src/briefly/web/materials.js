@@ -293,14 +293,20 @@ $("#lib-todo-dialog").addEventListener("close", () => {
   libTodoResolve = null;
 });
 
+// 从材料库打开待办：关闭详情后回到材料库（条件和页码不变）；在详情里转去其他页面时不再跳回
+async function openTodoFromLibrary(id) {
+  await activateTab("todos");
+  todos.returnTab = "materials";
+  return openTodo(id);
+}
+
 // ---------- 列表里的操作：打开待办 / 材料详情；子操作不触发打开材料
 $("#material-rows").addEventListener("click", async (e) => {
   if (e.target.closest("summary")) { e.stopPropagation(); return; }
   const todo = e.target.closest("[data-lib-todo]");
   if (todo) {
     e.stopPropagation();
-    await activateTab("todos");
-    return openTodo(Number(todo.dataset.libTodo));
+    return openTodoFromLibrary(Number(todo.dataset.libTodo));
   }
   if (e.target.closest("[data-lib-reset]")) { e.stopPropagation(); return resetLibrary(); }
   if (e.target.closest("[data-lib-retry]")) { e.stopPropagation(); return loadLibrary(); }

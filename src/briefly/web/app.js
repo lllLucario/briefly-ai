@@ -360,7 +360,7 @@ async function showMaterialDetail(id) {
       <div><b>正文预览</b><div class="content-box material-preview">${escapeHtml(m.content)}</div></div>
       <details class="meta" data-disclosure="material:${m.id}:outline" ${disclosureOpen(`material:${m.id}:outline`)}><summary>文档大纲（${m.sections.length} 个章节）</summary><div class="outline">${outline}</div></details>
       <details class="meta"><summary>解析报告</summary><pre class="content-box">${escapeHtml(JSON.stringify(report, null, 2))}</pre></details>`;
-    box.querySelectorAll("[data-lib-todo]").forEach((b) => b.onclick = async () => { await activateTab("todos"); openTodo(Number(b.dataset.libTodo)); });
+    box.querySelectorAll("[data-lib-todo]").forEach((b) => b.onclick = () => openTodoFromLibrary(Number(b.dataset.libTodo)));
     $("#close-detail").onclick = () => { state.activeMaterial = null; box.classList.add("hidden"); renderMaterialRows(); };
     $("#use-in-chat").onclick = () => {
       state.picked.add(id);

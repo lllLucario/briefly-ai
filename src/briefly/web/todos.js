@@ -372,7 +372,14 @@ $("#todo-panel").addEventListener("requestclose", (e) => { if (todos.editSaving)
 $("#todo-back").addEventListener("click", () => {
   if (todos.detail?.parent_id && !todos.editSaving) openTodo(todos.detail.parent_id);
 });
-$("#todo-panel").addEventListener("close", () => { if (statusMenu.matches(":popover-open")) statusMenu.hidePopover(); todos.detailOpen = false; todos.editMode = false; todos.detailView++; });
+$("#todo-panel").addEventListener("close", () => {
+  if (statusMenu.matches(":popover-open")) statusMenu.hidePopover();
+  todos.detailOpen = false; todos.editMode = false; todos.detailView++;
+  // 从其他页面打开的详情：关闭后回到原页面；已在详情里转去别的页面（如周报）时不跳回
+  const back = todos.returnTab;
+  todos.returnTab = null;
+  if (back && $("#tab-todos").classList.contains("active")) activateTab(back);
+});
 
 function renderTodo(t, timeline, reports) {
   const archived = Boolean(t.archived_at);
