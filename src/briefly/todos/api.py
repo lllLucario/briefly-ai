@@ -103,6 +103,7 @@ def register(app: FastAPI) -> None:
         s = svc()
         rows = s.list(include_archived=archived)
         counts = s.link_counts()
+        latest = s.latest_progress()
         kids: dict[int, list[Todo]] = {}
         for t in rows:
             if t.parent_id is not None and t.archived_at is None:
@@ -111,6 +112,7 @@ def register(app: FastAPI) -> None:
         for t in rows:
             mine = kids.get(t.id, [])
             out.append(todo_out(t, s, (sum(1 for k in mine if k.status == "done"), len(mine)), counts.get(t.id, 0)))
+            out[-1]["latest_progress"] = latest.get(t.id)
         return out
 
     @app.post("/todos", tags=[docs.TODOS], status_code=201, summary="新建待办（parent_id 指定父待办即为子待办）")
@@ -145,6 +147,12 @@ def register(app: FastAPI) -> None:
     @app.post("/todos/{todo_id}/restore", tags=[docs.TODOS], summary="恢复已归档的待办")
     def restore(todo_id: int):
         return detail(svc().restore(todo_id))
+
+    @app.delete("/todos/{todo_id}/permanent", tags=[docs.TODOS], summary="彻底删除待办及子待办；停止未被其他事项引用的文件追踪")
+    def delete_permanently(todo_id: int, confirm: bool = False):
+        if not confirm:
+            raise ConfirmationRequired("彻底删除后不可恢复，子待办也会删除。请明确确认。")
+        return svc().delete_permanently(todo_id)
 
     # ---- 材料
     @app.get("/todos/{todo_id}/materials", tags=[docs.TODOS], summary="关联的材料：直接关联 + 来自父待办的共享材料")

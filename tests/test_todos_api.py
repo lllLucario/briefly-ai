@@ -11,6 +11,19 @@ def client():
     return TestClient(create_app(MaterialStore(create_db_engine("sqlite://")), model_factory=lambda: fake()))
 
 
+def test_latest_progress_is_own_note_not_status_or_child_activity():
+    with client() as c:
+        parent = c.post("/todos", json={"title": "父任务"}).json()["id"]
+        child = c.post("/todos", json={"title": "子任务", "parent_id": parent}).json()["id"]
+        c.post(f"/todos/{child}/notes", json={"text": "初稿已写"})
+        c.post(f"/todos/{child}/notes", json={"text": "完成复核，等待确认"})
+        c.post(f"/todos/{child}/status", json={"status": "doing"})
+        rows = {t["id"]: t for t in c.get("/todos").json()}
+        assert rows[parent]["latest_progress"] is None
+        assert rows[child]["latest_progress"]["text"] == "完成复核，等待确认"
+        assert rows[child]["latest_progress"]["at"]
+
+
 def test_parent_children_and_status_flow():
     with client() as c:
         parent = c.post("/todos", json={"title": "支付改造", "due_date": "2026-11-30"}).json()

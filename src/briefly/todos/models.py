@@ -53,6 +53,14 @@ STATUS_SYNCED = "status_synced"  # 用户在周报 Checklist 里确认同步状�
 WORK_EVENTS = (CREATED, STATUS, COMPLETED, REOPENED, NOTE, STATUS_SYNCED)
 
 
+class TodoIdentity(Base):
+    """永久编号账本：彻底删除后不重用编号，历史周报和交接回执不会指向新任务。"""
+
+    __tablename__ = "todo_identities"
+    __table_args__ = {"sqlite_autoincrement": True}
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+
 class Todo(Base):
     __tablename__ = "todos"
     __table_args__ = (CheckConstraint("parent_id IS NULL OR parent_id <> id", name="todo_not_own_parent"),)

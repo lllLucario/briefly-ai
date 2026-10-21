@@ -1,15 +1,16 @@
 """待办：增删改查、状态、严格两级的父子结构、材料关联、活动记录与时间线。
 
 - 父子关系是工作结构，不是周次结构：父子各自有状态和截止日期，子待办完成不会自动完成父待办。
-- 删除即归档（软删除）：材料、关联、活动、周报关联都保留，可以恢复。
+- 普通删除为归档，可恢复；明确确认的彻底删除另走独立接口，保留原文件、材料和历史报告。
 - 材料只存一份（材料库）：待办里上传的文件走材料库的上传流程，按内容去重；解除关联不删除材料。
 - 活动只追加，按时间窗口查询，供周报准备使用；文件内容的版本和变化仍在文件追踪模块，这里只引用。
 """
 from dataclasses import dataclass
 from contextlib import nullcontext
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
-from sqlalchemy import Engine, func, or_, select, update
+from sqlalchemy import Engine, delete, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from ..materials import TRACKED, Material, MaterialNotFound, MaterialStore
@@ -34,6 +35,7 @@ from .models import (
     Todo,
     TodoActivity,
     TodoMaterial,
+    TodoIdentity,
 )
 
 MAX_NOTE = 500  # 进展说明是简短的文字，不是日报
@@ -88,6 +90,71 @@ class TodoService:
         self.store = store
         self._session = sessionmaker(engine, expire_on_commit=False)
 
+    # ---- 彻底删除（需接口层明确确认）
+    def delete_permanently(self, todo_id: int) -> dict:
+        """同一事务删除树和孤立追踪开关；保留原文件、材料、快照和历史周报文本。"""
+        from ..tracking.models import (
+            SCAN_LOCK, UNTRACKED, FileSnapshot, ScanLock,
+            TrackedFile, TrackingExclusion, TrackingSource, REMOVED,
+        )
+        from ..weekly.models import WeeklyReport, WorkEvidence
+        from .models import EvidenceTodoLink
+
+        with self._session() as s:
+            now = datetime.now()
+            s.execute(delete(ScanLock).where(ScanLock.name == SCAN_LOCK, ScanLock.expires_at < now))
+            s.add(ScanLock(name=SCAN_LOCK, owner="todo-delete", expires_at=now + timedelta(minutes=5)))
+            try:
+                s.flush()
+            except IntegrityError as exc:
+                raise ValueError("正在检查文件更新，请稍后重试删除。") from exc
+            todo = s.get(Todo, todo_id)
+            if todo is None:
+                raise TodoNotFound(f"待办 {todo_id} 不存在")
+            kids = list(s.scalars(select(Todo).where(Todo.parent_id == todo_id)))
+            ids = [todo_id, *(k.id for k in kids)]
+            if self.engine.dialect.name == "sqlite":
+                from sqlalchemy.dialects.sqlite import insert
+                maximum = s.scalar(select(func.max(Todo.id)))
+                s.execute(insert(TodoIdentity).values(id=maximum).on_conflict_do_nothing())
+            links = list(s.scalars(select(TodoMaterial).where(TodoMaterial.todo_id.in_(ids))))
+            stopped = []
+            for key in {link.track_key for link in links if link.track_key}:
+                file = s.scalar(select(TrackedFile).where(TrackedFile.path_key == key))
+                versions = set(s.scalars(select(FileSnapshot.material_id).where(FileSnapshot.file_id == file.id))) if file else set()
+                versions.discard(None)
+                versions.update(link.material_id for link in links if link.track_key == key)
+                other = s.scalar(select(TodoMaterial.id).where(
+                    TodoMaterial.todo_id.not_in(ids),
+                    or_(TodoMaterial.track_key == key, TodoMaterial.material_id.in_(versions)),
+                ).limit(1))
+                # 周报整份材料及来源引用也算其他用途；历史报告不因删除待办而失去依据。
+                reports = list(s.scalars(select(WeeklyReport)))
+                report_use = any(versions.intersection(r.material_ids or []) for r in reports)
+                if file and not report_use:
+                    report_use = any(any(ref.get("file_id") == file.id for ref in e.source_refs or []) for e in s.scalars(select(WorkEvidence)))
+                if other or report_use:
+                    continue
+                if s.get(TrackingExclusion, key) is None:
+                    s.add(TrackingExclusion(path_key=key))
+                if file:
+                    file.status, file.last_error = UNTRACKED, "关联待办已彻底删除，文件已停止追踪"
+                from ..tracking.scanner import path_key
+                for source in s.scalars(select(TrackingSource).where(TrackingSource.kind.in_(["file", "feishu"]))):
+                    if (source.path if source.kind == "feishu" else path_key(source.path)) == key:
+                        source.status = REMOVED
+                stopped.append(key)
+            # 显式删除子记录；历史报告正文及 inputs 中冻结的 todo_refs 不变。
+            s.execute(delete(EvidenceTodoLink).where(EvidenceTodoLink.todo_id.in_(ids)))
+            s.execute(delete(TodoMaterial).where(TodoMaterial.todo_id.in_(ids)))
+            s.execute(delete(TodoActivity).where(TodoActivity.todo_id.in_(ids)))
+            if kids:
+                s.execute(delete(Todo).where(Todo.id.in_([k.id for k in kids])))
+            s.execute(delete(Todo).where(Todo.id == todo_id))
+            s.execute(delete(ScanLock).where(ScanLock.name == SCAN_LOCK, ScanLock.owner == "todo-delete"))
+            s.commit()
+            return {"deleted_ids": ids, "stopped_tracking": stopped}
+
     # ---- 查询
     def get(self, todo_id: int) -> Todo:
         with self._session() as s:
@@ -141,6 +208,15 @@ class TodoService:
                 parent_id=parent_id,
                 completed_at=datetime.now() if status == DONE else None,
             )
+            if self.engine.dialect.name == "sqlite":
+                from sqlalchemy.dialects.sqlite import insert
+                maximum = s.scalar(select(func.max(Todo.id)))
+                if maximum:
+                    s.execute(insert(TodoIdentity).values(id=maximum).on_conflict_do_nothing())
+                identity = TodoIdentity()
+                s.add(identity)
+                s.flush()
+                todo.id = identity.id
             s.add(todo)
             s.flush()
             s.add(TodoActivity(todo_id=todo.id, event_type=CREATED, new_value=_values(todo)))
@@ -323,6 +399,17 @@ class TodoService:
             query = query.where(TodoActivity.created_at <= end)
         with self._session() as s:
             return list(s.scalars(query))
+
+    def latest_progress(self) -> dict[int, dict]:
+        """列表只读概览：每项自身最新的进展，不把状态/文件变化算作进展。"""
+        ranked = select(
+            TodoActivity.todo_id, TodoActivity.note, TodoActivity.created_at,
+            func.row_number().over(partition_by=TodoActivity.todo_id,
+                order_by=(TodoActivity.created_at.desc(), TodoActivity.id.desc())).label("position"),
+        ).where(TodoActivity.event_type == NOTE).subquery()
+        with self._session() as s:
+            return {row.todo_id: {"text": row.note, "at": row.created_at}
+                    for row in s.execute(select(ranked).where(ranked.c.position == 1))}
 
     # ---- 材料
     def link(self, todo_id: int, material_id: int, *, session=None) -> tuple[TodoMaterial, bool]:

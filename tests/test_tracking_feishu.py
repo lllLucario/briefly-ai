@@ -75,6 +75,26 @@ def test_add_link_creates_baseline(env):
     assert not svc.changes()  # Baseline 不算本周期的变化
 
 
+def test_deleted_todo_stops_feishu_until_explicit_readd(env):
+    from briefly.todos.service import TodoService
+
+    svc, doc, _ = env
+    svc.add_paths([URL])
+    file = only_file(svc)
+    todos = TodoService(svc.engine, svc.store)
+    task = todos.create("飞书任务")
+    todos.link(task.id, svc.snapshots(file.id)[0].material_id)
+    todos.delete_permanently(task.id)
+    reads = doc.block_reads
+    doc.revision += 1
+    doc.paragraphs = ["已停止追踪后的修改"]
+    svc.scan()
+    assert doc.block_reads == reads and only_file(svc).status == UNTRACKED
+    assert DOC not in svc.feishu_tracking()
+    svc.add_paths([URL])
+    assert doc.block_reads > reads and only_file(svc).status == PRESENT
+
+
 def test_unchanged_revision_is_not_read_again(env):
     svc, doc, _ = env
     svc.add_paths([URL])

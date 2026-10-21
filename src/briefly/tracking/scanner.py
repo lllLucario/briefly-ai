@@ -58,6 +58,7 @@ from .models import (
     ScanRun,
     TrackedFile,
     TrackingSource,
+    TrackingExclusion,
 )
 
 log = logging.getLogger(__name__)
@@ -388,6 +389,7 @@ class Scanner:
         with self._session() as s:
             sources = list(s.scalars(select(TrackingSource)))
             files = list(s.scalars(select(TrackedFile)))
+            excluded = set(s.scalars(select(TrackingExclusion.path_key)))
             attach_members(s, sources)
         active = [x for x in sources if x.status == ACTIVE]
         paused = [x for x in sources if x.status == PAUSED]
@@ -414,6 +416,8 @@ class Scanner:
         # 1. 原有文件中这次没列出来的：判断是不在了、无法访问、还是已不在追踪范围
         vanished: list[TrackedFile] = []
         for f in files:
+            if f.path_key in excluded:
+                continue
             if f.path_key in listing.files:
                 continue
             covering = [x for x in active + feishu_sources if covers(x, f.path_key)]
@@ -441,6 +445,8 @@ class Scanner:
         processed = 0
         last_renew = time.monotonic()
         for key, path in listing.files.items():
+            if key in excluded:
+                continue
             if interrupt_after is not None and processed >= interrupt_after:
                 raise KeyboardInterrupt
             stats["files"] += 1
@@ -475,7 +481,7 @@ class Scanner:
                 if x.kind == FEISHU_FOLDER:
                     for key in sorted(x.members):
                         targets.setdefault(key, _FeishuTarget(key, x, via_folder=True))
-            self._scan_feishu(list(targets.values()), by_key, run, trigger, baseline_sources, stats, feishu_client)
+            self._scan_feishu([t for key, t in targets.items() if key not in excluded], by_key, run, trigger, baseline_sources, stats, feishu_client)
 
         # 4. 确实不在了的文件（没有被认作移动）记 DELETED
         for f in vanished:

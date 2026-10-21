@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import Engine, func, select, update
+from sqlalchemy import Engine, delete, func, select, update
 from sqlalchemy.orm import sessionmaker
 
 from .. import config
@@ -29,6 +29,7 @@ from .models import (
     ScanRun,
     TrackedFile,
     TrackingSource,
+    TrackingExclusion,
     latest_versions,
 )
 from .scanner import (
@@ -130,6 +131,10 @@ class TrackingService:
                     result.messages.append(f"{raw}：{e}，未添加")
                     continue
                 same = next((x for x in existing if x.kind == kind and x.path == key), None)
+                if kind == FEISHU:
+                    with self._session() as s:
+                        s.execute(delete(TrackingExclusion).where(TrackingExclusion.path_key == key))
+                        s.commit()
                 if same and same.status != REMOVED:
                     result.messages.append(f"{raw}：已在追踪（追踪源 {same.id}）")
                     continue
@@ -162,6 +167,10 @@ class TrackingService:
                 result.messages.append(f"{raw}：不是普通文件或文件夹，未添加")
                 continue
             same = next((x for x in existing if x.kind == kind and x.kind != FEISHU and path_key(x.path) == key), None)
+            if kind == "file":
+                with self._session() as s:
+                    s.execute(delete(TrackingExclusion).where(TrackingExclusion.path_key == key))
+                    s.commit()
             if same and same.status != REMOVED:
                 result.messages.append(f"{raw}：已在追踪（追踪源 {same.id}）")
                 continue
@@ -251,6 +260,7 @@ class TrackingService:
                 s.scalars(select(TrackingSource).where(TrackingSource.kind.in_([FEISHU, FEISHU_FOLDER]), TrackingSource.status != REMOVED))
             )
             folders = {x.source_id: x.name for x in s.scalars(select(FeishuFolder))}
+            excluded = set(s.scalars(select(TrackingExclusion.path_key)))
             members = s.execute(
                 select(FeishuFolderMember.source_id, FeishuFolderMember.file_key).where(
                     FeishuFolderMember.source_id.in_([x.id for x in sources if x.kind == FEISHU_FOLDER])
@@ -258,10 +268,12 @@ class TrackingService:
             ).all()
         by_id = {x.id: x for x in sources}
         for sid, key in members:
+            if key in excluded:
+                continue
             x = by_id[sid]
             out[key.rsplit("/", 1)[-1]] = {"source_id": x.id, "status": x.status, "folder": folders.get(sid) or "飞书文件夹"}
         for x in sources:
-            if x.kind == FEISHU:
+            if x.kind == FEISHU and x.path not in excluded:
                 out[x.path.rsplit("/", 1)[-1]] = {"source_id": x.id, "status": x.status, "folder": None}
         return out
 

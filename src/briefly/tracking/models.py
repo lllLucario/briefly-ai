@@ -87,6 +87,14 @@ class TrackingSource(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
+class TrackingExclusion(Base):
+    """逐文件停止追踪，避免文件夹扫描再次纳入；历史快照保留。"""
+
+    __tablename__ = "tracking_exclusions"
+    path_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
 class TrackedFile(Base):
     __tablename__ = "tracked_files"
 
