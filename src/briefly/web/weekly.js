@@ -258,11 +258,11 @@ function evidenceHtml(e) {
   const basis = e.attribution_basis.length && !["manual", "todo"].includes(e.origin) ? "（" + escapeHtml(e.attribution_basis[0]) + "）" : "";
   const source = files ? escapeHtml(files) + " " + versions : e.origin === "todo" ? "你的待办记录" : "你补充的";
   return `<div class="ev ${cls}" data-ev="${e.id}">
-    <div class="ev-head"><input type="checkbox" data-pick="${e.id}" ${weekly.selected.has(e.id) ? "checked" : ""}>
+    <div class="ev-head"><input type="checkbox" aria-label="选择记录：${escapeHtml(e.title)}" data-pick="${e.id}" ${weekly.selected.has(e.id) ? "checked" : ""}>
       <b>${escapeHtml(e.title)}${e.user_edited && !["manual", "todo"].includes(e.origin) ? ' <span class="badge">你改过</span>' : ""}${e.has_update ? ' <span class="badge warn">有新变化，见新的待确认项</span>' : ""}</b>
-      </div>
+      <span class="review-state">${EV_STATUS[e.review_status] || "待核对"}</span></div>
     ${e.description.length > 220 ? `<details class="record-description" data-disclosure="week:${weekly.current.id}:description:${e.id}" ${disclosureOpen(`week:${weekly.current.id}:description:${e.id}`)}><summary>展开完整描述（${e.description.length} 字）</summary><p>${escapeHtml(e.description)}</p></details>` : `<div class="record-description">${escapeHtml(e.description)}</div>`}
-    <div class="ev-meta">来源：${source}</div><div class="ev-flags">${flags}${!["manual", "todo"].includes(e.origin) && !["ATTRIBUTED", "USER_CONFIRMED"].includes(e.attribution) ? `<span class="badge warn">归属待确认：${escapeHtml(attr)}</span>` : ""}</div>
+    <div class="ev-meta">${uiIcon("folder")}<span>来源：${source}</span></div><div class="ev-flags">${flags}${!["manual", "todo"].includes(e.origin) && !["ATTRIBUTED", "USER_CONFIRMED"].includes(e.attribution) ? `<span class="badge warn">归属待确认：${escapeHtml(attr)}</span>` : ""}</div>
     <details class="meta" data-detail="${e.id}" ${weekly.expanded.has(e.id) ? "open" : ""}><summary>查看来源与调整周报中的状态表述</summary>
     <p class="muted small">周报分类：${EV_CATEGORY[e.category] || e.category}。这里的表述只影响本周报；点击同步并确认后才修改待办当前状态。</p>
     ${evidenceEvents(e)}归属：${attr}${basis}${evidenceTodos(e)}</details>
@@ -278,20 +278,19 @@ function evidenceHtml(e) {
 function renderChecklist() {
   const r = weekly.current;
   const items = r.checklist_items;
-  $("#week-counts").textContent = items.length ? `待确认 ${r.counts.PENDING} · 已确认 ${r.counts.CONFIRMED} · 已排除 ${r.counts.REJECTED}` : "";
+  $("#week-counts").innerHTML = items.length ? `<span class="review-tally pending">待确认 ${r.counts.PENDING}</span><span class="review-tally confirmed">已确认 ${r.counts.CONFIRMED}</span><span class="review-tally rejected">已排除 ${r.counts.REJECTED}</span>` : "";
   $("#week-prepare").classList.toggle("hidden", !r.prepared_at);
   const box = $("#week-checklist");
   if (!r.prepared_at && !items.length) {
-    box.innerHTML = `<p class="muted">还没有整理。点右下角“整理本周工作”：检查追踪的文件有没有更新，把这一周的文件变化和待办进展整理成清单交给你确认（文件变化会调用模型）。
-      ${isThisWeek(r) && weekly.settings?.schedule?.enabled ? "到了设定的时间也会自动整理。" : ""}</p>`;
+    box.innerHTML = `<div class="weekly-empty"><span class="weekly-empty-icon">${uiIcon("report")}</span><h5>先整理，再核对</h5><p>汇集本周的待办进展与文件变化，逐条确认后再生成周报。</p><small>点击下方“整理本周工作”开始；文件变化会调用模型。${isThisWeek(r) && weekly.settings?.schedule?.enabled ? "设定时间也会自动整理，仍需你核对。" : ""}</small></div>`;
     return;
   }
   const groups = ["PENDING", "CONFIRMED", "REJECTED"].map((s) => [s, items.filter((e) => e.review_status === s)]);
-  box.innerHTML = `${items.length ? `<div class="prep-actions">
+  box.innerHTML = `${items.length ? `<div class="prep-actions" role="group" aria-label="批量核对所选记录">
       <span class="muted small">已选 ${weekly.selected.size} 条（含收起组中的选择）</span><button class="ghost" id="bulk-confirm">确认所选</button><button class="ghost" id="bulk-exclude">排除所选</button>
       <button class="ghost" id="bulk-merge">合并所选</button></div>` : `<p class="muted">这一周没有发现文件变化，待办也没有进展。</p>`}
-    ${groups.filter(([, xs]) => xs.length).map(([s, xs]) => `<details class="ev-group" data-review-group="${s}" data-disclosure="week:${r.id || r.period_start}:group:${s}" ${disclosureOpen(`week:${r.id || r.period_start}:group:${s}`, s === "PENDING")}><summary>${EV_STATUS[s]}（${xs.length}）</summary>${xs.map(evidenceHtml).join("")}</details>`).join("")}
-    <button class="ghost" id="add-evidence">＋ 补充工作记录（逐条核对）</button>`;
+    ${groups.filter(([, xs]) => xs.length).map(([s, xs]) => `<details class="ev-group" data-review-group="${s}" data-disclosure="week:${r.id || r.period_start}:group:${s}" ${disclosureOpen(`week:${r.id || r.period_start}:group:${s}`, s === "PENDING")}><summary>${uiIcon(s === "PENDING" ? "alert" : s === "CONFIRMED" ? "tick" : "minus")}<span>${EV_STATUS[s]}</span><b class="review-group-count">${xs.length}</b></summary>${xs.map(evidenceHtml).join("")}</details>`).join("")}
+    <button class="ghost" id="add-evidence">${uiIcon("plus")}补充工作记录（逐条核对）</button>`;
 }
 
 async function reviewAction(action, ids, note = "") {

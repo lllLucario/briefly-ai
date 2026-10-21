@@ -261,34 +261,35 @@
       <div id="week-msg" class="notice hidden"></div>
       <div id="week-notes"></div>
       <ol class="week-steps" aria-label="正式周报流程"><li><span class="step-dot" aria-hidden="true"></span><b>收集素材</b><small>汇集本周工作</small></li><li><span class="step-dot" aria-hidden="true"></span><b>核对清单</b><small>确认纳入内容</small></li><li><span class="step-dot" aria-hidden="true"></span><b>生成周报</b><small>查看与交付</small></li></ol>
-      <p id="week-stage" class="notice"></p>
+      <div class="week-stage-card"><span class="week-stage-icon"><svg class="icon" aria-hidden="true"><use href="#i-report"/></svg></span><div><small>当前步骤</small><p id="week-stage" class="notice"></p></div></div>
 
       <details class="week-section" id="week-inputs" open>
         <summary>收集信息与核对清单</summary>
       <section class="week-section">
         <div class="section-head">
-          <h4>核对纳入内容 <span id="week-counts" class="muted small"></span></h4>
+          <div class="week-section-title"><span class="week-section-icon"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span><h4>核对纳入内容</h4></div><div id="week-counts" class="week-counts" aria-label="核对进度"></div>
           <button id="week-prepare" class="ghost small" title="检查文件更新，把这一周新的文件变化和待办进展整理进清单"><svg class="icon action-icon" aria-hidden="true"><use href="#i-refresh"/></svg>检查更新并整理</button>
         </div>
         <div id="week-checklist"></div>
         <p class="muted small">文件变化、待办进展和补充工作记录在这里逐条核对；下方整份材料与说明会在生成时参与提取，不会自动变成已核对条目。</p>
       </section>
 
-      <section class="week-section">
-        <div class="section-head"><h4>本周材料 <span class="muted small">（可选，整份作为来源，生成后核对正文）</span></h4>
-          <button id="week-pick" class="primary material-cta">加入材料</button></div>
+      <div class="weekly-sources-grid"><section class="week-section weekly-source-card">
+        <div class="section-head"><div class="week-section-title"><span class="week-section-icon"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg></span><h4>本周材料</h4></div>
+          <button id="week-pick" class="ghost material-cta"><svg class="icon action-icon" aria-hidden="true"><use href="#i-plus"/></svg>加入材料</button></div>
         <div id="week-materials"></div>
       </section>
 
-      <section class="week-section">
-        <div class="section-head"><h4>本周说明 <span class="muted small">（汇报重点与补充信息；逐条核对的工作请用“补充工作记录”）</span></h4><span id="week-note-state" class="muted small"></span></div>
+      <section class="week-section weekly-source-card">
+        <div class="section-head"><div class="week-section-title"><span class="week-section-icon"><svg class="icon" aria-hidden="true"><use href="#i-pen"/></svg></span><h4>本周说明</h4></div><span id="week-note-state" class="muted small"></span></div>
         <textarea id="week-note" rows="3" placeholder="这周的重点、材料里没有的工作，如：主要做支付改造，另外和李经理对了上线时间"></textarea>
-      </section>
+        <p class="week-field-hint">汇报重点与补充说明会参与生成；需逐条核对的事实请用“补充工作记录”。</p>
+      </section></div>
       </details>
 
       <section class="week-section hidden" id="week-report-box">
         <div class="section-head">
-          <h4>周报正文</h4>
+          <div class="week-section-title"><span class="week-section-icon"><svg class="icon" aria-hidden="true"><use href="#i-report"/></svg></span><h4>周报正文</h4></div>
           <div class="row gap wrap" id="weekly-actions">
             <label class="toggle"><input type="checkbox" id="show-tags" checked> 显示出处</label>
             <button id="edit-weekly" class="ghost small">修改</button>

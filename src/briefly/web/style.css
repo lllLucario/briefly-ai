@@ -958,3 +958,98 @@ button.note-toggle { width: 100%; min-height: 62px; display: flex; align-items: 
   .ticket-children-content { padding: 13px; }
   .child-summary { font-size: 10px; }
 }
+/* 周报：与待办共用图标、柔和底板及清晰操作层级。 */
+#week-panel > .chat-head { align-items: flex-start; padding-bottom: 18px; }
+#week-title { font-size: 19px; white-space: normal; }
+#week-panel > .chat-head > .row { justify-content: flex-end; }
+.week-stage-card { display: flex; align-items: center; gap: 13px; padding: 17px 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--accent-soft); margin-bottom: 22px; }
+.week-stage-icon { display: grid; place-items: center; flex: none; width: 42px; height: 42px; border-radius: 12px; background: var(--panel); color: var(--accent); }
+.week-stage-card small { color: var(--accent); font-size: 11px; }
+.week-stage-card #week-stage { margin: 2px 0 0; padding: 0; background: none; color: var(--text); font-size: 14px; line-height: 1.7; }
+#week-inputs { margin: 0; padding: 0; border: 0; }
+#week-inputs > summary { cursor: pointer; padding: 8px 2px 16px; color: var(--accent); font-weight: 600; font-size: 13px; }
+#week-inputs > .week-section { border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin-top: 0; }
+.week-section-title { display: inline-flex; align-items: center; gap: 9px; }
+.week-section-icon { width: 30px; height: 30px; display: grid; place-items: center; flex: none; background: var(--accent-soft); color: var(--accent); border-radius: 9px; }
+.week-section-icon .icon { width: 17px; height: 17px; }
+#week-panel .week-section-title h4 { font-size: 15px; }
+#week-inputs .section-head { flex-wrap: wrap; gap: 10px; }
+.week-counts { display: flex; flex-wrap: wrap; gap: 6px; }
+.review-tally { display: inline-flex; align-items: center; min-height: 28px; padding: 3px 9px; border-radius: 7px; font-size: 11px; background: var(--bg); color: var(--muted); white-space: nowrap; }
+.review-tally.pending { background: var(--state-warning-bg); color: var(--state-warning); }
+.review-tally.confirmed { background: var(--state-success-bg); color: var(--state-success); }
+.weekly-empty { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 30px 16px; border: 1px dashed var(--line); border-radius: 12px; background: var(--bg); }
+.weekly-empty-icon { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 15px; background: var(--panel); color: var(--accent); }
+.weekly-empty-icon .action-icon { margin: 0; width: 27px; height: 27px; }
+.weekly-empty h5 { margin: 16px 0 8px; font-size: 17px; color: var(--text); }
+.weekly-empty p { margin: 0 0 9px; max-width: 450px; font-size: 13px; color: var(--muted); }
+.weekly-empty small { max-width: 450px; font-size: 11px; color: var(--muted); line-height: 1.8; }
+#week-checklist .prep-actions { padding: 10px; border-radius: 10px; background: var(--bg); margin: 16px 0; }
+#week-checklist .prep-actions > span { margin-right: auto; }
+#week-checklist .prep-actions button { min-height: 32px; font-size: 12px; padding: 5px 10px; }
+#week-checklist .ev-group { border-top: 0; margin: 12px 0; }
+#week-checklist .ev-group > summary { display: flex; align-items: center; gap: 7px; padding: 11px 4px; font-size: 13px; list-style: none; }
+#week-checklist .ev-group > summary::-webkit-details-marker { display: none; }
+#week-checklist .ev-group > summary::after { content: '›'; margin-left: auto; font-size: 20px; transform: rotate(0deg); }
+#week-checklist .ev-group[open] > summary::after { transform: rotate(90deg); }
+.review-group-count { display: grid; place-items: center; min-width: 23px; height: 23px; padding: 0 6px; border-radius: 7px; background: var(--bg); font-size: 11px; }
+#week-checklist .ev { border: 1px solid var(--line); border-left: 3px solid var(--state-warning); border-radius: 12px; padding: 16px; margin: 0 0 12px; background: var(--panel); }
+#week-checklist .ev.confirmed { border-left-color: var(--state-success); background: var(--state-success-bg); }
+#week-checklist .ev.rejected { border-left-color: var(--muted); background: var(--bg); opacity: 1; }
+#week-checklist .ev-head { align-items: flex-start; gap: 9px; margin-bottom: 10px; }
+#week-checklist .ev-head > b { font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }
+#week-checklist .ev-head input[type="checkbox"] { width: 16px; height: 16px; margin: 4px 0 0; flex: none; accent-color: var(--accent); }
+.review-state { flex: none; color: var(--state-warning); background: var(--state-warning-bg); font-size: 10px; padding: 3px 7px; border-radius: 6px; }
+.confirmed .review-state { background: var(--panel); color: var(--state-success); }
+.rejected .review-state { background: var(--panel); color: var(--muted); }
+#week-checklist .record-description { font-size: 13px; line-height: 1.85; }
+#week-checklist .ev-meta { display: flex; align-items: flex-start; gap: 5px; margin: 11px 0; font-size: 11px; overflow-wrap: anywhere; }
+#week-checklist .ev-meta .action-icon { width: 14px; height: 14px; margin: 2px 0 0; }
+#week-checklist .ev .meta { margin-top: 10px; font-size: 11px; }
+#week-checklist .ev-actions { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 12px; gap: 7px; }
+#week-checklist .ev-actions button { min-height: 32px; padding: 5px 10px; font-size: 12px; border-radius: 7px; }
+#week-checklist button.decision-include { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+#week-checklist button.decision-include:hover:not(:disabled) { box-shadow: 0 2px 8px #193d2220; }
+#week-checklist .record-more summary { min-height: 32px; padding: 5px 8px; }
+#add-evidence { display: inline-flex; align-items: center; min-height: 38px; padding: 8px 12px; border-style: dashed; color: var(--accent); margin-top: 6px; }
+.weekly-sources-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin: 18px 0 24px; }
+#week-panel .weekly-source-card { min-width: 0; margin: 0; padding: 17px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg); }
+#week-panel .weekly-source-card .section-head { align-items: center; }
+#week-pick { min-height: 34px; padding: 5px 10px; font-size: 12px; background: var(--panel); box-shadow: none; }
+#week-note { background: var(--panel); min-height: 120px; padding: 12px; line-height: 1.8; }
+.week-field-hint { font-size: 11px; line-height: 1.8; color: var(--muted); margin-bottom: 0; }
+#week-materials .todo-row { background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 9px; margin-bottom: 8px; }
+#week-report-box { padding: 20px; margin: 0 0 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg); }
+#week-report-box > .section-head { align-items: flex-start; flex-direction: column; gap: 16px; }
+#weekly-actions { gap: 7px; }
+#weekly-actions button, #weekly-actions .button { display: inline-flex; align-items: center; gap: 5px; min-height: 34px; padding: 5px 10px; font-size: 12px; background: var(--panel); }
+#weekly-preview { max-width: none; margin: 18px 0 0; padding: 26px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; font-size: 14px; line-height: 1.9; overflow-wrap: anywhere; }
+#week-panel .week-foot { z-index: 2; padding: 16px 0; box-shadow: 0 -8px 16px var(--panel); }
+#week-hint { margin-right: auto; font-size: 12px; }
+#week-panel #week-go { min-height: 42px; border-radius: 9px; font-size: 14px; padding: 8px 18px; }
+@media (max-width: 1100px) { .weekly-sources-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 760px) {
+  #week-title { font-size: 17px; }
+  #week-panel > .chat-head > .row { justify-content: flex-start; }
+  .week-stage-card { padding: 13px; gap: 10px; margin-bottom: 16px; }
+  .week-stage-icon { width: 34px; height: 34px; border-radius: 10px; }
+  .week-stage-card #week-stage { font-size: 12px; }
+  #week-inputs > .week-section { padding: 13px; }
+  .week-counts { width: 100%; }
+  #week-checklist .ev { padding: 12px; }
+  #week-checklist .ev-head { flex-wrap: wrap; }
+  .review-state { margin-left: 25px; }
+  .weekly-empty { padding: 24px 12px; }
+  #week-report-box { padding: 13px; }
+  #weekly-preview { padding: 16px; font-size: 13px; }
+  #week-panel .week-foot { align-items: center; gap: 10px; }
+  #week-hint { width: 100%; }
+  #week-panel #week-go { margin-left: auto; }
+}
+
+/* 固定各区域自然高度，避免窄屏长内容将页头压缩到流程节点之下。 */
+#week-panel > :not(.week-foot) { flex-shrink: 0; }
+#week-panel .week-steps { margin: 4px 0 14px; padding: 6px 0; }
+.week-stage-card { padding-top: 14px; padding-bottom: 14px; margin-bottom: 16px; }
+#weekly-actions a.button { color: var(--text); text-decoration: none; }
+#week-panel { padding-bottom: 0; scroll-padding-bottom: 110px; }
