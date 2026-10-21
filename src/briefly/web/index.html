@@ -18,6 +18,8 @@
     <symbol id="i-pen" viewBox="0 0 24 24"><path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-4-4L5 15Z"/></symbol>
     <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-filter" viewBox="0 0 24 24"><path d="M3 4h18l-7 8v7l-4 2v-9Z"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="m12 5-7 7 7 7M5 12h15"/></symbol>
     <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V3m-5 5 5-5 5 5M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></symbol>
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M6.1 6a8 8 0 0 1 13.3 3M4.6 15a8 8 0 0 0 13.3 3"/></symbol>
@@ -125,7 +127,7 @@
       <div class="todo-board-head">
         <div><h2>我的待办</h2><p id="todo-count" class="muted small">把工作放在眼前，一件一件向前推进。</p></div>
         <div class="row gap wrap">
-          <select id="todo-filter" title="显示哪些待办"><option value="open">未完成</option><option value="all">全部</option><option value="archived">已归档</option></select>
+          <label class="todo-filter-control"><svg class="icon" aria-hidden="true"><use href="#i-filter"/></svg><select id="todo-filter" aria-label="筛选待办" title="筛选待办"><option value="open">未完成</option><option value="all">全部</option><option value="archived">已归档</option></select></label>
           <button id="new-todo" class="primary"><svg class="icon action-icon" aria-hidden="true"><use href="#i-plus"/></svg>新建待办</button>
         </div>
       </div>
@@ -136,7 +138,7 @@
     </section>
     </section>
     <dialog class="panel todo-modal" id="todo-panel" aria-labelledby="todo-title">
-      <div class="todo-modal-nav"><span>任务详情</span><button id="todo-close" class="ghost icon-close" aria-label="关闭任务详情"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+      <div class="todo-modal-nav"><button type="button" id="todo-back" class="ghost hidden" aria-label="返回父待办"><svg class="icon action-icon" aria-hidden="true"><use href="#i-back"/></svg>返回父待办</button><button id="todo-close" class="ghost icon-close" aria-label="关闭任务详情"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
       <div id="todo-loading" class="notice hidden" role="status"></div>
       <div id="todo-detail-body">
       <div class="chat-head">
@@ -144,6 +146,8 @@
         <div class="row gap wrap">
           <button type="button" id="todo-status" class="detail-status" aria-haspopup="menu" aria-expanded="false"></button>
           <button id="todo-edit" class="ghost"><svg class="icon action-icon" aria-hidden="true"><use href="#i-pen"/></svg>编辑</button>
+          <button id="todo-edit-cancel" type="button" class="ghost hidden">取消</button>
+          <button id="todo-edit-save" type="submit" form="todo-edit-form" class="primary hidden"><svg class="icon action-icon" aria-hidden="true"><use href="#i-tick"/></svg>保存</button>
           <button id="todo-promote" class="ghost hidden" title="解除父子关系，变成独立待办；编号、材料、活动和历史周报都保留">转为独立待办</button>
           <button id="todo-archive" class="ghost danger">归档</button>
           <button id="todo-restore" class="ghost hidden">恢复</button>
@@ -151,6 +155,12 @@
       </div>
       <div id="todo-msg" class="notice hidden"></div>
       <div id="todo-info" class="todo-info"></div>
+      <form id="todo-edit-form" class="stack hidden" aria-label="编辑任务详情">
+        <label class="stack">标题<input id="todo-edit-title" name="title" maxlength="200" required></label>
+        <label class="stack">说明<textarea id="todo-edit-description" name="description" rows="4"></textarea></label>
+        <label class="stack">截止日期<input id="todo-edit-due" name="due" type="date"></label>
+        <small class="muted">截止日期可清空；创建与完成时间由系统记录。</small>
+      </form>
 
       <div class="todo-section">
         <div class="section-head"><h4>记录进展</h4><button id="todo-week" class="ghost small"><svg class="icon action-icon" aria-hidden="true"><use href="#i-report"/></svg>到本周周报核对</button></div>

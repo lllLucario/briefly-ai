@@ -3,7 +3,7 @@
 // 以及 weekly.js 里的 gotoWeek。
 "use strict";
 
-const todos = { list: [], id: null, filter: "open", detail: null, detailOpen: false, detailView: 0, expanded: new Set(), inlineBusy: false, inlineDrafts: new Map(), noteDrafts: new Map(), timeline: [], timelineLimit: 5, inlineNotices: new Map() };
+const todos = { list: [], id: null, filter: "open", detail: null, detailOpen: false, detailView: 0, editMode: false, editSaving: false, editDrafts: new Map(), expanded: new Set(), inlineBusy: false, inlineDrafts: new Map(), noteDrafts: new Map(), timeline: [], timelineLimit: 5, inlineNotices: new Map() };
 const TODO_STATUS = { todo: "未开始", doing: "进行中", done: "已完成" };
 const TRACK_STATUS = {
   present: ["追踪中", "ok"],
@@ -299,6 +299,7 @@ $("#new-todo").addEventListener("click", async () => {
 // ---------- 详情
 async function openTodo(id, scroll = true) {
   const view = ++todos.detailView;
+  if (todos.id !== id || scroll) todos.editMode = false;
   if (todos.id !== id) todos.timelineLimit = 5;
   todos.id = id;
   todos.detailOpen = true;
@@ -322,8 +323,13 @@ async function openTodo(id, scroll = true) {
   finally { if (todos.detailView === view) $("#todo-panel").removeAttribute("aria-busy"); }
 }
 
-$("#todo-close").addEventListener("click", () => $("#todo-panel").close());
-$("#todo-panel").addEventListener("close", () => { if (statusMenu.matches(":popover-open")) statusMenu.hidePopover(); todos.detailOpen = false; todos.detailView++; });
+$("#todo-close").addEventListener("click", () => { if (!todos.editSaving) $("#todo-panel").close(); });
+$("#todo-panel").addEventListener("cancel", (e) => { if (todos.editSaving) e.preventDefault(); });
+$("#todo-panel").addEventListener("requestclose", (e) => { if (todos.editSaving) e.preventDefault(); });
+$("#todo-back").addEventListener("click", () => {
+  if (todos.detail?.parent_id && !todos.editSaving) openTodo(todos.detail.parent_id);
+});
+$("#todo-panel").addEventListener("close", () => { if (statusMenu.matches(":popover-open")) statusMenu.hidePopover(); todos.detailOpen = false; todos.editMode = false; todos.detailView++; });
 
 function renderTodo(t, timeline, reports) {
   const archived = Boolean(t.archived_at);
@@ -343,10 +349,13 @@ function renderTodo(t, timeline, reports) {
   const rows = [
     ["说明", t.description ? escapeHtml(t.description) : `<span class="muted">无</span>`],
     ...(t.parent ? [["父待办", `<a data-open-todo="${t.parent.id}">${escapeHtml(t.parent.title)}</a>（${TODO_STATUS[t.parent.status]}）`]] : []),
-    ["截止日期", t.due_date ? shortDay(t.due_date) + `（${t.due_date}）` : `<span class="muted">未设置</span>`],
+    ["截止日期", t.due_date ? `<input type="date" class="readonly-date" aria-label="截止日期（只读）" value="${escapeHtml(t.due_date)}" disabled>` : `<span class="muted">未设置</span>`],
     ["时间", `创建 ${fmtTime(t.created_at)}${t.completed_at ? ` · 完成 ${fmtTime(t.completed_at)}` : ""}${archived ? ` · 归档 ${fmtTime(t.archived_at)}` : ""}`],
   ];
   $("#todo-info").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+  $("#todo-back").classList.toggle("hidden", !t.parent_id);
+  $("#todo-back").title = t.parent ? `返回：${t.parent.title}` : "返回父待办";
+  renderTodoEditor(t);
 
   // 子待办：子待办自己不能再有子待办
   $("#todo-children-box").classList.toggle("hidden", Boolean(t.parent_id));
@@ -476,20 +485,70 @@ $("#todo-upload").closest("label").addEventListener("keydown", (e) => {
   if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("#todo-upload").click(); }
 });
 
-$("#todo-edit").addEventListener("click", async () => {
-  const t = todos.detail;
-  const fields = [
-    { name: "title", label: "标题", required: true, value: t.title },
-    { name: "description", label: "说明", type: "textarea", value: t.description },
-    { name: "due", label: "截止日期", type: "date", value: t.due_date || "" },
-  ];
-  const r = await uiPrompt({ title: "编辑待办", fields, ok: "保存" });
-  if (!r) return;
-  const body = { title: r.title, description: r.description, due_date: r.due || null };
+function renderTodoEditor(t) {
+  const editing = todos.editMode && !t.archived_at;
+  $("#todo-panel").classList.toggle("is-editing", editing);
+  $("#todo-info").classList.toggle("hidden", editing);
+  $("#todo-edit-form").classList.toggle("hidden", !editing);
+  $("#todo-edit").classList.toggle("hidden", editing);
+  $("#todo-edit-cancel").classList.toggle("hidden", !editing);
+  $("#todo-edit-save").classList.toggle("hidden", !editing);
+  $("#todo-edit-save").disabled = todos.editSaving;
+  $("#todo-edit-save").innerHTML = `${uiIcon("tick")}${todos.editSaving ? "保存中…" : "保存"}`;
+  ["#todo-edit-cancel", "#todo-close", "#todo-back"].forEach((sel) => $(sel).disabled = todos.editSaving);
+  ["#todo-status", "#todo-promote", "#todo-archive", "#todo-restore"].forEach((sel) => $(sel).disabled = editing || Boolean(t.archived_at && sel === "#todo-status"));
+  $("#todo-edit-form").setAttribute("aria-busy", String(todos.editSaving));
+  for (const field of $("#todo-edit-form").elements) field.disabled = todos.editSaving;
+  document.querySelectorAll("#todo-detail-body > .todo-section").forEach((el) => el.inert = editing);
+  if (editing) {
+    const draft = todos.editDrafts.get(t.id) || {title:t.title, description:t.description, due:t.due_date || ""};
+    $("#todo-edit-title").value = draft.title;
+    $("#todo-edit-description").value = draft.description;
+    $("#todo-edit-due").value = draft.due;
+  }
+}
+$("#todo-edit").addEventListener("click", () => {
+  if (!todos.detail || todos.detail.archived_at) return;
+  const restored = todos.editDrafts.has(todos.id);
+  todos.editMode = true;
+  renderTodoEditor(todos.detail);
+  if (restored) todoMsg("已恢复这项任务尚未保存的修改。保存后才会更新任务。");
+  else $("#todo-msg").classList.add("hidden");
+  $("#todo-edit-title").focus();
+});
+$("#todo-edit-form").addEventListener("input", () => {
+  todos.editDrafts.set(todos.id, {title:$("#todo-edit-title").value, description:$("#todo-edit-description").value, due:$("#todo-edit-due").value});
+});
+$("#todo-edit-cancel").addEventListener("click", () => {
+  if (todos.editSaving) return;
+  todos.editDrafts.delete(todos.id);
+  todos.editMode = false;
+  renderTodoEditor(todos.detail);
+  $("#todo-msg").classList.add("hidden");
+});
+$("#todo-edit-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (todos.editSaving || !todos.editMode) return;
+  const id = todos.id, form = $("#todo-edit-form");
+  if (!form.reportValidity()) return;
+  const draft = {title:$("#todo-edit-title").value.trim(), description:$("#todo-edit-description").value, due:$("#todo-edit-due").value};
+  if (!draft.title) { todoMsg("请填写任务标题。", "error"); $("#todo-edit-title").focus(); return; }
+  todos.editDrafts.set(id, draft);
+  todos.editSaving = true;
+  renderTodoEditor(todos.detail);
   try {
-    await api(`/todos/${t.id}`, { method: "PUT", json: body });
+    const updated = await api(`/todos/${id}`, {method:"PUT", json:{title:draft.title, description:draft.description, due_date:draft.due || null}});
+    todos.editDrafts.delete(id);
+    todos.editMode = false;
+    todos.detail = updated;
+    $("#todo-title").textContent = updated.title;
     await loadTodos();
-  } catch (err) { uiAlert(err.message, "出错了"); }
+    todoMsg("任务详情已保存。现在为查看模式。");
+  } catch (err) { todoMsg(`保存失败：${escapeHtml(err.message)}。修改仍保留，可重试。`, "error"); }
+  finally {
+    todos.editSaving = false;
+    if (todos.detailOpen && todos.id === id) renderTodoEditor(todos.detail);
+  }
 });
 
 $("#todo-add-child").addEventListener("click", async () => {

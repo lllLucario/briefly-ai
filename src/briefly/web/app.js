@@ -441,7 +441,7 @@ document.addEventListener("click", (e) => {
   e.preventDefault();
   e.stopPropagation();
   if (dialog.id === "ui-dialog" && uiResolve) uiResolve(uiCancelValue());
-  else dialog.close();
+  else if (dialog.dispatchEvent(new CustomEvent("requestclose", {cancelable:true}))) dialog.close();
 }, true);
 
 async function uploadFiles(files) {
