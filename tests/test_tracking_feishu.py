@@ -61,6 +61,54 @@ def only_file(svc):
     return files[0]
 
 
+@pytest.mark.parametrize("track_first", [False, True])
+def test_import_and_track_same_feishu_document_share_material(env, track_first):
+    from briefly.feishu.service import import_link
+
+    svc, _, fake = env
+    if track_first:
+        svc.add_paths([URL])
+    with fake.client() as client:
+        imported, _ = import_link(client, svc.store, URL)
+    if not track_first:
+        svc.add_paths([URL])
+    snap = svc.snapshots(only_file(svc).id)[0]
+    assert snap.material_id == imported.id
+    assert len(svc.store.list_materials()) == 1
+    assert svc.store.get(imported.id).parse_report["feishu"]["token"] == DOC
+    with fake.client() as client:
+        again, created = import_link(client, svc.store, URL)
+    assert again.id == imported.id and not created
+    assert not svc.add_paths([URL]).added
+    assert len(svc.store.list_materials()) == 1
+
+
+def test_feishu_dedup_preserves_changed_versions_and_original_import(env):
+    from briefly.feishu.service import import_link
+
+    svc, doc, fake = env
+    with fake.client() as client:
+        original, _ = import_link(client, svc.store, URL)
+    original_text = svc.store.get(original.id).content
+    svc.add_paths([URL])
+    file = only_file(svc)
+    first = svc.snapshots(file.id)[0]
+    # 标题仍在原始快照中，正文材料不额外拼接它。
+    assert svc.blobs.get(first.sha256).decode("utf-8").startswith(f"# {doc.title}\n\n")
+    assert first.material_id == original.id
+    doc.revision += 1
+    doc.paragraphs += ["新增的原始业务事实，不能被当作重复丢掉。"]
+    svc.scan()
+    second = svc.snapshots(file.id)[-1]
+    assert second.material_id != first.material_id
+    with fake.client() as client:
+        current, _ = import_link(client, svc.store, URL)
+    assert current.id == second.material_id
+    assert len(svc.store.list_materials()) == 2  # 原始固定副本与最新正文确实不同。
+    assert svc.store.get(original.id).content == original_text
+    assert Differ(svc).diff(first, second).hunks
+
+
 def test_add_link_creates_baseline(env):
     svc, doc, _ = env
     result = svc.add_paths([URL])

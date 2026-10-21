@@ -24,6 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from .. import config
+from ..feishu.docx import FeishuDoc
 from ..loaders import SUPPORTED_TYPES, load_document
 from ..materials import MaterialStore
 from .attribution import extract_meta
@@ -634,7 +635,7 @@ class Scanner:
                         s.execute(update(TrackedFile).where(TrackedFile.id == f.id).values(path=display))
                         s.commit()
                 path = PurePosixPath(f"{safe}.md")  # 按 Markdown 解析和比较
-                snapshot = self._save_snapshot(f, path, data, digest, st, kind, run, stats, gap=bool(stats.get("gap")) and latest is not None, meta=meta)
+                snapshot = self._save_snapshot(f, path, data, digest, st, kind, run, stats, gap=bool(stats.get("gap")) and latest is not None, meta=meta, feishu_doc=doc)
                 if snapshot is None or kind == BASELINE:
                     continue
                 with self._session() as s:
@@ -840,6 +841,7 @@ class Scanner:
         stats: dict,
         gap: bool,
         meta: dict | None = None,
+        feishu_doc: FeishuDoc | None = None,
     ) -> FileSnapshot | None:
         """保存一个版本：原始字节进版本库、解析文本存为材料、版本记录与文件状态同一事务提交。
 
@@ -850,7 +852,18 @@ class Scanner:
             stats["errors"].append(f"{path}：{e}")
             self._set_status(f.id, PRESENT, str(e))
             return None
-        material_id, parse_error = self._parse(f.file_type, path.name, data, digest)
+        if feishu_doc is None:
+            material_id, parse_error = self._parse(f.file_type, path.name, data, digest)
+        elif not feishu_doc.markdown.strip():
+            material_id, parse_error = None, "未从飞书文档中读取到正文"
+        else:
+            # 快照仍保留标题供历史比较；材料正文与直接导入走同一内容去重，
+            # 不将追踪额外拼接的标题误认为第二份材料。
+            material, _ = self.store.add_text(
+                feishu_doc.title, feishu_doc.markdown, source="tracked", kind="feishu", markdown=True,
+                report={"structure": "markdown", "warnings": feishu_doc.warnings},
+            )
+            material_id, parse_error = material.id, ""
         if parse_error:
             stats["parse_errors"] += 1
         if meta is None:

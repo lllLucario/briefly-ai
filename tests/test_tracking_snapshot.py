@@ -307,6 +307,22 @@ def test_material_list_shows_only_latest_tracked_version(env):
     assert created and m.id == first and [x.id for x in env.store.list_materials()] == [user_material.id, m.id]
 
 
+@pytest.mark.parametrize("track_first", [False, True])
+def test_upload_and_track_local_file_reuse_material(env, track_first):
+    content = "原始说明\n保留完整内容。"
+    path = env.write("重复上传.txt", content)
+    if track_first:
+        env.svc.add_paths([str(path)])
+    uploaded, _ = env.store.add_file(path.name, content.encode("utf-8"))
+    again, created = env.store.add_file("改名后.txt", content.replace("\n", "\r\n").encode("utf-8"))
+    assert not created and again.id == uploaded.id
+    if not track_first:
+        env.svc.add_paths([str(path)])
+    assert env.svc.snapshots(env.file(path.name).id)[0].material_id == uploaded.id
+    assert len(env.store.list_materials()) == 1
+    assert not env.svc.add_paths([str(path)]).added
+
+
 def test_docx_metadata_is_captured(env):
     env.write("a.docx", docx_bytes(["正文"]))
     env.svc.add_paths([str(env.work / "a.docx")])

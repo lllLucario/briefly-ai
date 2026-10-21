@@ -119,6 +119,8 @@ class MaterialStore:
             if existing and existing.source == TRACKED and source != TRACKED:
                 # 用户添加的内容恰好与某个追踪版本相同：转为用户材料（追踪版本仍引用同一条），算作新建
                 existing.source, existing.title = source, (title.strip() or existing.title)[:200]
+                if report and report.get("feishu"):
+                    existing.parse_report = {**existing.parse_report, "feishu": report["feishu"]}
                 s.commit()
                 return existing, True
             if existing:

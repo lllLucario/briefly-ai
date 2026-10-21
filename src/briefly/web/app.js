@@ -279,7 +279,7 @@ function trackCell(m) {
     return `<span class="muted" title="${escapeHtml(why)}">不可追踪</span>`;
   }
   const entry = state.feishuTracking?.[m.feishu.token];
-  if (entry) return `<span class="chip" title="${entry.folder ? `随飞书文件夹“${escapeHtml(entry.folder)}”追踪` : "这篇文档的最新版本在材料库里单独一行"}">追踪中</span>`;
+  if (entry) return `<span class="chip" title="${entry.folder ? `随飞书文件夹“${escapeHtml(entry.folder)}”追踪` : "正在检查原文档的修改；正文有变化时保留新版本，历史版本可在追踪的文件中查看"}">追踪中</span>`;
   return `<button type="button" class="ghost small" data-track="${m.id}" title="每个工作日检查这篇飞书文档的修改，变化进入周报的审核清单">开启追踪</button>`;
 }
 
@@ -289,7 +289,7 @@ async function trackMaterial(id) {
   showNotice(msg, `正在开启追踪并记录《${escapeHtml(m.title)}》的初始版本…`);
   try {
     const r = await api(`/materials/${id}/track`, { method: "POST" });
-    showNotice(msg, r.added.length ? `已开始追踪《${escapeHtml(m.title)}》：每个工作日检查修改，变化进入周报的审核清单。材料库里会多一行它的最新版本，原来这份是导入时的内容。`
+    showNotice(msg, r.added.length ? `已开始追踪《${escapeHtml(m.title)}》：每个工作日检查修改，变化进入周报的审核清单。正文相同会复用已有材料；后续正文变化时保留新版本，原来导入的内容仍保留。`
       : r.messages.map(escapeHtml).join("<br>"), r.added.length ? "" : "warn");
   } catch (err) { showNotice(msg, escapeHtml(err.message), "error"); }
   await loadMaterials();
