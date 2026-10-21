@@ -18,6 +18,7 @@
     <symbol id="i-pen" viewBox="0 0 24 24"><path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-4-4L5 15Z"/></symbol>
     <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
     <symbol id="i-filter" viewBox="0 0 24 24"><path d="M3 4h18l-7 8v7l-4 2v-9Z"/></symbol>
     <symbol id="i-back" viewBox="0 0 24 24"><path d="m12 5-7 7 7 7M5 12h15"/></symbol>
     <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
@@ -211,13 +212,41 @@
         <details class="library-guide"><summary>材料如何保存与更新？</summary><p class="muted small">上传、粘贴、导入的材料是添加时内容的一份副本，之后原文件改了也不会变。
           飞书文档可以<b>开启追踪</b>：每个工作日检查修改，变化进入周报的审核清单；追踪中的文档在这里显示<b>最新版本</b>。
           本机文件在“追踪的文件”里添加路径。</p></details>
+        <div id="lib-toolbar" class="lib-toolbar" role="search" aria-label="查找材料">
+          <div class="lib-search">
+            <label for="lib-q" class="visually-hidden">搜索材料标题</label>
+            <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+            <input id="lib-q" type="search" placeholder="搜索材料标题" maxlength="200" autocomplete="off">
+            <button type="button" id="lib-q-clear" class="ghost small icon-only hidden" aria-label="清空搜索"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+          </div>
+          <button type="button" id="lib-filter-toggle" class="ghost lib-filter-toggle" aria-expanded="false" aria-controls="lib-filters" aria-label="筛选"><svg class="icon action-icon" aria-hidden="true"><use href="#i-filter"/></svg>筛选<span id="lib-filter-count" class="filter-count"></span></button>
+          <div id="lib-filters" class="lib-filters">
+            <label>来源<select id="lib-source"><option value="all">全部</option><option value="file">本机文件</option><option value="paste">粘贴文字</option><option value="feishu">飞书</option></select></label>
+            <label>更新方式<select id="lib-tracking"><option value="all">全部</option><option value="tracked">追踪中</option><option value="fixed">固定副本</option></select></label>
+            <label>关联待办<select id="lib-relation"><option value="all">全部</option><option value="unlinked">未关联待办</option><option value="todo">选择具体待办…</option></select></label>
+            <button type="button" id="lib-todo-chip" class="ghost small lib-todo-chip hidden" aria-label="更换筛选的待办"><span id="lib-todo-chip-text"></span><svg class="icon action-icon" aria-hidden="true"><use href="#i-pen"/></svg></button>
+            <label>排序<select id="lib-sort"><option value="newest">最近添加</option><option value="oldest">最早添加</option><option value="title">标题</option></select></label>
+            <label class="toggle"><input type="checkbox" id="lib-archived">包含已归档待办</label>
+          </div>
+        </div>
+        <div class="lib-status">
+          <span id="lib-count" class="muted small" aria-live="polite"></span>
+          <button type="button" id="lib-reset" class="text-button hidden">重置筛选</button>
+        </div>
+        <div id="lib-batch" class="notice lib-batch hidden"><span id="lib-batch-text"></span><button type="button" id="lib-batch-leave" class="ghost small">返回之前的筛选</button></div>
+        <div id="lib-error" class="notice error hidden" role="alert"><span id="lib-error-text"></span> <button type="button" id="lib-retry" class="ghost small">重试</button></div>
         <div id="material-msg" class="notice hidden"></div>
         <div class="table-wrap">
-          <table class="table">
-            <thead><tr><th>标题</th><th>来源 / 类型</th><th>更新方式</th><th>添加时间</th><th></th></tr></thead>
+          <table class="table lib-table">
+            <thead><tr><th>材料</th><th>来源</th><th>更新方式</th><th>关联待办</th><th>添加时间</th><th><span class="visually-hidden">操作</span></th></tr></thead>
             <tbody id="material-rows"></tbody>
           </table>
         </div>
+        <nav id="lib-pager" class="lib-pager hidden" aria-label="材料分页">
+          <button type="button" id="lib-prev" class="ghost small">上一页</button>
+          <span id="lib-page" class="muted small"></span>
+          <button type="button" id="lib-next" class="ghost small">下一页</button>
+        </nav>
         <div id="material-detail" class="detail hidden"></div>
       </div>
       <div id="mat-tracked" class="hidden">
@@ -414,6 +443,16 @@
     <div class="row gap end"><span id="mat-picker-count" class="muted grow"></span><button id="mat-picker-done" class="primary"><svg class="icon action-icon" aria-hidden="true"><use href="#i-tick"/></svg>确定</button></div>
   </dialog>
 
+  <!-- 材料库：按具体待办筛选 -->
+  <dialog id="lib-todo-dialog" class="wide" aria-labelledby="lib-todo-title">
+    <div class="dialog-head"><h3 id="lib-todo-title">按待办查看材料</h3><button type="button" class="ghost small" data-close aria-label="关闭弹窗"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+    <label for="lib-todo-q" class="visually-hidden">搜索待办标题</label>
+    <input id="lib-todo-q" type="search" placeholder="搜索待办标题" style="width:100%;margin-bottom:8px" autocomplete="off">
+    <label class="toggle small"><input type="checkbox" id="lib-todo-archived">包含已归档待办</label>
+    <p class="muted small">子待办会同时显示从父待办共享的材料。</p>
+    <div id="lib-todo-list" class="picker-list lib-todo-list"></div>
+  </dialog>
+
   <!-- 周报设置 -->
   <dialog id="settings-dialog" class="wide">
     <div class="dialog-head"><h3>周报设置</h3><button type="button" class="ghost small" data-close aria-label="关闭弹窗"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
@@ -452,6 +491,7 @@
 
   <div id="print-area" class="markdown"></div>
   <script src="/web/app.js"></script>
+  <script src="/web/materials.js"></script>
   <script src="/web/tracking.js"></script>
   <script src="/web/weekly.js"></script>
   <script src="/web/todos.js"></script>

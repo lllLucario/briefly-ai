@@ -1053,3 +1053,71 @@ button.note-toggle { width: 100%; min-height: 62px; display: flex; align-items: 
 .week-stage-card { padding-top: 14px; padding-bottom: 14px; margin-bottom: 16px; }
 #weekly-actions a.button { color: var(--text); text-decoration: none; }
 #week-panel { padding-bottom: 0; scroll-padding-bottom: 110px; }
+
+/* 材料库：搜索、筛选、分页与带次级信息的列表；窄屏按卡片排列，不靠横向滚动。 */
+.visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.lib-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 10px; }
+.lib-search { position: relative; display: flex; align-items: center; flex: 1 1 260px; min-width: 0; height: 44px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 0 6px 0 12px; gap: 8px; }
+.lib-search:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.lib-search > .icon { width: 18px; height: 18px; color: var(--muted); }
+.lib-search input { flex: 1; min-width: 0; height: 100%; border: 0; background: transparent; padding: 0; outline: none; }
+.lib-search .icon-only { padding: 4px; border: 0; display: inline-grid; place-items: center; }
+.lib-search .icon-only .icon { width: 16px; height: 16px; }
+.lib-filter-toggle { display: none; height: 44px; align-items: center; gap: 6px; }
+.filter-count:not(:empty) { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--accent); color: var(--on-accent); font-size: 11px; line-height: 18px; text-align: center; }
+.lib-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.lib-filters > label:not(.toggle) { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.lib-filters select { height: 44px; color: var(--text); }
+.lib-filters .toggle { font-size: 12px; min-height: 44px; }
+.lib-todo-chip { height: 44px; display: inline-flex; align-items: center; gap: 6px; max-width: 260px; }
+.lib-todo-chip span { overflow: hidden; text-overflow: ellipsis; }
+.lib-status { display: flex; align-items: center; gap: 12px; min-height: 24px; margin-bottom: 8px; }
+.lib-batch { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.lib-table td { vertical-align: top; }
+.lib-table td.lib-main { white-space: normal; min-width: 240px; max-width: 420px; }
+.lib-table td:nth-child(2) { min-width: 0; }
+.lib-title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.lib-title .ficon { width: 18px; height: 18px; flex: none; }
+.lib-open { border: 0; background: none; padding: 0; font-weight: 600; text-align: left; white-space: normal; overflow-wrap: anywhere; color: var(--text); }
+.lib-open:hover { color: var(--accent); }
+.lib-preview { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.6; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.update-mode { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; white-space: normal; }
+.update-mode .badge { display: inline-flex; align-items: center; gap: 3px; }
+.update-mode .badge .action-icon { width: 13px; height: 13px; margin: 0; }
+.lib-table td[data-label="关联待办"] { white-space: normal; min-width: 150px; max-width: 260px; }
+.todo-links { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.todo-link { border: 0; background: none; padding: 0; color: var(--accent); text-align: left; white-space: normal; overflow-wrap: anywhere; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+.todo-link small { margin-left: 6px; color: var(--muted); text-decoration: none; display: inline-block; }
+.more-todos summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+.more-todos[open] { display: flex; flex-direction: column; gap: 4px; }
+.lib-table tr.is-new td { background: var(--state-success-bg); }
+.lib-table tr.is-new td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+.lib-empty { white-space: normal !important; text-align: center; padding: 32px 16px !important; }
+.lib-empty > * { margin: 0 6px; vertical-align: middle; }
+.lib-empty .primary .icon { width: 15px; height: 15px; margin-right: 3px; }
+.lib-actions { text-align: right; }
+.lib-pager { display: flex; justify-content: center; align-items: center; gap: 12px; margin: 14px 0 4px; }
+.lib-pager button { min-height: 36px; }
+.lib-todo-list { display: flex; flex-direction: column; gap: 4px; max-height: 50vh; overflow-y: auto; margin-top: 8px; }
+.lib-todo-option { text-align: left; white-space: normal; overflow-wrap: anywhere; min-height: 40px; }
+.detail-todos { margin: 10px 0; font-size: 13px; }
+.detail-todos .todo-links { margin-top: 4px; }
+#mat-library[aria-busy="true"] .table-wrap { opacity: .65; }
+@media (max-width: 760px) {
+  .lib-filter-toggle { display: inline-flex; }
+  .lib-filters:not(.open) { display: none; }
+  .lib-filters { width: 100%; flex-direction: column; align-items: stretch; }
+  .lib-filters > label:not(.toggle) { justify-content: space-between; }
+  .lib-filters select { flex: 1; max-width: 70%; }
+  .lib-todo-chip { max-width: none; }
+  .lib-table, .lib-table tbody, .lib-table tr, .lib-table td { display: block; width: 100%; }
+  .lib-table { border: 0; }
+  .lib-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .lib-table tr { border: 1px solid var(--line); border-radius: 12px; margin-bottom: 10px; padding: 6px 0; background: var(--panel); overflow: hidden; }
+  .lib-table td { border: 0; padding: 4px 14px !important; max-width: none !important; min-width: 0 !important; white-space: normal; }
+  .lib-table td[data-label]:not(.lib-main)::before { content: attr(data-label); display: inline-block; min-width: 64px; margin-right: 8px; color: var(--muted); font-size: 11px; vertical-align: top; }
+  .lib-table td[data-label]:not(.lib-main) > * { display: inline-flex; vertical-align: top; max-width: calc(100% - 76px); }
+  .lib-table td.lib-actions { display: block; text-align: left; padding-bottom: 8px !important; }
+  .lib-table tr.is-new td:first-child { box-shadow: none; }
+  .lib-table tr.is-new { box-shadow: inset 3px 0 0 var(--accent); }
+}

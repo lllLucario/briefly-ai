@@ -232,7 +232,7 @@ async function loadMaterials() {
   ]);
   state.materials = materials;
   state.feishuTracking = tracking;
-  renderMaterialRows();
+  refreshLibrary();
   // 已删除的材料从对话选择中去掉
   for (const id of [...state.picked]) if (!state.materials.some((m) => m.id === id)) state.picked.delete(id);
   renderPicked();
@@ -240,20 +240,9 @@ async function loadMaterials() {
 
 const FILE_TYPES = { feishu: "飞书文档", bitable: "多维表格", minutes: "妙记" };
 
+// 材料库列表由 materials.js 按条件分页加载；这里只更新当前打开的那一行
 function renderMaterialRows() {
-  const rows = $("#material-rows");
-  if (!state.materials.length) {
-    rows.innerHTML = `<tr><td colspan="5" class="muted">还没有材料。可以上传文件、粘贴文字，或从飞书导入。</td></tr>`;
-    return;
-  }
-  rows.innerHTML = state.materials.map((m) => `
-    <tr class="clickable ${state.activeMaterial === m.id ? "active" : ""}" data-id="${m.id}">
-      <td>${escapeHtml(m.title)} ${m.warnings.length ? `<span class="warn-dot" title="${escapeHtml(m.warnings.join("\n"))}" role="img" aria-label="解析警告">${uiIcon("alert")}</span>` : ""}${m.source === "tracked" ? ` <span class="badge" title="随追踪自动更新为最新内容；以前的版本在“追踪的文件”里查看">最新版本</span>` : ""}</td>
-      <td class="nowrap">${fileIcon(m.file_type || "paste")} ${escapeHtml(FILE_TYPES[m.file_type] || kindName(m.file_type || "paste"))}</td>
-      <td class="track-cell">${trackCell(m)}</td>
-      <td>${fmtTime(m.created_at)}</td>
-      <td>${m.source === "tracked" ? "" : `<button class="ghost danger" data-delete="${m.id}">删除</button>`}</td>
-    </tr>`).join("");
+  document.querySelectorAll("#material-rows tr[data-id]").forEach((tr) => tr.classList.toggle("active", Number(tr.dataset.id) === state.activeMaterial));
 }
 
 // ---------- 材料的追踪状态 ----------
@@ -284,7 +273,7 @@ function trackCell(m) {
 }
 
 async function trackMaterial(id) {
-  const m = state.materials.find((x) => x.id === id);
+  const m = state.materials.find((x) => x.id === id) || libraryState.items.find((x) => x.id === id);
   const msg = $("#material-msg");
   showNotice(msg, `正在开启追踪并记录《${escapeHtml(m.title)}》的初始版本…`);
   try {
@@ -366,10 +355,12 @@ async function showMaterialDetail(id) {
       </div>
       <details class="meta"><summary>技术信息</summary>编号 ${m.id} · ${m.char_count} 字 · ${m.chunk_count} 块 · ${m.section_count} 个章节 · 结构来源：${escapeHtml(m.structure || "-")}</details>
       ${warnings}
-      <p class="muted small">${m.source === "tracked" ? "追踪来源 · 展示最新版本" : "固定副本 · 原文件后续修改不会自动更新"}${m.warnings.length ? ` · ${m.warnings.length} 项解析提示，请先核对` : " · 未报告解析警告（不代表所有内容均已完整识别）"}</p>
+      <p class="muted small">${escapeHtml(sourceLabel(m))} · ${m.source === "tracked" ? "追踪最新版本 · 随追踪更新" : m.tracking_state && m.tracking_state !== "fixed" ? "固定副本 · 已开启追踪（这份内容不变，新版本另存为材料）" : "固定副本 · 原文件后续修改不会自动更新"}${m.tracking_note ? ` · ${escapeHtml(m.tracking_note)}` : ""} · 添加时间 ${fmtTime(m.created_at)}${m.warnings.length ? ` · ${m.warnings.length} 项解析提示，请先核对` : " · 未报告解析警告（不代表所有内容均已完整识别）"}</p>
+      <div class="detail-todos"><b>关联待办</b>${relatedCell({ ...m, id: `detail-${m.id}` })}</div>
       <div><b>正文预览</b><div class="content-box material-preview">${escapeHtml(m.content)}</div></div>
       <details class="meta" data-disclosure="material:${m.id}:outline" ${disclosureOpen(`material:${m.id}:outline`)}><summary>文档大纲（${m.sections.length} 个章节）</summary><div class="outline">${outline}</div></details>
       <details class="meta"><summary>解析报告</summary><pre class="content-box">${escapeHtml(JSON.stringify(report, null, 2))}</pre></details>`;
+    box.querySelectorAll("[data-lib-todo]").forEach((b) => b.onclick = async () => { await activateTab("todos"); openTodo(Number(b.dataset.libTodo)); });
     $("#close-detail").onclick = () => { state.activeMaterial = null; box.classList.add("hidden"); renderMaterialRows(); };
     $("#use-in-chat").onclick = () => {
       state.picked.add(id);
@@ -447,6 +438,7 @@ document.addEventListener("click", (e) => {
 async function uploadFiles(files) {
   const msg = $("#add-msg");
   const results = [];
+  const batch = libraryBeginAdd();
   for (const [i, file] of files.entries()) {
     showNotice(msg, `正在解析 ${escapeHtml(file.name)}（${i + 1}/${files.length}）…PDF、Word 可能需要几秒`);
     const form = new FormData();
@@ -454,14 +446,23 @@ async function uploadFiles(files) {
     try {
       const r = await api("/materials/upload", { method: "POST", body: form });
       importedForAssistant(r.material.id);
+      libraryAdded(batch, r);
       results.push(`${r.created ? "已导入" : "已存在"}：${escapeHtml(r.material.title)}（${r.material.char_count} 字）`);
     } catch (err) {
+      libraryAdded(batch, null);
       results.push(`<span class="danger">${escapeHtml(file.name)}：${escapeHtml(err.message)}</span>`);
     }
   }
-  showNotice(msg, results.join("<br>"));
+  showNotice(msg, results.join("<br>"), batch.failed ? "warn" : "");
   $("#file").value = "";
-  await loadMaterials();
+  await refreshAfterAdd(batch);
+}
+
+// 材料已保存后刷新列表；刷新失败只提示，不让用户重复添加
+async function refreshAfterAdd(batch) {
+  try { await loadMaterials(); }
+  catch (err) { showNotice($("#add-msg"), `${$("#add-msg").innerHTML}<br>已保存，列表刷新失败：${escapeHtml(err.message)}。请稍后刷新页面，不需要重新添加。`, "warn"); }
+  await libraryFinishAdd(batch);
 }
 
 $("#file").addEventListener("change", (e) => uploadFiles([...e.target.files]));
@@ -479,7 +480,9 @@ $("#paste-form").addEventListener("submit", async (e) => {
     showNotice(msg, `${r.created ? "已保存" : "内容相同的材料已存在"}：${escapeHtml(r.material.title)}（${r.material.char_count} 字）`);
     $("#paste-title").value = "";
     $("#paste-content").value = "";
-    await loadMaterials();
+    const batch = libraryBeginAdd();
+    libraryAdded(batch, r);
+    await refreshAfterAdd(batch);
   } catch (err) { showNotice(msg, escapeHtml(err.message), "error"); }
 });
 
@@ -499,7 +502,9 @@ $("#feishu-form").addEventListener("submit", async (e) => {
     importedForAssistant(imported.material.id);
     showNotice(msg, importedText(imported));
     $("#feishu-url").value = "";
-    await loadMaterials();
+    const batch = libraryBeginAdd();
+    libraryAdded(batch, imported);
+    await refreshAfterAdd(batch);
   } catch (err) { showNotice(msg, escapeHtml(err.message), "error"); }
 });
 
@@ -795,23 +800,26 @@ $("#drive-import").addEventListener("click", async () => {
   }
   const list = [...jobs.values()];
   const results = [];
+  const batch = libraryBeginAdd();
   let failed = 0;
   for (const [i, job] of list.entries()) {
     showNotice(msg, `正在导入 ${i + 1}/${list.length}：${escapeHtml(job.name)}…`);
     try {
       const imported = await api("/materials/feishu", { method: "POST", json: { url: job.url } });
       importedForAssistant(imported.material.id);
+      libraryAdded(batch, imported);
       results.push(importedText(imported));
       if (job.key) state.driveSelected.delete(job.key);
     } catch (err) {
       failed += 1;
+      libraryAdded(batch, null);
       results.push(`<span class="danger">${escapeHtml(job.name)}：${escapeHtml(err.message)}</span>`);
     }
   }
   if (!failed) folderKeys.forEach((key) => state.driveSelected.delete(key));
   if (skipped) results.push(`文件夹里另有 ${skipped} 个条目类型不支持（如电子表格、文件），没有导入。`);
   showNotice(msg, results.join("<br>"), failed ? "warn" : "");
-  await loadMaterials();
+  await refreshAfterAdd(batch);
   renderDrive();
 });
 
