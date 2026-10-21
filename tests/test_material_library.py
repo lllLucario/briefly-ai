@@ -76,7 +76,9 @@ def test_items_keep_summary_fields_and_preview_is_plain_text(client):
     assert item["preview"].startswith("第一段 有 多个 空白<b>不是标签</b>") and item["preview"].endswith("…")
     assert len(item["preview"]) == 121
     upload = client.post("/materials/upload", files={"file": ("进展.md", "# 进展\n完成联调".encode())}).json()["material"]
-    assert upload["source_category"] == "file" and upload["preview"] == "# 进展 完成联调"
+    assert upload["source_category"] == "file" and upload["preview"] == "进展 完成联调"
+    table = add(client, "表格", "## 二、计划\n| 任务 | 负责人 |\n|---|---|\n| 压测 | **小王** |\n- 第一项\n1. 步骤")
+    assert next(x for x in page(client)["items"] if x["id"] == table)["preview"] == "二、计划 任务 负责人 压测 小王 第一项 1. 步骤"
 
 
 def test_relations_parent_shared_direct_first_and_archived(client):

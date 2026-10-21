@@ -168,14 +168,25 @@ def annotate(s: Session, rows: list[Row], include_archived: bool = False) -> dic
     return out
 
 
+_MARKS = [
+    (re.compile(r"(?m)^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$"), ""),  # 表格分隔行
+    (re.compile(r"(?m)^\s{0,3}(#{1,6}|>|[-*+])\s+"), ""),  # 标题、引用、无序列表标记（编号保留）
+    (re.compile(r"(\*\*|__|`)"), ""),  # 粗体、行内代码
+    (re.compile(r"\s*\|\s*"), " "),  # 表格竖线
+]
+
+
 def previews(s: Session, ids: list[int]) -> dict[int, str]:
-    """正文开头：合并连续空白后取前 PREVIEW_CHARS 个字符（确定性截取，不调用模型）。"""
+    """正文开头：去掉 Markdown 标记、合并连续空白后取前 PREVIEW_CHARS 个字符（确定性截取，不调用模型）。"""
     if not ids:
         return {}
     head = func.substr(Material.content, 1, PREVIEW_CHARS * 4)
     out = {}
     for material_id, text in s.execute(select(Material.id, head).where(Material.id.in_(ids))):
-        text = re.sub(r"\s+", " ", text or "").strip()
+        text = text or ""
+        for pattern, repl in _MARKS:
+            text = pattern.sub(repl, text)
+        text = re.sub(r"\s+", " ", text).strip()
         out[material_id] = text[:PREVIEW_CHARS] + ("…" if len(text) > PREVIEW_CHARS else "")
     return out
 

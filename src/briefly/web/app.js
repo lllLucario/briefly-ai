@@ -60,6 +60,15 @@ document.addEventListener("toggle", (e) => {
 }, true);
 
 // Markdown 渲染；CDN 不可用时退回纯文本
+// 材料正文的排版预览：Markdown、Word（导入时已转为 Markdown）、飞书文档。不加载外部图片；渲染库不可用时退回纯文本
+const RICH_TYPES = new Set(["md", "docx", "feishu"]);
+function renderMaterialMarkdown(text) {
+  if (window.marked && window.DOMPurify) {
+    return DOMPurify.sanitize(marked.parse(text, { breaks: true }), { FORBID_TAGS: ["img", "style", "form", "input"], FORBID_ATTR: ["style"] });
+  }
+  return `<div style="white-space:pre-wrap">${escapeHtml(text)}</div>`;
+}
+
 function renderMarkdown(text) {
   if (window.marked && window.DOMPurify) {
     return DOMPurify.sanitize(marked.parse(text, { breaks: true }));
@@ -357,10 +366,22 @@ async function showMaterialDetail(id) {
       ${warnings}
       <p class="muted small">${escapeHtml(sourceLabel(m))} · ${m.source === "tracked" ? "追踪最新版本 · 随追踪更新" : m.tracking_state && m.tracking_state !== "fixed" ? "固定副本 · 已开启追踪（这份内容不变，新版本另存为材料）" : "固定副本 · 原文件后续修改不会自动更新"}${m.tracking_note ? ` · ${escapeHtml(m.tracking_note)}` : ""} · 添加时间 ${fmtTime(m.created_at)}${m.warnings.length ? ` · ${m.warnings.length} 项解析提示，请先核对` : " · 未报告解析警告（不代表所有内容均已完整识别）"}</p>
       <div class="detail-todos"><b>关联待办</b>${relatedCell({ ...m, id: `detail-${m.id}` })}</div>
-      <div><b>正文预览</b><div class="content-box material-preview">${escapeHtml(m.content)}</div></div>
+      <div class="preview-head"><b>正文预览</b>${RICH_TYPES.has(m.file_type) ? `<div class="segmented" role="group" aria-label="预览方式">
+        <button type="button" data-preview="rich" aria-pressed="false">排版</button><button type="button" data-preview="raw" aria-pressed="false">原文</button></div>` : ""}</div>
+      <div id="material-body" class="content-box material-preview"></div>
       <details class="meta" data-disclosure="material:${m.id}:outline" ${disclosureOpen(`material:${m.id}:outline`)}><summary>文档大纲（${m.sections.length} 个章节）</summary><div class="outline">${outline}</div></details>
       <details class="meta"><summary>解析报告</summary><pre class="content-box">${escapeHtml(JSON.stringify(report, null, 2))}</pre></details>`;
     box.querySelectorAll("[data-lib-todo]").forEach((b) => b.onclick = () => openTodoFromLibrary(Number(b.dataset.libTodo)));
+    const showBody = (mode) => {
+      const rich = RICH_TYPES.has(m.file_type) && mode === "rich";
+      const body = $("#material-body");
+      body.classList.toggle("markdown", rich);
+      body.classList.toggle("rich-preview", rich);
+      body.innerHTML = rich ? renderMaterialMarkdown(m.content) : escapeHtml(m.content);
+      box.querySelectorAll("[data-preview]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.preview === mode)));
+    };
+    showBody(state.materialPreview || "rich");
+    box.querySelectorAll("[data-preview]").forEach((b) => b.onclick = () => { state.materialPreview = b.dataset.preview; showBody(b.dataset.preview); });
     $("#use-in-chat").onclick = () => {
       state.picked.add(id);
       renderPicked();
