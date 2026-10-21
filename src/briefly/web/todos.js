@@ -3,7 +3,7 @@
 // 以及 weekly.js 里的 gotoWeek。
 "use strict";
 
-const todos = { list: [], id: null, filter: "open", detail: null, detailOpen: false, detailView: 0, expanded: new Set() };
+const todos = { list: [], id: null, filter: "open", detail: null, detailOpen: false, detailView: 0, expanded: new Set(), inlineBusy: false, inlineDrafts: new Map(), inlineNotices: new Map() };
 const TODO_STATUS = { todo: "未开始", doing: "进行中", done: "已完成" };
 const TRACK_STATUS = {
   present: ["追踪中", "ok"],
@@ -32,10 +32,11 @@ async function loadTodos() {
     $("#todo-load-msg").classList.add("hidden");
   } catch (err) {
     showNotice($("#todo-load-msg"), `加载待办失败：${escapeHtml(err.message)} <button class="ghost small" data-retry-todos>重试</button>`, "error");
-    return;
+    return false;
   }
   renderTodoList();
   if (todos.detailOpen && todos.id && todos.list.some((t) => t.id === todos.id)) openTodo(todos.id, false);
+  return true;
 }
 $("#todo-load-msg").addEventListener("click", (e) => {
   if (e.target.closest("[data-retry-todos]")) loadTodos();
@@ -52,6 +53,17 @@ function visibleTodos() {
 function todoStatusMark(t) {
   const status = t.archived_at ? "已归档" : TODO_STATUS[t.status];
   return `<span class="ticket-status" title="${status}" aria-label="${status}"><span class="card-status-icon" aria-hidden="true">${t.status === "done" ? "✓" : ""}</span></span>`;
+}
+
+function inlineChildren(t, children) {
+  const draft = todos.inlineDrafts.get(t.id) || {title:"", status:"todo", due:""};
+  const locked = Boolean(t.archived_at);
+  const options = (value) => Object.entries(TODO_STATUS).map(([key,label]) => `<option value="${key}" ${key === value ? "selected" : ""}>${label}</option>`).join("");
+  const notice = todos.inlineNotices.get(t.id);
+  return `<fieldset class="inline-child-editor" data-inline-editor="${t.id}" data-locked="${locked ? "1" : "0"}" ${locked || todos.inlineBusy ? "disabled" : ""}><legend class="sr-only">${escapeHtml(t.title)}的子待办操作</legend>
+    ${children.length ? `<ul class="inline-children">${children.map((c) => `<li class="${c.status}"><div class="inline-child-row"><button class="inline-child-open" type="button" data-inline-detail="${c.id}" aria-label="查看子待办详情：${escapeHtml(c.title)}"><span class="inline-child-title">${escapeHtml(c.title)}</span></button><select data-inline-status="${c.id}" data-parent="${t.id}" aria-label="${escapeHtml(c.title)}的状态" ${c.archived_at ? "disabled" : ""}>${options(c.status)}</select><button type="button" class="ghost small danger" data-inline-remove="${c.id}" data-parent="${t.id}" aria-label="移除子待办：${escapeHtml(c.title)}" ${c.archived_at ? "disabled" : ""}>移除</button>${todoStatusMark(c)}</div></li>`).join("")}</ul>` : '<p class="muted small">暂无子待办。</p>'}
+    ${!t.parent_id && !locked ? `<form class="inline-add-child" data-inline-add="${t.id}"><label class="sr-only" for="inline-child-title-${t.id}">子待办标题</label><input id="inline-child-title-${t.id}" name="title" required maxlength="200" placeholder="添加一条子待办…" value="${escapeHtml(draft.title)}"><div class="row gap wrap"><select name="status" aria-label="新子待办状态">${options(draft.status)}</select><input name="due" type="date" aria-label="新子待办截止日期" value="${escapeHtml(draft.due)}"><button type="submit" class="primary small">＋ 添加</button></div></form>` : ""}
+    </fieldset><div class="notice inline-child-notice ${notice ? notice.kind : "hidden"}" data-inline-notice="${t.id}" role="status">${notice ? escapeHtml(notice.text) : ""}</div>`;
 }
 
 function todoItem(t) {
@@ -72,7 +84,7 @@ function todoItem(t) {
         <div class="ticket-overview-grid">
           <section><h4>任务要点 <small>原始说明</small></h4>${points.length ? `<ul class="ticket-points">${points.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul>` : '<p class="muted small">暂无说明，可在详情中补充。</p>'}</section>
           <section><div class="section-head"><h4>子待办 <small>${t.children_done || 0} / ${t.children_total || 0} 项已完成</small></h4></div>
-          ${children.length ? `<ul class="inline-children">${children.map((c) => `<li class="${c.status}"><button type="button" data-inline-detail="${c.id}" aria-label="查看子待办详情：${escapeHtml(c.title)}"><span class="inline-child-title">${escapeHtml(c.title)}</span><span class="inline-child-hint">详情 ↗</span>${todoStatusMark(c)}</button></li>`).join("")}</ul>` : '<p class="muted small">暂无子待办，可在详情中添加。</p>'}</section>
+          ${inlineChildren(t, children)}</section>
         </div>
       </div>
     </details></li>`;
@@ -92,7 +104,67 @@ function renderTodoList() {
 $("#todo-list").addEventListener("click", (e) => {
   const button = e.target.closest("[data-inline-detail]");
   if (button) openTodo(Number(button.dataset.inlineDetail));
+  const remove = e.target.closest("[data-inline-remove]");
+  if (remove) removeInlineChild(Number(remove.dataset.parent), Number(remove.dataset.inlineRemove));
 });
+
+function inlineNotice(parent, text, kind = "") {
+  todos.inlineNotices.set(parent, {text, kind});
+  const box = document.querySelector(`[data-inline-notice="${parent}"]`);
+  if (box) showNotice(box, escapeHtml(text), kind);
+}
+
+async function saveInlineChild(parent, action, success) {
+  if (todos.inlineBusy) return;
+  todos.inlineBusy = true;
+  document.querySelectorAll("[data-inline-editor]").forEach((el) => el.disabled = true);
+  inlineNotice(parent, "正在保存…");
+  try {
+    await action();
+    const refreshed = await loadTodos();
+    inlineNotice(parent, refreshed ? success : "已保存，但列表刷新失败。请点击列表上方的重试。", refreshed ? "" : "warn");
+  } catch (err) {
+    todos.inlineNotices.set(parent, {text:err.message, kind:"error"});
+    renderTodoList(); // 失败时恢复服务端原状态；新增草稿单独保存。
+  } finally {
+    todos.inlineBusy = false;
+    document.querySelectorAll("[data-inline-editor]").forEach((el) => el.disabled = el.dataset.locked === "1");
+  }
+}
+
+function rememberInlineDraft(e) {
+  const form = e.target.closest("[data-inline-add]");
+  if (form) todos.inlineDrafts.set(Number(form.dataset.inlineAdd), {title:form.elements.title.value, status:form.elements.status.value, due:form.elements.due.value});
+}
+$("#todo-list").addEventListener("input", rememberInlineDraft);
+$("#todo-list").addEventListener("change", (e) => {
+  rememberInlineDraft(e);
+  const select = e.target.closest("[data-inline-status]");
+  if (!select) return;
+  const id = Number(select.dataset.inlineStatus), parent = Number(select.dataset.parent);
+  const child = todos.list.find((x) => x.id === id && x.parent_id === parent);
+  if (!child) return;
+  saveInlineChild(parent, () => api(`/todos/${id}/status`, {method:"POST", json:{status:select.value}}), "子待办状态已更新；主任务状态保持不变。");
+});
+$("#todo-list").addEventListener("submit", (e) => {
+  const form = e.target.closest("[data-inline-add]");
+  if (!form) return;
+  e.preventDefault();
+  rememberInlineDraft({target:form});
+  const parent = Number(form.dataset.inlineAdd), draft = todos.inlineDrafts.get(parent);
+  if (!draft?.title.trim()) return inlineNotice(parent, "请填写子待办标题。", "error");
+  saveInlineChild(parent, async () => {
+    await api("/todos", {method:"POST", json:{parent_id:parent, title:draft.title.trim(), status:draft.status, due_date:draft.due || null}});
+    todos.inlineDrafts.delete(parent);
+  }, "子待办已添加。");
+});
+
+async function removeInlineChild(parent, id) {
+  if (todos.inlineBusy) return;
+  const child = todos.list.find((x) => x.id === id && x.parent_id === parent);
+  if (!child || !(await uiConfirm(`移除“${child.title}”？它会归档，可在“已归档”中恢复；材料和历史记录保留。`, {title:"移除子待办", ok:"移除并归档", danger:true}))) return;
+  saveInlineChild(parent, () => api(`/todos/${id}`, {method:"DELETE"}), "子待办已移除，可在“已归档”中恢复。");
+}
 $("#todo-list").addEventListener("toggle", (e) => {
   const detail = e.target;
   if (!detail.isConnected || !detail.matches("details[data-ticket]")) return;
