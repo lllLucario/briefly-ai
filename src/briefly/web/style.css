@@ -900,3 +900,61 @@ details.record-description { margin: 8px 0; padding: 8px 10px; background: var(-
 .todo-modal.is-editing #todo-status, .todo-modal.is-editing #todo-promote, .todo-modal.is-editing #todo-archive, .todo-modal.is-editing #todo-restore { display: none; }
 .todo-modal.is-editing #todo-detail-body > .todo-section { opacity: .55; }
 @media (max-width: 760px) { .todo-board-head .todo-filter-control { flex: 1; min-width: 0; } .todo-filter-control #todo-filter { width: 100%; min-width: 0; } #todo-edit-form { padding: 12px; } }
+
+/* 卡片说明默认可读，进展输入按用户意图展开。 */
+.ticket-description { color: var(--text); font-size: 13px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ticket-description.is-collapsed { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
+.description-toggle { margin-top: 6px; font-size: 12px; }
+.ticket-main-content .note-toggle { margin-top: 4px; }
+.ticket-main-content .inline-note-form { margin-top: 10px; }
+.inline-note-form textarea { min-height: 84px; }
+
+/* 卡片展开区：说明、行动入口、子待办使用可辨识的分组。 */
+.ticket-expanded { padding: 20px 24px 24px; }
+.ticket-overview-head { margin-bottom: 22px; }
+.ticket-overview-head .eyebrow { color: var(--muted); letter-spacing: 0; font-size: 12px; }
+button.ticket-detail-button { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 5px 10px; color: var(--accent); border-color: var(--line); }
+.ticket-detail-button .action-icon { width: 14px; margin: 0; }
+.ticket-overview-grid { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+.ticket-main-content, .ticket-children-content { min-width: 0; }
+.ticket-section-heading { display: flex; align-items: center; gap: 9px; min-height: 30px; margin-bottom: 14px; }
+.ticket-overview-grid .ticket-section-heading h4 { margin: 0; font-size: 14px; font-weight: 600; }
+.ticket-section-icon { width: 30px; height: 30px; display: grid; place-items: center; flex: none; border-radius: 9px; background: var(--accent-soft); color: var(--accent); }
+.ticket-section-icon .action-icon { margin: 0; width: 17px; height: 17px; }
+.ticket-description-surface { padding: 16px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
+.ticket-description { font-size: 14px; line-height: 1.9; }
+button.description-toggle { display: inline-flex; align-items: center; gap: 5px; margin-top: 12px; padding: 3px 0; border: 0; border-radius: 3px; background: transparent; color: var(--accent); font-size: 12px; }
+.description-toggle .action-icon { width: 14px; height: 14px; margin: 0; transform: rotate(90deg); }
+.description-toggle[aria-expanded="true"] .action-icon { transform: rotate(-90deg); }
+.ticket-source-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; padding: 12px 2px; font-size: 11px; color: var(--muted); }
+.ticket-source-meta .action-icon { width: 14px; height: 14px; margin: 0 2px 0 0; }
+.ticket-source-meta b { color: var(--text); font-weight: 500; }
+button.note-toggle { width: 100%; min-height: 62px; display: flex; align-items: center; gap: 11px; padding: 11px 14px; border: 1px dashed var(--accent); border-radius: 12px; background: var(--accent-soft); text-align: left; white-space: normal; color: var(--accent); }
+.note-action-icon { width: 32px; height: 32px; display: grid; place-items: center; flex: none; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
+.note-action-icon .action-icon { width: 17px; height: 17px; margin: 0; }
+.note-action-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.note-action-copy b { font-size: 13px; font-weight: 600; }
+.note-action-copy small { font-size: 11px; color: var(--muted); font-weight: 400; }
+.note-toggle > .action-icon { width: 16px; height: 16px; margin: 0; }
+.note-toggle[aria-expanded="true"] { border-style: solid; }
+.note-toggle[aria-expanded="true"] > .action-icon { transform: rotate(90deg); }
+.ticket-main-content .inline-note-form { gap: 12px; padding: 14px; border: 1px solid var(--accent); border-radius: 12px; background: var(--panel); }
+.note-form-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 5px; font-size: 12px; }
+.note-form-heading span { color: var(--muted); font-size: 10px; }
+.inline-note-form textarea { padding: 10px 12px; min-height: 100px; line-height: 1.7; }
+.inline-note-form > .row { justify-content: flex-end; }
+.inline-note-form > .row button { min-height: 34px; padding: 5px 12px; }
+.ticket-children-content { padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg); }
+.ticket-children-content .ticket-section-icon { background: var(--panel); }
+.child-summary { margin-left: auto; font-size: 11px; color: var(--muted); }
+.ticket-children-content .inline-child-row { min-height: 46px; padding: 9px 11px; border: 1px solid var(--line); background: var(--panel); }
+.ticket-children-content .inline-add-child { margin-top: 14px; }
+@media (max-width: 760px) {
+  .ticket-expanded { padding: 16px; }
+  .ticket-overview-head { margin-bottom: 18px; }
+  .ticket-overview-grid { grid-template-columns: minmax(0, 1fr); gap: 22px; }
+  .ticket-description-surface { padding: 13px 14px; }
+  .ticket-description { font-size: 13px; }
+  .ticket-children-content { padding: 13px; }
+  .child-summary { font-size: 10px; }
+}

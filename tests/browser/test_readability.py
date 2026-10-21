@@ -19,8 +19,9 @@ def test_many_tasks_progress_history_and_material_entry(web_page, width):
     expect(row.locator(".ticket-subtitle")).to_contain_text("原始进展29")
     expect(row.locator(".ticket-due")).to_contain_text("已逾期")
     row.locator("summary.todo-ticket-row").click()
-    row.locator("[data-inline-note] input").fill("等待业务确认，不代表完成")
-    row.locator("[data-inline-note] button").click()
+    row.locator("[data-note-toggle]").click()
+    row.locator("[data-inline-note] textarea").fill("等待业务确认，不代表完成")
+    row.locator('[data-inline-note] button[type="submit"]').click()
     expect(row.locator(".ticket-subtitle")).to_contain_text("等待业务确认")
     assert p.request.get(base + f"/todos/{first}").json()["status"] == "todo"
     row.locator("[data-inline-detail]").click()

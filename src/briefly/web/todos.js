@@ -3,7 +3,7 @@
 // 以及 weekly.js 里的 gotoWeek。
 "use strict";
 
-const todos = { list: [], id: null, filter: "open", detail: null, detailOpen: false, detailView: 0, editMode: false, editSaving: false, editDrafts: new Map(), expanded: new Set(), inlineBusy: false, inlineDrafts: new Map(), noteDrafts: new Map(), timeline: [], timelineLimit: 5, inlineNotices: new Map() };
+const todos = { list: [], id: null, filter: "open", detail: null, detailOpen: false, detailView: 0, editMode: false, editSaving: false, editDrafts: new Map(), expanded: new Set(), inlineBusy: false, inlineDrafts: new Map(), noteDrafts: new Map(), noteOpen: new Set(), timeline: [], timelineLimit: 5, inlineNotices: new Map() };
 const TODO_STATUS = { todo: "未开始", doing: "进行中", done: "已完成" };
 const TRACK_STATUS = {
   present: ["追踪中", "ok"],
@@ -84,10 +84,21 @@ function inlineChildren(t, children) {
     </fieldset><div class="notice inline-child-notice ${notice ? notice.kind : "hidden"}" data-inline-notice="${t.id}" role="status">${notice ? escapeHtml(notice.text) : ""}</div>`;
 }
 
+function noteToggleContent(open) {
+  return `<span class="note-action-icon">${uiIcon(open ? "close" : "pen")}</span><span class="note-action-copy"><b>${open ? "收起输入" : "追加进展"}</b><small>${open ? "填写后保存到活动记录" : "记录本次推进，保留工作轨迹"}</small></span>${uiIcon("arrow")}`;
+}
+function descriptionToggleContent(open) {
+  return `${open ? "收起说明" : "展开完整说明"}${uiIcon("arrow")}`;
+}
+
 function todoItem(t) {
   const parent = t.parent_id ? todos.list.find((x) => x.id === t.parent_id) : null;
   const points = String(t.description || "").split(/\n+/).map((x) => x.trim()).filter(Boolean);
   const children = todos.list.filter((x) => x.parent_id === t.id);
+  const description = String(t.description || "");
+  const canCollapse = description.length > 100 || points.length > 3;
+  const descriptionOpen = disclosureState.get(`todo:${t.id}:description`) === true;
+  const noteOpen = todos.noteOpen.has(t.id);
   const summary = t.latest_progress ? `最近进展 · ${fmtTime(t.latest_progress.at)}：${t.latest_progress.text}` : points[0] || "暂无任务说明";
   const now = new Date();
   const today = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
@@ -101,10 +112,16 @@ function todoItem(t) {
         ${todoStatusMark(t)}
       </summary>
       <div class="ticket-expanded">
-        <div class="ticket-overview-head"><span class="eyebrow">${parent ? `所属主任务 · ${escapeHtml(parent.title)}` : "主任务概览"}</span><button type="button" class="ghost small" data-inline-detail="${t.id}">展开详情 ↗</button></div>
+        <div class="ticket-overview-head"><span class="eyebrow">${parent ? `所属主任务 · ${escapeHtml(parent.title)}` : "任务内容"}</span><button type="button" class="ghost small ticket-detail-button" data-inline-detail="${t.id}">查看详情 ${uiIcon("arrow")}</button></div>
         <div class="ticket-overview-grid">
-          <section><h4>推进这项工作</h4><form class="inline-note-form stack" data-inline-note="${t.id}"><label class="sr-only" for="inline-note-${t.id}">记录进展</label><input id="inline-note-${t.id}" name="note" maxlength="500" required placeholder="记录一条进展，不修改任务状态" value="${escapeHtml(todos.noteDrafts.get(t.id) || "")}" ${t.archived_at ? "disabled" : ""}><button class="ghost small" ${t.archived_at || todos.inlineBusy ? "disabled" : ""}>记录进展</button></form><p class="muted small">关联材料 ${t.materials || 0} 份 · 完整来源与历史在详情中查看</p><details class="meta" data-disclosure="todo:${t.id}:description" ${disclosureOpen(`todo:${t.id}:description`)}><summary>原始说明</summary>${points.length ? `<ul class="ticket-points">${points.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul>` : '<p class="muted small">暂无说明，可在详情中补充。</p>'}</details></section>
-          <section><div class="section-head"><h4>子待办 <small>${t.children_done || 0} / ${t.children_total || 0} 项已完成</small></h4></div>
+          <section class="ticket-main-content"><div class="ticket-section-heading"><span class="ticket-section-icon">${uiIcon("report")}</span><h4>原始说明</h4></div><div class="ticket-description-surface">
+            <div id="ticket-description-${t.id}" class="ticket-description ${canCollapse && !descriptionOpen ? "is-collapsed" : ""}">${description.trim() ? escapeHtml(description) : '<span class="muted">暂无说明，可在详情中补充。</span>'}</div>
+            ${canCollapse ? `<button type="button" class="ghost small description-toggle" data-description-toggle="${t.id}" aria-controls="ticket-description-${t.id}" aria-expanded="${descriptionOpen}">${descriptionToggleContent(descriptionOpen)}</button>` : ""}
+            </div><div class="ticket-source-meta">${uiIcon("folder")}<span>关联材料 <b>${t.materials || 0}</b> 份</span><span class="muted">· 来源与历史可在详情查看</span></div>
+            ${!t.archived_at ? `<button type="button" class="ghost small note-toggle" data-note-toggle="${t.id}" aria-controls="inline-note-form-${t.id}" aria-expanded="${noteOpen}">${noteToggleContent(noteOpen)}</button>
+            <form id="inline-note-form-${t.id}" class="inline-note-form stack ${noteOpen ? "" : "hidden"}" data-inline-note="${t.id}"><div class="note-form-heading"><b>本次进展</b><span>不改变任务状态</span></div><label class="sr-only" for="inline-note-${t.id}">追加进展</label><textarea id="inline-note-${t.id}" name="note" maxlength="500" rows="3" required placeholder="补充本次进展，不修改任务状态" ${!noteOpen || todos.inlineBusy ? "disabled" : ""}>${escapeHtml(todos.noteDrafts.get(t.id) || "")}</textarea><div class="row gap"><button type="submit" class="primary small" ${todos.inlineBusy ? "disabled" : ""}>保存进展</button><button type="button" class="ghost small" data-note-cancel="${t.id}" ${todos.inlineBusy ? "disabled" : ""}>取消</button></div></form>` : ""}
+          </section>
+          <section class="ticket-children-content"><div class="ticket-section-heading"><span class="ticket-section-icon">${uiIcon("check")}</span><h4>子待办</h4><span class="child-summary">${t.children_done || 0} / ${t.children_total || 0} 项已完成</span></div>
           ${inlineChildren(t, children)}</section>
         </div>
       </div>
@@ -124,6 +141,32 @@ function renderTodoList() {
 }
 
 $("#todo-list").addEventListener("click", (e) => {
+  const description = e.target.closest("[data-description-toggle]");
+  if (description) {
+    const id = description.dataset.descriptionToggle;
+    const open = description.getAttribute("aria-expanded") !== "true";
+    disclosureState.set(`todo:${id}:description`, open);
+    document.getElementById(`ticket-description-${id}`).classList.toggle("is-collapsed", !open);
+    description.setAttribute("aria-expanded", String(open));
+    description.innerHTML = descriptionToggleContent(open);
+    return;
+  }
+  const note = e.target.closest("[data-note-toggle], [data-note-cancel]");
+  if (note) {
+    if (todos.inlineBusy) return;
+    const id = Number(note.dataset.noteToggle || note.dataset.noteCancel);
+    const form = document.getElementById(`inline-note-form-${id}`);
+    const trigger = document.querySelector(`[data-note-toggle="${id}"]`);
+    const open = !note.hasAttribute("data-note-cancel") && !todos.noteOpen.has(id);
+    if (note.hasAttribute("data-note-cancel")) { todos.noteDrafts.delete(id); form.elements.note.value = ""; }
+    open ? todos.noteOpen.add(id) : todos.noteOpen.delete(id);
+    form.classList.toggle("hidden", !open);
+    form.elements.note.disabled = !open;
+    trigger.setAttribute("aria-expanded", String(open));
+    trigger.innerHTML = noteToggleContent(open);
+    if (open) form.elements.note.focus(); else trigger.focus();
+    return;
+  }
   const button = e.target.closest("[data-inline-detail]");
   if (button) openTodo(Number(button.dataset.inlineDetail));
   const trigger = e.target.closest("[data-status-menu]");
@@ -669,11 +712,16 @@ $("#todo-list").addEventListener("submit", async (e) => {
   if (!form) return;
   e.preventDefault();
   const id = Number(form.dataset.inlineNote), text = form.elements.note.value.trim();
-  if (!text || todos.inlineBusy) return;
-  const button = form.querySelector("button"); button.disabled = true;
+  if (!text || todos.inlineBusy || !todos.noteOpen.has(id)) return;
+  for (const control of form.elements) control.disabled = true;
   await saveInlineChild(id, async () => {
     await api(`/todos/${id}/notes`, {method:"POST", json:{text}});
     todos.noteDrafts.delete(id);
+    todos.noteOpen.delete(id);
   }, "进展已记录，任务状态未修改。");
-  if (button.isConnected) button.disabled = false;
+  const current = document.getElementById(`inline-note-form-${id}`);
+  if (current) {
+    for (const control of current.elements) control.disabled = false;
+    current.elements.note.disabled = !todos.noteOpen.has(id);
+  }
 });
