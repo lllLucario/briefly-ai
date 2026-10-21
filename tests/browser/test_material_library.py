@@ -1,4 +1,6 @@
 """材料库页面：搜索、组合筛选、分页、空状态、竞态与失败反馈、关联待办与添加结果。隔离数据、假模型。"""
+import re
+
 import pytest
 from playwright.sync_api import expect
 
@@ -205,3 +207,33 @@ def test_narrow_layout_has_no_horizontal_overflow(web_page, width):
     delete = page.locator("#material-rows [data-delete]").first
     box = delete.bounding_box()
     assert box and box["x"] + box["width"] <= width
+
+
+def test_material_detail_opens_as_modal_and_returns_to_list(web_page):
+    page = web_page
+    for i in range(3):
+        add(page, f"材料{i}", f"第{i}份虚构正文")
+    open_library(page)
+    page.locator("#lib-q").fill("材料1")
+    expect(rows(page)).to_have_count(1)
+    rows(page).first.click()
+    panel = page.locator("#material-panel")
+    expect(panel).to_be_visible()
+    expect(panel.locator("#material-title")).to_have_text("材料1")
+    expect(panel).to_contain_text("第1份虚构正文")
+    expect(rows(page).first).to_have_class(re.compile("active"))
+    page.locator("#material-close").click()
+    expect(panel).to_be_hidden()
+    expect(page.locator("#lib-q")).to_have_value("材料1")
+    expect(rows(page).first).not_to_have_class(re.compile("active"))
+
+    rows(page).first.locator(".lib-open").click()
+    expect(panel).to_be_visible()
+    page.keyboard.press("Escape")
+    expect(panel).to_be_hidden()
+
+    rows(page).first.click()
+    panel.locator("#use-in-chat").click()
+    expect(panel).to_be_hidden()
+    expect(page.locator("#tab-chat")).to_be_visible()
+    expect(page.locator("#picked")).to_contain_text("材料1")

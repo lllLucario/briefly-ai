@@ -200,6 +200,7 @@ function materialTitle(id) {
 // ---------- 标签页 ----------
 async function activateTab(name, load = true) {
     if (name !== "todos" && $("#todo-panel").open) $("#todo-panel").close();
+    if ($("#material-panel").open) $("#material-panel").close(); // 从材料详情转去对话、周报、待办时先关闭
     const btn = document.querySelector(`.tabs button[data-tab="${name}"]`);
     document.querySelectorAll(".tabs button").forEach((b) => {
       b.classList.toggle("active", b === btn);
@@ -317,7 +318,7 @@ $("#material-rows").addEventListener("click", async (e) => {
         if (!(await uiConfirm(err.message, { title: "删除材料", ok: "仍然删除", danger: true }))) return;
         await api(`/materials/${id}?force=true`, { method: "DELETE" });
       }
-      if (state.activeMaterial === id) { state.activeMaterial = null; $("#material-detail").classList.add("hidden"); }
+      if (state.activeMaterial === id) $("#material-panel").close();
       await loadMaterials();
     } catch (err) { showNotice($("#material-msg"), escapeHtml(err.message), "error"); }
     return;
@@ -330,8 +331,8 @@ async function showMaterialDetail(id) {
   state.activeMaterial = id;
   renderMaterialRows();
   const box = $("#material-detail");
-  box.classList.remove("hidden");
   box.innerHTML = `<p class="muted">加载中…</p>`;
+  if (!$("#material-panel").open) $("#material-panel").showModal();
   try {
     const m = await api(`/materials/${id}`);
     if (state.activeMaterial !== id) return;
@@ -342,15 +343,14 @@ async function showMaterialDetail(id) {
     const warnings = m.warnings.length
       ? `<div class="notice warn"><b>解析提示</b><ul>${m.warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join("")}</ul></div>` : "";
     box.innerHTML = `
-      <div class="row gap wrap" style="justify-content:space-between">
-        <h3 style="margin:0">${escapeHtml(m.title)}</h3>
+      <div class="material-head">
+        <h3 id="material-title">${escapeHtml(m.title)}</h3>
         <div class="row gap wrap">
           <button class="ghost" id="use-in-chat">用于对话</button>
           <button class="ghost" data-material-skill="summarize">总结</button>
           <button class="ghost" data-material-skill="minutes">整理纪要</button>
           <button class="ghost" data-material-skill="todo">提取待办</button>
           <button class="ghost" id="material-to-week">加入本周材料</button>
-          <button class="ghost" id="close-detail">收起</button>
         </div>
       </div>
       <details class="meta"><summary>技术信息</summary>编号 ${m.id} · ${m.char_count} 字 · ${m.chunk_count} 块 · ${m.section_count} 个章节 · 结构来源：${escapeHtml(m.structure || "-")}</details>
@@ -361,7 +361,6 @@ async function showMaterialDetail(id) {
       <details class="meta" data-disclosure="material:${m.id}:outline" ${disclosureOpen(`material:${m.id}:outline`)}><summary>文档大纲（${m.sections.length} 个章节）</summary><div class="outline">${outline}</div></details>
       <details class="meta"><summary>解析报告</summary><pre class="content-box">${escapeHtml(JSON.stringify(report, null, 2))}</pre></details>`;
     box.querySelectorAll("[data-lib-todo]").forEach((b) => b.onclick = () => openTodoFromLibrary(Number(b.dataset.libTodo)));
-    $("#close-detail").onclick = () => { state.activeMaterial = null; box.classList.add("hidden"); renderMaterialRows(); };
     $("#use-in-chat").onclick = () => {
       state.picked.add(id);
       renderPicked();
@@ -376,6 +375,9 @@ async function showMaterialDetail(id) {
     box.innerHTML = `<div class="notice error">${escapeHtml(err.message)}</div>`;
   }
 }
+
+$("#material-close").addEventListener("click", () => $("#material-panel").close());
+$("#material-panel").addEventListener("close", () => { state.activeMaterial = null; renderMaterialRows(); });
 
 // ---------- 添加材料（弹窗：上传文件 / 粘贴文字 / 飞书链接）
 function showAddPane(name) {

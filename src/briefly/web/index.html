@@ -247,7 +247,6 @@
           <span id="lib-page" class="muted small"></span>
           <button type="button" id="lib-next" class="ghost small">下一页</button>
         </nav>
-        <div id="material-detail" class="detail hidden"></div>
       </div>
       <div id="mat-tracked" class="hidden">
         <div class="row gap wrap plan-bar">
@@ -446,6 +445,12 @@
     </div>
     <div id="mat-picker-list" class="checklist picker-list"></div>
     <div class="row gap end"><span id="mat-picker-count" class="muted grow"></span><button id="mat-picker-done" class="primary"><svg class="icon action-icon" aria-hidden="true"><use href="#i-tick"/></svg>确定</button></div>
+  </dialog>
+
+  <!-- 材料详情：在材料库上方弹出，关闭后回到原来的列表位置 -->
+  <dialog class="panel todo-modal material-modal" id="material-panel" aria-labelledby="material-title">
+    <div class="material-nav"><span>材料详情</span><button type="button" id="material-close" class="ghost icon-close" aria-label="关闭材料详情"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+    <div id="material-detail"></div>
   </dialog>
 
   <!-- 材料库：按具体待办筛选 -->
