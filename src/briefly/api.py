@@ -10,9 +10,9 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.language_models import BaseChatModel
@@ -26,6 +26,7 @@ from .context_builder import SYSTEM_REPLY
 from .db import create_db_engine
 from .feishu import FeishuClient, client_from_config
 from .llm import create_chat_model
+from . import material_library as library
 from .materials import TRACKED, Material, MaterialNotFound, MaterialStore
 from .sessions import ChatSession, SessionStore
 from .skills import SKILLS
@@ -62,6 +63,16 @@ class SectionOut(BaseModel):
     path: str
 
 
+class RelatedTodo(BaseModel):
+    id: int
+    title: str
+    parent_id: int | None
+    parent_title: str | None
+    archived: bool
+    relation: str  # direct 直接关联；shared 来自父待办的共享材料
+    from_todo_id: int  # 关联实际所在的待办（共享时是父待办）
+
+
 class MaterialOut(BaseModel):
     id: int
     title: str
@@ -75,6 +86,20 @@ class MaterialOut(BaseModel):
     created_at: datetime
     feishu: dict | None = None  # 从飞书导入的材料：{kind, token, url}，用于开启追踪
     tracked: dict | None = None  # 追踪中文件的最新版本 {file_id, key}，随追踪更新
+    # 列表与选择器用的只读摘要（见 material_library）
+    preview: str = ""  # 正文开头，合并空白后最多 120 字
+    source_category: str | None = None  # 来源：file 本机文件 / paste 粘贴文字 / feishu 飞书（与追踪状态无关）
+    # 更新方式：fixed 没有在追踪；tracked 追踪中；paused 追踪已暂停；error 原文件缺失或无法访问
+    tracking_state: str | None = None
+    tracking_note: str = ""  # 暂停、异常的说明
+    related_todos: list[RelatedTodo] = []  # 关联的待办：直接关联在前，子待办含父待办名称
+
+
+class LibraryPage(BaseModel):
+    items: list[MaterialOut]
+    total: int  # 符合条件的材料总数
+    offset: int
+    limit: int
 
 
 class MaterialDetail(MaterialOut):
@@ -336,12 +361,19 @@ def create_app(
         return latest_materials(app.state.store.engine)
 
     def summary(
-        store: MaterialStore, m: Material, chunks: dict | None = None, sections: dict | None = None, tracked: dict | None = None
+        store: MaterialStore,
+        m: Material,
+        chunks: dict | None = None,
+        sections: dict | None = None,
+        tracked: dict | None = None,
+        described: tuple[dict, dict] | None = None,
     ):
-        """chunks / sections / tracked 为批量查好的；不传时单独查这一份。"""
+        """chunks / sections / tracked / described（library.describe 的结果）为批量查好的；不传时单独查这一份。"""
         chunks = store.chunk_counts([m.id]) if chunks is None else chunks
         sections = store.section_counts([m.id]) if sections is None else sections
         tracked = tracked_versions() if tracked is None else tracked
+        info, previews = library.describe(store.engine, [m.id], include_archived=True) if described is None else described
+        x = info.get(m.id)
         return MaterialOut(
             id=m.id,
             title=m.title,
@@ -357,6 +389,11 @@ def create_app(
             if (feishu := m.parse_report.get("feishu"))
             else None,
             tracked=tracked.get(m.id),
+            preview=previews.get(m.id, ""),
+            source_category=x.source_category if x else None,
+            tracking_state=x.tracking_state if x else None,
+            tracking_note=x.tracking_note if x else "",
+            related_todos=x.related_todos if x else [],
         )
 
     def created(store: MaterialStore, m: Material, is_new: bool, response: Response) -> CreatedMaterial:
@@ -382,7 +419,33 @@ def create_app(
     @app.get("/materials", tags=[docs.MATERIALS], response_model=list[MaterialOut], summary="材料列表（不含正文）")
     def list_materials(store: Store):
         chunks, sections, tracked = store.chunk_counts(), store.section_counts(), tracked_versions()
-        return [summary(store, m, chunks, sections, tracked) for m in store.list_materials()]
+        materials = store.list_materials(content=False)
+        described = library.describe(store.engine, [m.id for m in materials])
+        return [summary(store, m, chunks, sections, tracked, described) for m in materials]
+
+    # 静态路径要注册在 /materials/{material_id} 之前
+    @app.get("/materials/library", tags=[docs.MATERIALS], response_model=LibraryPage, summary="材料库浏览：标题搜索、筛选、排序、分页")
+    def library_page(
+        store: Store,
+        q: Annotated[str, Query(max_length=200, description="标题子串，不区分英文大小写")] = "",
+        source: Literal["all", "file", "paste", "feishu"] = "all",
+        tracking: Literal["all", "tracked", "fixed"] = "all",
+        relation: Literal["all", "unlinked", "todo"] = "all",
+        todo_id: int | None = None,
+        include_archived: bool = False,
+        sort: Literal["newest", "oldest", "title"] = "newest",
+        offset: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        material_ids: Annotated[list[int] | None, Query(description=f"限定材料编号，最多 {library.MAX_IDS} 个")] = None,
+    ):
+        ids, total, info, previews = library.browse(
+            store.engine, q=q, source=source, tracking=tracking, relation=relation, todo_id=todo_id,
+            include_archived=include_archived, sort=sort, offset=offset, limit=limit, material_ids=material_ids,
+        )  # fmt: skip
+        materials = {m.id: m for m in store.list_materials(ids, content=False)}
+        chunks, sections, tracked = store.chunk_counts(ids), store.section_counts(ids), tracked_versions()
+        items = [summary(store, materials[i], chunks, sections, tracked, (info, previews)) for i in ids]
+        return LibraryPage(items=items, total=total, offset=offset, limit=limit)
 
     @app.get("/materials/{material_id}", tags=[docs.MATERIALS], response_model=MaterialDetail, summary="材料详情：正文、大纲、解析报告")
     def get_material(material_id: int, store: Store):

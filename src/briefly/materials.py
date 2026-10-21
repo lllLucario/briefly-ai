@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import JSON, DateTime, Engine, ForeignKey, Integer, String, Text, func, or_, select, update
-from sqlalchemy.orm import Mapped, mapped_column, relationship, sessionmaker
+from sqlalchemy.orm import Mapped, defer, mapped_column, relationship, sessionmaker
 
 from . import config
 from .chunking import chunk_text, parse_sections, uses_markdown
@@ -164,9 +164,11 @@ class MaterialStore:
             raise ValueError(f"未从文件中提取到文字{hint}")
         return self.add_text(filename, doc.text, source="file", kind=kind, markdown=doc.markdown, report=doc.report)
 
-    def list_materials(self, ids: list[int] | None = None) -> list[Material]:
-        """不指定 ids 时列用户添加的材料和追踪中文件的最新版本（不含旧版本）。"""
+    def list_materials(self, ids: list[int] | None = None, content: bool = True) -> list[Material]:
+        """不指定 ids 时列用户添加的材料和追踪中文件的最新版本（不含旧版本）。content=False 不读正文（列表摘要用）。"""
         query = select(Material).order_by(Material.id)
+        if not content:
+            query = query.options(defer(Material.content, raiseload=True))
         if ids is not None:
             query = query.where(Material.id.in_(ids))
         else:
