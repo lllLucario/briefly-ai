@@ -1121,3 +1121,16 @@ button.note-toggle { width: 100%; min-height: 62px; display: flex; align-items: 
   .lib-table tr.is-new td:first-child { box-shadow: none; }
   .lib-table tr.is-new { box-shadow: inset 3px 0 0 var(--accent); }
 }
+
+/* 材料选择器：每行带来源、更新方式、正文开头与关联待办，同名材料可区分。 */
+.picker-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.picker-filters input { flex: 1 1 200px; min-width: 0; }
+.picker-filters label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.picker-filters select { color: var(--text); }
+.checklist label.pick-row { align-items: flex-start; padding: 6px; }
+.pick-row .ficon { width: 18px; height: 18px; flex: none; margin-top: 2px; }
+.pick-row input { margin-top: 4px; }
+.pick-body { display: flex; flex-direction: column; min-width: 0; }
+.pick-title { overflow-wrap: anywhere; }
+.pick-meta { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.pick-preview { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

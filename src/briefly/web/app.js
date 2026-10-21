@@ -1054,16 +1054,47 @@ $("#picked").addEventListener("click", (e) => {
   if (b) { state.picked.delete(Number(b.dataset.unpick)); renderPicked(); }
 });
 
+// 选择器里的一行：标题、来源、更新方式、正文开头和关联待办，帮助区分同名材料
+function pickerRow(m, { checked = false, disabled = false, note = "", badge = "" } = {}) {
+  const todos = (m.related_todos || []).map(todoName);
+  const state_ = m.tracking_state === "paused" ? "（已暂停）" : m.tracking_state === "error" ? "（追踪异常）" : "";
+  const linked = todos.length ? ` · 待办：${escapeHtml(todos.slice(0, 2).join("、"))}${todos.length > 2 ? ` 等 ${todos.length} 项` : ""}` : "";
+  return `<label class="pick-row">${fileIcon(m.file_type || "paste")}<input type="checkbox" value="${m.id}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""}>
+    <span class="pick-body"><span class="pick-title">${escapeHtml(m.title)}${note ? ` <span class="muted">${note}</span>` : ""}${badge}</span>
+      <span class="pick-meta">${escapeHtml(sourceLabel(m))} · ${updateLabel(m)}${state_} · ${m.char_count} 字${linked}</span>
+      ${m.preview ? `<span class="pick-preview">${escapeHtml(m.preview)}</span>` : ""}</span></label>`;
+}
+
+function pickerMatches(m, q, source = "all", tracking = "all") {
+  if (q && !m.title.toLowerCase().includes(q)) return false;
+  if (source !== "all" && m.source_category !== source) return false;
+  if (tracking === "fixed" && m.tracking_state !== "fixed") return false;
+  return !(tracking === "tracked" && m.tracking_state === "fixed");
+}
+
+// 助理用的材料选择：勾选状态在搜索时保留，确定后才生效
+const chatPick = { picking: new Set() };
+function renderChatPicker() {
+  const q = $("#picker-q").value.trim().toLowerCase();
+  const rows = state.materials.filter((m) => pickerMatches(m, q));
+  $("#picker-list").innerHTML = rows.length
+    ? rows.map((m) => pickerRow(m, { checked: chatPick.picking.has(m.id) })).join("")
+    : `<p class="muted">${state.materials.length ? "没有匹配的材料" : "材料库是空的，请先到“材料”页上传或粘贴。"}</p>`;
+}
 $("#pick-materials").addEventListener("click", async () => {
   await loadMaterials();
-  $("#picker-list").innerHTML = state.materials.length
-    ? state.materials.map((m) => `<label><input type="checkbox" value="${m.id}" ${state.picked.has(m.id) ? "checked" : ""}>
-        ${m.id}. ${escapeHtml(m.title)} <span class="muted">（${m.char_count} 字${m.tracked ? "，追踪中 · 最新版本" : ""}）</span></label>`).join("")
-    : `<p class="muted">材料库是空的，请先到“材料”页上传或粘贴。</p>`;
+  chatPick.picking = new Set(state.picked);
+  $("#picker-q").value = "";
+  renderChatPicker();
   $("#picker").showModal();
 });
+$("#picker-q").addEventListener("input", renderChatPicker);
+$("#picker-list").addEventListener("change", (e) => {
+  const cb = e.target.closest("input[type=checkbox]");
+  if (cb) cb.checked ? chatPick.picking.add(Number(cb.value)) : chatPick.picking.delete(Number(cb.value));
+});
 $("#picker-done").addEventListener("click", () => {
-  state.picked = new Set([...document.querySelectorAll("#picker-list input:checked")].map((i) => Number(i.value)));
+  state.picked = new Set(chatPick.picking);
   renderPicked();
   $("#picker").close();
 });
@@ -1075,13 +1106,12 @@ const pickState = { picking: new Set(), exclude: new Set(), suggested: new Set()
 
 function renderMatPicker() {
   const q = $("#mat-picker-q").value.trim().toLowerCase();
-  const rows = state.materials.filter((m) => !q || m.title.toLowerCase().includes(q));
+  const rows = state.materials.filter((m) => pickerMatches(m, q, $("#mat-picker-source").value, $("#mat-picker-tracking").value));
   $("#mat-picker-list").innerHTML = rows.length
     ? rows.map((m) => {
       const has = pickState.exclude.has(m.id);
-      const tip = has ? "（已加入）" : `（${m.char_count} 字${m.tracked ? "，追踪中的最新版本" : m.feishu ? "，飞书" : ""}）`;
-      return `<label>${fileIcon(m.file_type || "paste")}<input type="checkbox" value="${m.id}" ${has || pickState.picking.has(m.id) ? "checked" : ""} ${has ? "disabled" : ""}>
-        ${escapeHtml(m.title)} <span class="muted">${tip}</span>${pickState.suggested.has(m.id) && !has ? ' <span class="badge">本周待办的材料</span>' : ""}</label>`;
+      return pickerRow(m, { checked: has || pickState.picking.has(m.id), disabled: has, note: has ? "（已加入）" : "",
+        badge: pickState.suggested.has(m.id) && !has ? ' <span class="badge">本周待办的材料</span>' : "" });
     }).join("")
     : `<p class="muted">${state.materials.length ? "没有匹配的材料" : "材料库是空的"}</p>`;
   $("#mat-picker-count").textContent = pickState.picking.size ? `已选 ${pickState.picking.size} 份` : "";
@@ -1095,12 +1125,16 @@ async function pickMaterials({ title = "从材料库选择", ok = "确定", excl
   $("#mat-picker-title").textContent = title;
   $("#mat-picker-done").textContent = ok;
   $("#mat-picker-q").value = "";
+  $("#mat-picker-source").value = "all";
+  $("#mat-picker-tracking").value = "all";
   renderMatPicker();
   $("#mat-picker").showModal();
   return new Promise((resolve) => { pickResolve = resolve; });
 }
 
 $("#mat-picker-q").addEventListener("input", renderMatPicker);
+$("#mat-picker-source").addEventListener("change", renderMatPicker);
+$("#mat-picker-tracking").addEventListener("change", renderMatPicker);
 $("#mat-picker-list").addEventListener("change", (e) => {
   const cb = e.target.closest("input[type=checkbox]");
   if (!cb) return;
@@ -1113,6 +1147,7 @@ $("#mat-picker-done").addEventListener("click", () => {
   pickResolve = null;
 });
 $("#mat-picker").addEventListener("close", () => {
+  if ($("#mat-picker").open) return; // 关闭事件晚到时选择器已重新打开：不能结束新的选择
   if (pickResolve) pickResolve(null);
   pickResolve = null;
 });

@@ -288,6 +288,7 @@ $("#lib-todo-list").addEventListener("click", (e) => {
   resolve?.({ id: t.id, label: t.label });
 });
 $("#lib-todo-dialog").addEventListener("close", () => {
+  if ($("#lib-todo-dialog").open) return;
   if (libTodoResolve) libTodoResolve(null);
   libTodoResolve = null;
 });
@@ -318,8 +319,9 @@ function libraryAdded(batch, result) {
 }
 
 async function libraryFinishAdd(batch) {
-  if (!batch.onPage || !batch.ids.length) return;
+  if (!batch.ids.length) return;
   libraryState.batch = { ...batch, ids: batch.ids.slice(-LIB_BATCH_MAX), truncated: batch.ids.length > LIB_BATCH_MAX ? batch.ids.length : 0 };
+  if (!batch.onPage) return; // 从助理等入口添加：留在原页面，可用“在材料库查看”再看
   libraryState.highlight = new Set(batch.ids);
   await loadLibrary();
   const visible = libraryState.items.filter((m) => libraryState.highlight.has(m.id)).length;
@@ -328,6 +330,12 @@ async function libraryFinishAdd(batch) {
     : visible < batch.ids.length ? "部分材料不在当前筛选或页码中。" : "";
   showNotice($("#material-msg"), `本次添加：${parts.join("，")}。${where} <button type="button" class="ghost small" data-lib-batch>查看本次添加</button>`, batch.failed || where ? "warn" : "");
   $("#material-rows .is-new")?.scrollIntoView({ block: "nearest" });
+}
+
+async function showAddedInLibrary() {
+  if (!$("#tab-materials").classList.contains("active")) await activateTab("materials", false);
+  document.querySelector('#mat-tabs [data-mt="library"]').click();
+  enterBatchView();
 }
 
 function enterBatchView() {

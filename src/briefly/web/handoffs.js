@@ -218,7 +218,8 @@ $("#add-follow").onclick = () => {
 function importedForAssistant(id) {
   if (addForAssistant) { state.picked.add(id); renderPicked(); }
   const next = $("#import-next"); next.classList.remove("hidden");
-  next.innerHTML = `<span class="muted small">材料已保存，下一步：</span><button type="button" class="ghost small" data-import-chat>用于助理</button><button type="button" class="ghost small" data-import-todo>关联到待办</button><button type="button" class="ghost small" data-import-week>加入本周材料</button>`;
+  next.innerHTML = `<span class="muted small">材料已保存，下一步：</span><button type="button" class="ghost small" data-import-chat>用于助理</button><button type="button" class="ghost small" data-import-todo>关联到待办</button><button type="button" class="ghost small" data-import-week>加入本周材料</button><button type="button" class="text-button small" data-import-library>在材料库查看</button>`;
+  next.querySelector("[data-import-library]").onclick = () => { $("#add-dialog").close(); showAddedInLibrary(); };
   next.querySelector("[data-import-chat]").onclick = () => { $("#add-dialog").close(); useMaterial(id); };
   next.querySelector("[data-import-week]").onclick = () => { $("#add-dialog").close(); transferToWeek({material_ids:[id]}); };
   next.querySelector("[data-import-todo]").onclick = async () => {

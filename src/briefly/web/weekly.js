@@ -459,6 +459,7 @@ async function setWeekMaterials(ids) {
 $("#week-pick").addEventListener("click", async () => {
   const r = weekly.current;
   const ids = await pickMaterials({ title: "加入本周材料", ok: "加入", exclude: r.material_ids, suggested: r.todo_material_ids || [] });
+  if (weekly.current?.period_start !== r.period_start) return; // 选择期间换了周：不写入另一周
   if (ids?.length) {
     try { await setWeekMaterials([...r.material_ids, ...ids]); } catch (err) { weekMsg(escapeHtml(err.message), "error"); }
   }

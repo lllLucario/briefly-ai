@@ -672,34 +672,48 @@ $("#todo-note-form").addEventListener("submit", async (e) => {
 });
 
 // ---------- 材料：上传（存进材料库并关联）、从材料库选择（只建关联）
+// 上传期间用户可能切到别的任务或关闭详情：整批都关联到发起时的任务，完成后只在仍停留在该任务时刷新详情
+function stillOnTodo(todoId) {
+  return todos.detailOpen && todos.id === todoId;
+}
+
 $("#todo-upload").addEventListener("change", async (e) => {
   const files = [...e.target.files];
+  const todoId = todos.id, title = todos.detail?.title || "";
   e.target.value = "";
   const lines = [];
+  let failed = 0;
   for (const f of files) {
-    todoMsg(`正在上传并解析《${escapeHtml(f.name)}》…`);
+    if (stillOnTodo(todoId)) todoMsg(`正在上传并解析《${escapeHtml(f.name)}》…`);
     const form = new FormData();
     form.append("file", f);
     try {
-      const r = await api(`/todos/${todos.id}/materials/upload`, { method: "POST", body: form });
+      const r = await api(`/todos/${todoId}/materials/upload`, { method: "POST", body: form });
       lines.push(`《${escapeHtml(f.name)}》${r.new_material ? "已存进材料库并关联" : "材料库里已有相同内容，直接关联了已有的那份"}`);
-    } catch (err) { lines.push(`《${escapeHtml(f.name)}》失败：${escapeHtml(err.message)}`); }
+    } catch (err) { failed += 1; lines.push(`《${escapeHtml(f.name)}》失败：${escapeHtml(err.message)}`); }
   }
-  todoMsg(lines.join("<br>"));
-  openTodo(todos.id, false);
-  loadMaterials();
-  loadTodos();
+  const done = lines.join("<br>");
+  try { await Promise.all([loadMaterials(), loadTodos()]); }
+  catch (err) { lines.push(`已保存，列表刷新失败：${escapeHtml(err.message)}。不需要重新上传。`); }
+  if (stillOnTodo(todoId)) {
+    await openTodo(todoId, false);
+    todoMsg(lines.join("<br>"), failed ? "warn" : "");
+  } else {
+    showNotice($("#todo-load-msg"), `「${escapeHtml(title)}」的材料上传已完成：<br>${done}`, failed ? "warn" : "");
+  }
 });
 
 $("#todo-pick").addEventListener("click", async () => {
+  const todoId = todos.id;
   const linked = todos.detail.material_list.filter((m) => m.relation === "direct").flatMap((m) => [m.material_id, m.current_id]);
   const ids = await pickMaterials({ title: "从材料库选择", ok: "关联", exclude: linked });
-  if (!ids?.length) return;
+  if (!ids?.length || !stillOnTodo(todoId)) return;
+  let linkedCount = 0;
   try {
-    for (const id of ids) await api(`/todos/${todos.id}/materials`, { method: "POST", json: { material_id: id } });
+    for (const id of ids) { await api(`/todos/${todoId}/materials`, { method: "POST", json: { material_id: id } }); linkedCount += 1; }
     todoMsg(`已关联 ${ids.length} 份材料（没有复制，材料库里仍是同一份）。`);
-  } catch (err) { todoMsg(escapeHtml(err.message), "error"); }
-  openTodo(todos.id, false);
+  } catch (err) { todoMsg(`${linkedCount ? `已关联 ${linkedCount} 份；` : ""}其余关联失败：${escapeHtml(err.message)}`, "error"); }
+  if (stillOnTodo(todoId)) openTodo(todoId, false);
   loadTodos();
 });
 

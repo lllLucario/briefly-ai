@@ -438,7 +438,12 @@
   <!-- 从材料库选择（待办、本周材料共用） -->
   <dialog id="mat-picker" class="wide">
     <div class="dialog-head"><h3 id="mat-picker-title">从材料库选择</h3><button type="button" class="ghost small" data-close aria-label="关闭弹窗"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
-    <input id="mat-picker-q" placeholder="按标题搜索" style="width:100%;margin-bottom:8px">
+    <div class="picker-filters">
+      <label for="mat-picker-q" class="visually-hidden">按标题搜索材料</label>
+      <input id="mat-picker-q" type="search" placeholder="按标题搜索" autocomplete="off">
+      <label>来源<select id="mat-picker-source"><option value="all">全部</option><option value="file">本机文件</option><option value="paste">粘贴文字</option><option value="feishu">飞书</option></select></label>
+      <label>更新方式<select id="mat-picker-tracking"><option value="all">全部</option><option value="tracked">追踪中</option><option value="fixed">固定副本</option></select></label>
+    </div>
     <div id="mat-picker-list" class="checklist picker-list"></div>
     <div class="row gap end"><span id="mat-picker-count" class="muted grow"></span><button id="mat-picker-done" class="primary"><svg class="icon action-icon" aria-hidden="true"><use href="#i-tick"/></svg>确定</button></div>
   </dialog>
@@ -478,7 +483,9 @@
   <!-- 选择材料弹窗 -->
   <dialog id="picker">
     <h3>选择对话用的材料</h3>
-    <div id="picker-list" class="checklist"></div>
+    <label for="picker-q" class="visually-hidden">按标题搜索材料</label>
+    <input id="picker-q" type="search" placeholder="按标题搜索" autocomplete="off" style="width:100%;margin-bottom:8px">
+    <div id="picker-list" class="checklist picker-list"></div>
     <div class="row gap end"><button id="picker-done" class="primary"><svg class="icon action-icon" aria-hidden="true"><use href="#i-tick"/></svg>确定</button></div>
   </dialog>
 
