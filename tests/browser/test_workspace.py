@@ -17,7 +17,7 @@ def test_task_first_journey_upload_progress_and_review(web_page):
     dialog.locator('[data-ui="1"]').fill(TASK)
     dialog.locator("#ui-ok").click()
     expect(page.locator("#todo-title")).to_have_text("整理测试记录")
-    expect(page.locator("#todo-status")).to_have_value("todo")
+    expect(page.locator("#todo-status")).to_have_attribute("data-state", "todo")
     page.locator("#todo-upload").set_input_files({
         "name":"测试记录（虚构）.md", "mimeType":"text/markdown", "buffer":TASK.encode("utf-8")})
     expect(page.locator("#todo-materials")).to_contain_text("测试记录（虚构）")
@@ -25,7 +25,7 @@ def test_task_first_journey_upload_progress_and_review(web_page):
     page.locator("#todo-note").fill(PROGRESS)
     page.locator("#todo-note-form button").click()
     expect(page.locator("#todo-msg")).to_contain_text("进展已记录")
-    expect(page.locator("#todo-status")).to_have_value("todo")
+    expect(page.locator("#todo-status")).to_have_attribute("data-state", "todo")
     page.locator("#todo-week").click()
     expect(page.locator('.week-steps [aria-current="step"]')).to_contain_text("收集素材")
     page.locator("#week-go").click()

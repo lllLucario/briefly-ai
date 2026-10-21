@@ -74,7 +74,7 @@ def run_journey(page, screenshot=None):
     page.locator("#todo-note").fill(PROGRESS)
     page.locator("#todo-note-form button").click()
     expect(page.locator("#todo-msg")).to_contain_text("进展已记录")
-    expect(page.locator("#todo-status")).to_have_value("todo")
+    expect(page.locator("#todo-status")).to_have_attribute("data-state", "todo")
     page.reload()
     page.locator('[data-tab="chat"]').click()
     page.locator("#session-list li").first.click()

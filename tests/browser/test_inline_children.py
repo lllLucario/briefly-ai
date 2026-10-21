@@ -1,4 +1,4 @@
-"""主页面直接管理子待办：保存、状态独立、可恢复移除及失败恢复。"""
+"""主页面直接管理子待办：保存、状态独立、彻底删除及失败恢复。"""
 import pytest
 from playwright.sync_api import expect
 
@@ -11,28 +11,36 @@ def setup_parent(page):
     page.request.post(base+"/todos",data={"title":"独立的第二项任务"})
     page.reload()
     row=page.locator(f"#todo-list > [data-todo='{parent['id']}']")
-    row.locator("summary").click()
+    row.locator("summary.todo-ticket-row").click()
     return base,parent,row
 
 
-@pytest.mark.parametrize("width",[1440,390])
-def test_add_status_and_recoverable_remove_in_expanded_row(web_page,width):
+@pytest.mark.parametrize("width",[1440,390,320])
+def test_add_status_and_permanent_remove_in_expanded_row(web_page,width):
     page=web_page
     page.set_viewport_size({"width":width,"height":960})
     base,parent,row=setup_parent(page)
     form=row.locator("[data-inline-add]")
     form.locator('[name="title"]').fill("核对回滚清单")
-    form.locator('[name="status"]').select_option("doing")
+    expect(form.locator('[name="status"]')).to_have_count(0)
+    title_box=form.locator('[name="title"]').bounding_box()
+    due_box=form.locator('[name="due"]').bounding_box()
+    submit_box=form.locator('button[type="submit"]').bounding_box()
+    assert abs(title_box["y"]-due_box["y"])<2
+    assert title_box["x"]<submit_box["x"] and submit_box["x"]+submit_box["width"]<=title_box["x"]+title_box["width"]
+    assert due_box["x"]>=title_box["x"]+title_box["width"]
     form.locator('[name="due"]').fill("2026-10-23")
     form.locator('button[type="submit"]').click()
     expect(row.locator(".inline-children > li")).to_have_count(1)
     expect(row.locator("[data-inline-notice]")).to_contain_text("已添加")
     expect(page.locator("#todo-panel")).not_to_be_visible()
-    select=row.locator("[data-inline-status]")
-    expect(select).to_have_value("doing")
-    select.select_option("done")
+    assert page.request.get(base+f"/todos/{parent['id']}").json()["children"][0]["status"]=="todo"
+    trigger=row.locator(".inline-child-row > .ticket-status")
+    expect(trigger).to_have_attribute("aria-label","更改核对回滚清单的状态：未开始")
+    trigger.click()
+    page.locator('[data-status-choice="done"]').click()
     expect(row.locator("[data-inline-notice]")).to_contain_text("状态已更新")
-    expect(row.locator(".inline-child-row > .ticket-status")).to_have_attribute("aria-label","已完成")
+    expect(row.locator(".inline-child-row > .ticket-status")).to_have_attribute("aria-label","更改核对回滚清单的状态：已完成")
     children=page.request.get(base+f"/todos/{parent['id']}").json()["children"]
     child=children[0]
     assert child["status"]=="done" and child["due_date"]=="2026-10-23"
@@ -40,15 +48,16 @@ def test_add_status_and_recoverable_remove_in_expanded_row(web_page,width):
     first,second=page.locator("#todo-list > li").all()
     assert second.bounding_box()["y"]-first.bounding_box()["y"]-first.bounding_box()["height"]>=10
     assert page.locator("body").evaluate("el=>el.scrollWidth<=window.innerWidth")
-    row.locator("[data-inline-remove]").click()
-    page.locator("#ui-cancel").click()
+    row.locator(".inline-child-row > .ticket-status").click()
+    page.locator('[data-status-choice="remove"]').click()
+    page.locator("[data-remove-cancel]").click()
     expect(row.locator(".inline-children > li")).to_have_count(1)
-    row.locator("[data-inline-remove]").click()
-    page.locator("#ui-ok").click()
+    row.locator(".inline-child-row > .ticket-status").click()
+    page.locator('[data-status-choice="remove"]').click()
+    page.locator('[data-status-choice="delete"]').click()
     expect(row.locator(".inline-children > li")).to_have_count(0)
-    expect(row.locator("[data-inline-notice]")).to_contain_text("可在“已归档”中恢复")
-    archived=page.request.get(base+f"/todos/{child['id']}").json()
-    assert archived["archived_at"] and archived["parent_id"]==parent["id"]
+    expect(row.locator("[data-inline-notice]")).to_contain_text("彻底删除")
+    assert page.request.get(base+f"/todos/{child['id']}").status==404
     assert page.request.get(base+f"/todos/{parent['id']}").json()["status"]=="doing"
 
 
@@ -72,12 +81,13 @@ def test_failed_add_keeps_draft_blocks_duplicate_submit_and_status_rolls_back(we
     expect(form.locator('[name="title"]')).to_have_value("不能丢掉的子待办草稿")
     expect(form.locator('button[type="submit"]')).to_be_enabled()
     page.unroute("**/todos",hold)
-    form.locator('button[type="submit"]').click()
-    expect(row.locator("[data-inline-status]")).to_have_count(1)
+    form.locator('[name="title"]').press("Enter")
+    expect(row.locator(".inline-child-row > .ticket-status")).to_have_count(1)
     expect(row.locator("[data-inline-notice]")).to_contain_text("已添加")
     page.route("**/todos/*/status",lambda r:r.fulfill(status=503,json={"detail":"模拟状态保存失败"}))
-    row.locator("[data-inline-status]").select_option("done")
+    row.locator(".inline-child-row > .ticket-status").click()
+    page.locator('[data-status-choice="done"]').click()
     expect(row.locator("[data-inline-notice]")).to_contain_text("模拟状态保存失败")
-    expect(row.locator("[data-inline-status]")).to_have_value("todo")
+    expect(row.locator(".inline-child-row > .ticket-status")).to_have_attribute("aria-label","更改不能丢掉的子待办草稿的状态：未开始")
     child=page.request.get(base+f"/todos/{parent['id']}").json()["children"][0]
     assert child["status"]=="todo"

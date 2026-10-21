@@ -17,6 +17,18 @@
     <symbol id="i-report" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6M8 13h8M8 17h5"/></symbol>
     <symbol id="i-pen" viewBox="0 0 24 24"><path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-4-4L5 15Z"/></symbol>
     <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V3m-5 5 5-5 5 5M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M6.1 6a8 8 0 0 1 13.3 3M4.6 15a8 8 0 0 0 13.3 3"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3" fill="var(--panel)"/><circle cx="15" cy="17" r="3" fill="var(--panel)"/></symbol>
+    <symbol id="i-tick" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12h8"/></symbol>
+    <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18a5 5 0 1 1 .4-10A6 6 0 0 1 19 10a4 4 0 0 1-1 8Z"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="m12 3 10 18H2Z M12 9v5m0 3h.01"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 4 12 8-12 8Z"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></symbol>
   </defs></svg>
   <header class="topbar">
     <div class="brand"><span class="brand-mark"><svg class="icon" aria-hidden="true"><use href="#i-spark"/></svg></span>Briefly<span class="brand-ai">AI</span></div>
@@ -67,7 +79,7 @@
   <!-- 对话 -->
   <main id="tab-chat" class="tab">
     <aside class="sidebar">
-      <button id="new-session" class="primary block">＋ 新会话</button>
+      <button id="new-session" class="primary block"><svg class="icon action-icon" aria-hidden="true"><use href="#i-plus"/></svg>新会话</button>
       <div class="side-head">会话记录</div>
       <ul id="session-list" class="list"></ul>
       <div class="side-note"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span>结果先核对<br>保存由你确认</span></div>
@@ -91,8 +103,8 @@
           <button type="button" class="ghost" data-quick="weekly">起草周报</button>
         </div>
         <div class="row gap wrap">
-          <button type="button" id="chat-add" class="ghost">添加文件 / 链接</button>
-          <button type="button" id="pick-materials" class="ghost">选择材料</button>
+          <button type="button" id="chat-add" class="ghost"><svg class="icon action-icon" aria-hidden="true"><use href="#i-upload"/></svg>添加文件 / 链接</button>
+          <button type="button" id="pick-materials" class="ghost"><svg class="icon action-icon" aria-hidden="true"><use href="#i-folder"/></svg>选择材料</button>
           <div id="picked" class="chips"></div>
           <select id="skill" aria-label="本条消息的能力" title="仅指定下一条消息的能力；成功发送后恢复自动判断">
             <option value="">自动判断能力</option>
@@ -114,26 +126,24 @@
         <div><h2>我的待办</h2><p id="todo-count" class="muted small">把工作放在眼前，一件一件向前推进。</p></div>
         <div class="row gap wrap">
           <select id="todo-filter" title="显示哪些待办"><option value="open">未完成</option><option value="all">全部</option><option value="archived">已归档</option></select>
-          <button id="new-todo" class="primary">＋ 新建待办</button>
+          <button id="new-todo" class="primary"><svg class="icon action-icon" aria-hidden="true"><use href="#i-plus"/></svg>新建待办</button>
         </div>
       </div>
       <div id="todo-load-msg" class="notice hidden" role="status"></div>
       <ul id="todo-list" class="todo-tickets" aria-label="待办任务列表"></ul>
     <section class="panel grow" id="todo-empty-panel">
-      <div class="empty workspace-empty"><span class="empty-icon"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span><p class="eyebrow">从一件要推进的工作开始</p><h2>让每一项工作，<br>都有着落。</h2><p>创建待办、关联材料，记录每一步进展。<br>到写周报时，工作已经有迹可循。</p><button type="button" class="primary" id="start-todo">＋ 创建一条待办</button><div class="empty-flow"><span>创建待办</span><i>→</i><span>关联材料</span><i>→</i><span>记录进展</span><i>→</i><span>汇入周报</span></div><small>也可以先到<button type="button" class="text-button" id="start-assistant">办公助理</button>处理文档或会议，再决定是否保存为待办。</small></div>
+      <div class="empty workspace-empty"><span class="empty-icon"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span><p class="eyebrow">从一件要推进的工作开始</p><h2>让每一项工作，<br>都有着落。</h2><p>创建待办、关联材料，记录每一步进展。<br>到写周报时，工作已经有迹可循。</p><button type="button" class="primary" id="start-todo"><svg class="icon action-icon" aria-hidden="true"><use href="#i-plus"/></svg>创建一条待办</button><div class="empty-flow"><span>创建待办</span><i>→</i><span>关联材料</span><i>→</i><span>记录进展</span><i>→</i><span>汇入周报</span></div><small>也可以先到<button type="button" class="text-button" id="start-assistant">办公助理</button>处理文档或会议，再决定是否保存为待办。</small></div>
     </section>
     </section>
     <dialog class="panel todo-modal" id="todo-panel" aria-labelledby="todo-title">
-      <div class="todo-modal-nav"><span>任务详情</span><button id="todo-close" class="ghost small" aria-label="关闭任务详情">关闭详情 ✕</button></div>
+      <div class="todo-modal-nav"><span>任务详情</span><button id="todo-close" class="ghost icon-close" aria-label="关闭任务详情"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
       <div id="todo-loading" class="notice hidden" role="status"></div>
       <div id="todo-detail-body">
       <div class="chat-head">
         <h3 id="todo-title"></h3>
         <div class="row gap wrap">
-          <select id="todo-status" title="状态">
-            <option value="todo">未开始</option><option value="doing">进行中</option><option value="done">已完成</option>
-          </select>
-          <button id="todo-edit" class="ghost">编辑</button>
+          <button type="button" id="todo-status" class="detail-status" aria-haspopup="menu" aria-expanded="false"></button>
+          <button id="todo-edit" class="ghost"><svg class="icon action-icon" aria-hidden="true"><use href="#i-pen"/></svg>编辑</button>
           <button id="todo-promote" class="ghost hidden" title="解除父子关系，变成独立待办；编号、材料、活动和历史周报都保留">转为独立待办</button>
           <button id="todo-archive" class="ghost danger">归档</button>
           <button id="todo-restore" class="ghost hidden">恢复</button>
@@ -142,37 +152,35 @@
       <div id="todo-msg" class="notice hidden"></div>
       <div id="todo-info" class="todo-info"></div>
 
-      <div id="todo-children-box" class="todo-section">
-        <div class="section-head"><h4>子待办 <span id="todo-progress" class="muted small"></span></h4>
-          <button id="todo-add-child" class="ghost small">＋ 子待办</button></div>
-        <div id="todo-children"></div>
-      </div>
-
       <div class="todo-section">
-        <div class="section-head"><h4>材料</h4>
-          <div class="row gap">
-            <label class="button ghost small" title="从本机选文件：存进材料库并关联到这个待办">上传文件<input type="file" id="todo-upload" multiple accept=".txt,.md,.docx,.pdf,.xlsx,.csv" hidden></label>
-            <button id="todo-pick" class="ghost small" title="从材料库里已有的材料（包括导入的飞书文档）中选择">从材料库选择</button>
-          </div></div>
-        <div id="todo-materials"></div>
-        <small class="muted">解除关联不会删除材料。追踪（检查原文件的修改）在“材料”页开启；本机上传的是一份副本，不能追踪原文件。</small>
-      </div>
-
-      <div class="todo-section">
-        <div class="section-head"><h4>进展与活动</h4><button id="todo-week" class="ghost small">到本周周报核对 →</button></div>
+        <div class="section-head"><h4>记录进展</h4><button id="todo-week" class="ghost small"><svg class="icon action-icon" aria-hidden="true"><use href="#i-report"/></svg>到本周周报核对</button></div>
         <form id="todo-note-form" class="row gap">
           <input id="todo-note" class="grow" maxlength="500" placeholder="简短的进展说明（可选），如：完成竞品数据收集，等待财务提供报价">
           <select id="todo-note-status" title="记录进展时是否同时修改任务状态"><option value="">不修改任务状态</option><option value="doing">同时设为进行中</option><option value="done">同时设为已完成</option><option value="todo">同时设为未开始</option></select>
           <button class="ghost">记录</button>
         </form>
         <p class="muted small">本周进展会在整理周报时进入核对清单；记录进展默认不修改任务状态。</p>
-        <div id="todo-timeline" class="timeline"></div>
+        <details class="detail-disclosure" id="todo-history-section"><summary>活动历史 <span id="todo-history-count" class="muted small"></span></summary><div id="todo-timeline" class="timeline"></div></details>
       </div>
 
-      <div class="todo-section">
-        <div class="section-head"><h4>相关周报</h4></div>
-        <div id="todo-reports"></div>
+      <div id="todo-children-box" class="todo-section">
+        <div class="section-head"><h4>子待办 <span id="todo-progress" class="muted small"></span></h4>
+          <button id="todo-add-child" class="ghost small"><svg class="icon action-icon" aria-hidden="true"><use href="#i-plus"/></svg>子待办</button></div>
+        <div id="todo-children"></div>
       </div>
+
+
+      <details class="todo-section detail-disclosure" id="todo-material-section"><summary>关联材料 <span id="todo-material-count" class="muted small"></span></summary>
+        <div class="section-head"><h4>材料</h4>
+          <div class="row gap">
+            <label class="button ghost small" tabindex="0" role="button" title="从本机选文件：存进材料库并关联到这个待办"><svg class="icon action-icon" aria-hidden="true"><use href="#i-upload"/></svg>上传文件<input type="file" id="todo-upload" multiple accept=".txt,.md,.docx,.pdf,.xlsx,.csv" hidden></label>
+            <button id="todo-pick" class="ghost small" title="从材料库里已有的材料（包括导入的飞书文档）中选择"><svg class="icon action-icon" aria-hidden="true"><use href="#i-folder"/></svg>从材料库选择</button>
+          </div></div>
+        <div id="todo-materials"></div>
+        <small class="muted">解除关联不会删除材料。追踪（检查原文件的修改）在“材料”页开启；本机上传的是一份副本，不能追踪原文件。</small>
+      </details>
+
+      <details class="todo-section detail-disclosure" id="todo-report-section"><summary>相关周报 <span id="todo-report-count" class="muted small"></span></summary><div id="todo-reports"></div></details>
       </div>
     </dialog>
   </main>
@@ -186,7 +194,7 @@
           <button data-mt="tracked">追踪的文件 <span id="tracked-count" class="muted"></span></button>
         </nav>
         <div class="row gap wrap">
-          <button id="open-add" class="primary">＋ 添加材料</button>
+          <button id="open-add" class="primary"><svg class="icon action-icon" aria-hidden="true"><use href="#i-plus"/></svg>添加材料</button>
         </div>
       </div>
       <div id="mat-library">
@@ -206,7 +214,7 @@
         <div class="row gap wrap plan-bar">
           <span id="tracked-label" class="muted"></span>
           <span class="grow"></span>
-          <button id="scan-btn" class="ghost">检查更新</button>
+          <button id="scan-btn" class="ghost"><svg class="icon action-icon" aria-hidden="true"><use href="#i-refresh"/></svg>检查更新</button>
         </div>
         <div id="tracking-msg" class="notice hidden"></div>
         <div id="source-tree" class="tree"></div>
@@ -214,7 +222,7 @@
           <summary>＋ 添加要追踪的文件</summary>
           <div class="stack">
             <textarea id="source-paths" rows="2" placeholder="文件或文件夹的完整路径，或飞书文档链接，每行一个，如 D:\项目\方案.docx"></textarea>
-            <div class="row gap"><label class="toggle"><input type="checkbox" id="source-recursive" checked> 文件夹包含子文件夹</label><button id="source-add" class="ghost">添加</button></div>
+            <div class="row gap"><label class="toggle"><input type="checkbox" id="source-recursive" checked> 文件夹包含子文件夹</label><button id="source-add" class="ghost"><svg class="icon action-icon" aria-hidden="true"><use href="#i-plus"/></svg>添加</button></div>
             <small class="muted">添加后立即记录初始版本，之后每个工作日自动检查更新；变化进入周报的审核清单。连接飞书后，也可以在“飞书云空间”里直接点“追踪”。</small>
           </div>
         </details>
@@ -229,7 +237,7 @@
       <ul id="week-current" class="list"></ul>
       <div class="side-head"><b>周报历史</b></div>
       <ul id="weekly-list" class="list"></ul>
-      <button id="open-settings" class="ghost block">周报设置</button>
+      <button id="open-settings" class="ghost block"><svg class="icon action-icon" aria-hidden="true"><use href="#i-settings"/></svg>周报设置</button>
     </aside>
     <section class="panel grow week-panel" id="week-panel" inert>
       <div class="chat-head">
@@ -250,7 +258,7 @@
       <section class="week-section">
         <div class="section-head">
           <h4>核对纳入内容 <span id="week-counts" class="muted small"></span></h4>
-          <button id="week-prepare" class="ghost small" title="检查文件更新，把这一周新的文件变化和待办进展整理进清单">检查更新并整理</button>
+          <button id="week-prepare" class="ghost small" title="检查文件更新，把这一周新的文件变化和待办进展整理进清单"><svg class="icon action-icon" aria-hidden="true"><use href="#i-refresh"/></svg>检查更新并整理</button>
         </div>
         <div id="week-checklist"></div>
         <p class="muted small">文件变化、待办进展和补充工作记录在这里逐条核对；下方整份材料与说明会在生成时参与提取，不会自动变成已核对条目。</p>
@@ -286,7 +294,8 @@
         <div id="weekly-mail" class="notice hidden"></div>
         <div id="weekly-reminders" class="notice warn hidden"></div>
         <div id="weekly-warnings" class="notice hidden"></div>
-        <article id="weekly-preview" class="markdown report"></article>
+        <div id="report-stale" class="notice warn hidden" role="status">输入或清单有改动，下面仍是上次生成的正文。<button type="button" class="ghost small" id="return-review">返回核对</button></div>
+      <article id="weekly-preview" class="markdown report"></article>
         <div id="weekly-editor" class="stack hidden">
           <textarea id="weekly-text" rows="22"></textarea>
           <div class="row gap"><button id="save-weekly" class="primary">保存</button><button id="cancel-edit" class="ghost">取消</button></div>
@@ -318,20 +327,16 @@
 
   <!-- 添加材料 -->
   <dialog id="add-dialog" class="material-intake" aria-labelledby="add-title">
-    <div class="dialog-head"><h3 id="add-title">添加材料</h3><button type="button" class="ghost small" data-close aria-label="关闭添加材料">✕</button></div>
-    <p class="intake-description muted">本地内容和飞书文档可以在这里一起整理，导入后统一保存在材料库。</p>
+    <div class="dialog-head"><h3 id="add-title">添加材料</h3><button type="button" class="ghost small" data-close aria-label="关闭添加材料"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+    <p class="intake-description muted">选择内容来源，导入后保存到共用材料库。</p><nav class="subtabs intake-tabs" id="add-tabs" aria-label="选择材料来源"><button type="button" data-add="upload" class="active">本机文件</button><button type="button" data-add="paste">粘贴文字</button><button type="button" data-add="cloud">飞书</button></nav>
     <div class="intake-grid"><section class="intake-local" aria-labelledby="local-title">
     <h4 id="local-title"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg> 本地文件与文字</h4>
-    <div class="row gap wrap intake-options"><button type="button" class="ghost" id="add-current">处理当前内容（固定副本）</button><button type="button" class="ghost" id="add-follow">持续关注后续修改</button></div>
-    <nav class="subtabs" id="add-tabs">
-      <button data-add="upload" class="active">上传文件</button>
-      <button data-add="paste">粘贴文字</button>
-      <button data-add="link" class="feishu-only hidden">飞书链接</button>
-    </nav>
+    <details class="meta intake-options"><summary>需要持续关注原文件的修改？</summary><p class="muted small">当前导入保存一份副本。持续关注本机原文件时，需要另外添加原路径。</p><div class="row gap wrap"><button type="button" class="ghost" id="add-current">处理当前内容（固定副本）</button><button type="button" class="ghost" id="add-follow">持续关注后续修改</button></div></details>
+
     <div id="add-upload" class="add-pane">
       <label class="drop" id="drop">
         <input type="file" id="file" multiple accept=".txt,.md,.docx,.pdf,.xlsx,.csv">
-        <span>点击或拖入文件（可多选）<br><small>txt / md / docx / pdf / xlsx / csv，单个不超过 10MB</small></span>
+        <span class="upload-visual" aria-hidden="true"><svg class="icon"><use href="#i-upload"/></svg></span><span>点击或拖入文件（可多选）<br><small>txt / md / docx / pdf / xlsx / csv，单个不超过 10MB</small></span>
       </label>
     </div>
     <form id="paste-form" class="add-pane stack hidden">
@@ -339,14 +344,14 @@
       <textarea id="paste-content" rows="10" placeholder="粘贴文字内容"></textarea>
       <div class="row end"><button class="primary">保存为材料</button></div>
     </form>
-    <form id="feishu-form" class="add-pane stack hidden">
+
+
+    </section>
+    <section id="cloud-intake" class="hidden"><nav class="subtabs" id="cloud-tabs" aria-label="飞书导入方式"><button type="button" data-add="cloud">从云空间选择</button><button type="button" data-add="link">粘贴飞书链接</button></nav>    <form id="feishu-form" class="add-pane stack hidden">
       <input id="feishu-url" placeholder="粘贴飞书文档、知识库页面、多维表格或妙记链接">
       <small class="muted">导入的是现在的内容；飞书文档导入后，可以在材料库的“追踪”一栏开启追踪。没连接飞书账号时，需要先在文档右上角“…→ 更多 → 添加文档应用”把应用加进来。要从自己的云空间里挑选，用“飞书云空间”。</small>
       <div class="row end"><button class="primary">读取飞书内容</button></div>
-    </form>
-    <div id="add-msg" class="notice hidden" role="status"></div>
-    </section>
-    <section id="drive-panel" aria-labelledby="drive-title">
+    </form><section id="drive-panel" aria-labelledby="drive-title">
     <h4 id="drive-title"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg> 飞书云空间</h4>
     <div id="feishu-account" class="stack"></div>
     <div id="feishu-browser" class="stack hidden">
@@ -364,14 +369,14 @@
         <span id="drive-selected" class="muted">未选择</span>
         <button type="button" id="drive-clear" class="ghost small hidden">清空</button>
         <span class="grow"></span>
-        <button type="button" id="drive-track" class="ghost" disabled title="每个工作日检查修改，变化进入周报的审核清单；不存进材料库">追踪</button>
-        <button type="button" id="drive-import" class="primary" disabled title="保存现在的内容到材料库，用来对话、总结">导入为材料</button>
+        <button type="button" id="drive-track" class="ghost" disabled title="每个工作日检查修改，变化进入周报的审核清单；不存进材料库"><svg class="icon action-icon" aria-hidden="true"><use href="#i-refresh"/></svg>追踪</button>
+        <button type="button" id="drive-import" class="primary" disabled title="保存现在的内容到材料库，用来对话、总结"><svg class="icon action-icon" aria-hidden="true"><use href="#i-upload"/></svg>导入为材料</button>
       </div>
       <p class="muted small drive-hint"><b>导入为材料</b>：保存现在的内容，之后不会更新（导入后也可以在材料库里开启追踪）。
         <b>追踪</b>：每个工作日检查修改，变化进入周报的审核清单；文件夹会整个追踪，以后新放进去的文档也会纳入。</p>
       <div id="drive-msg" class="notice hidden" role="status"></div>
     </div>
-    </section></div>
+    </section></section></div><div id="add-msg" class="notice hidden" role="status"></div><div id="import-next" class="row gap wrap hidden" aria-label="使用已导入的材料"></div>
   </dialog>
 
   <!-- 编辑工作记录 -->
@@ -392,15 +397,15 @@
 
   <!-- 从材料库选择（待办、本周材料共用） -->
   <dialog id="mat-picker" class="wide">
-    <div class="dialog-head"><h3 id="mat-picker-title">从材料库选择</h3><button type="button" class="ghost small" data-close>✕</button></div>
+    <div class="dialog-head"><h3 id="mat-picker-title">从材料库选择</h3><button type="button" class="ghost small" data-close aria-label="关闭弹窗"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
     <input id="mat-picker-q" placeholder="按标题搜索" style="width:100%;margin-bottom:8px">
     <div id="mat-picker-list" class="checklist picker-list"></div>
-    <div class="row gap end"><span id="mat-picker-count" class="muted grow"></span><button id="mat-picker-done" class="primary">确定</button></div>
+    <div class="row gap end"><span id="mat-picker-count" class="muted grow"></span><button id="mat-picker-done" class="primary"><svg class="icon action-icon" aria-hidden="true"><use href="#i-tick"/></svg>确定</button></div>
   </dialog>
 
   <!-- 周报设置 -->
   <dialog id="settings-dialog" class="wide">
-    <div class="dialog-head"><h3>周报设置</h3><button type="button" class="ghost small" data-close>✕</button></div>
+    <div class="dialog-head"><h3>周报设置</h3><button type="button" class="ghost small" data-close aria-label="关闭弹窗"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
     <div class="stack">
       <h4>每周定时</h4>
       <label class="toggle"><input type="checkbox" id="set-schedule-on"> 每周自动整理：检查更新、整理清单并提醒你核对；确认后才生成正文</label>
@@ -416,7 +421,7 @@
       <h4>你在文档里的名字</h4>
       <input id="set-owners" placeholder="Word 修订作者、飞书里的姓名，可多个，逗号分隔">
       <small class="muted">用来判断文件的改动是不是你做的；不填也能用，每条记录由你自己确认。</small>
-      <div class="row gap end"><button type="button" class="ghost" data-close>取消</button><button id="settings-save" class="primary">保存</button></div>
+      <div class="row gap end"><button type="button" class="ghost" data-close>取消</button><button id="settings-save" class="primary"><svg class="icon action-icon" aria-hidden="true"><use href="#i-tick"/></svg>保存</button></div>
     </div>
   </dialog>
 
@@ -424,7 +429,7 @@
   <dialog id="picker">
     <h3>选择对话用的材料</h3>
     <div id="picker-list" class="checklist"></div>
-    <div class="row gap end"><button id="picker-done" class="primary">确定</button></div>
+    <div class="row gap end"><button id="picker-done" class="primary"><svg class="icon action-icon" aria-hidden="true"><use href="#i-tick"/></svg>确定</button></div>
   </dialog>
 
   <!-- 出处弹窗 -->

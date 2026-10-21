@@ -138,6 +138,8 @@ function renderWeek() {
   renderWeekMaterials();
   if (document.activeElement !== $("#week-note")) $("#week-note").value = r.note || "";
   renderReportBox();
+  $("#report-stale").classList.toggle("hidden", !stale);
+
   $("#week-stage").textContent = r.status === "done" && r.checklist === "confirmed"
     ? "③ 查看与交付：核对正文后，可修改、导出或发送。原始输入与核对清单可展开查看。"
     : r.prepared_at ? `② 核对纳入内容：${r.pending ? `还有 ${r.pending} 条待核对` : "清单已处理，可确认并生成周报"}`
@@ -259,17 +261,17 @@ function evidenceHtml(e) {
     <div class="ev-head"><input type="checkbox" data-pick="${e.id}" ${weekly.selected.has(e.id) ? "checked" : ""}>
       <b>${escapeHtml(e.title)}${e.user_edited && !["manual", "todo"].includes(e.origin) ? ' <span class="badge">你改过</span>' : ""}${e.has_update ? ' <span class="badge warn">有新变化，见新的待确认项</span>' : ""}</b>
       </div>
-    <div>${escapeHtml(e.description)}</div>
-    <div class="ev-meta">来源：${source} ${flags}</div>
+    ${e.description.length > 220 ? `<details class="record-description" data-disclosure="week:${weekly.current.id}:description:${e.id}" ${disclosureOpen(`week:${weekly.current.id}:description:${e.id}`)}><summary>展开完整描述（${e.description.length} 字）</summary><p>${escapeHtml(e.description)}</p></details>` : `<div class="record-description">${escapeHtml(e.description)}</div>`}
+    <div class="ev-meta">来源：${source}</div><div class="ev-flags">${flags}${!["manual", "todo"].includes(e.origin) && !["ATTRIBUTED", "USER_CONFIRMED"].includes(e.attribution) ? `<span class="badge warn">归属待确认：${escapeHtml(attr)}</span>` : ""}</div>
     <details class="meta" data-detail="${e.id}" ${weekly.expanded.has(e.id) ? "open" : ""}><summary>查看来源与调整周报中的状态表述</summary>
     <p class="muted small">周报分类：${EV_CATEGORY[e.category] || e.category}。这里的表述只影响本周报；点击同步并确认后才修改待办当前状态。</p>
     ${evidenceEvents(e)}归属：${attr}${basis}${evidenceTodos(e)}</details>
     <div class="ev-actions">
-      ${e.review_status !== "CONFIRMED" ? `<button class="ghost" data-act="confirm">${["todo", "manual"].includes(e.origin) || ["ATTRIBUTED", "USER_CONFIRMED"].includes(e.attribution) ? "纳入本周" : "确认是我的并纳入"}</button>` : ""}
-      ${e.review_status !== "REJECTED" ? `<button class="ghost" data-act="exclude">排除</button>` : ""}
+      ${e.review_status !== "CONFIRMED" ? `<button class="ghost decision-include" data-act="confirm">${uiIcon("tick")}${["todo", "manual"].includes(e.origin) || ["ATTRIBUTED", "USER_CONFIRMED"].includes(e.attribution) ? "纳入本周" : "确认是我的并纳入"}</button>` : ""}
+      ${e.review_status !== "REJECTED" ? `<button class="ghost decision-exclude" data-act="exclude">${uiIcon("minus")}排除</button>` : ""}
       ${e.review_status !== "PENDING" && e.origin !== "manual" ? `<button class="ghost" data-act="reset">撤销</button>` : ""}
-      <button class="ghost" data-act="edit">修改</button>
-      ${e.source_refs.length ? `<button class="ghost" data-act="sources">看依据</button><button class="ghost" data-act="split">拆分</button><button class="ghost" data-act="regen">重新生成描述</button>` : ""}
+      <button class="ghost" data-act="edit">${uiIcon("pen")}修改</button>
+      ${e.source_refs.length ? `<button class="ghost" data-act="sources">看依据</button><details class="record-more"><summary>更多操作</summary><div class="row gap wrap"><button class="ghost" data-act="split">拆分</button><button class="ghost" data-act="regen">重新生成描述</button></div></details>` : ""}
     </div></div>`;
 }
 
@@ -286,9 +288,9 @@ function renderChecklist() {
   }
   const groups = ["PENDING", "CONFIRMED", "REJECTED"].map((s) => [s, items.filter((e) => e.review_status === s)]);
   box.innerHTML = `${items.length ? `<div class="prep-actions">
-      <button class="ghost" id="bulk-confirm">确认所选</button><button class="ghost" id="bulk-exclude">排除所选</button>
+      <span class="muted small">已选 ${weekly.selected.size} 条（含收起组中的选择）</span><button class="ghost" id="bulk-confirm">确认所选</button><button class="ghost" id="bulk-exclude">排除所选</button>
       <button class="ghost" id="bulk-merge">合并所选</button></div>` : `<p class="muted">这一周没有发现文件变化，待办也没有进展。</p>`}
-    ${groups.filter(([, xs]) => xs.length).map(([s, xs]) => `<div class="ev-group"><h5>${EV_STATUS[s]}（${xs.length}）</h5>${xs.map(evidenceHtml).join("")}</div>`).join("")}
+    ${groups.filter(([, xs]) => xs.length).map(([s, xs]) => `<details class="ev-group" data-review-group="${s}" data-disclosure="week:${r.id || r.period_start}:group:${s}" ${disclosureOpen(`week:${r.id || r.period_start}:group:${s}`, s === "PENDING")}><summary>${EV_STATUS[s]}（${xs.length}）</summary>${xs.map(evidenceHtml).join("")}</details>`).join("")}
     <button class="ghost" id="add-evidence">＋ 补充工作记录（逐条核对）</button>`;
 }
 
@@ -320,11 +322,15 @@ $("#week-checklist").addEventListener("change", async (e) => {
     return;
   }
   const cb = e.target.closest("[data-pick]");
-  if (cb) cb.checked ? weekly.selected.add(Number(cb.dataset.pick)) : weekly.selected.delete(Number(cb.dataset.pick));
+  if (cb) {
+    cb.checked ? weekly.selected.add(Number(cb.dataset.pick)) : weekly.selected.delete(Number(cb.dataset.pick));
+    const counter = $("#week-checklist .prep-actions > span");
+    if (counter) counter.textContent = `已选 ${weekly.selected.size} 条（含收起组中的选择）`;
+  }
 });
 
 $("#week-checklist").addEventListener("click", async (e) => {
-  const t = e.target;
+  const t = e.target.closest("button") || e.target;
   const rid = weekly.current.id;
   if (t.id === "bulk-confirm") return reviewAction("confirm", [...weekly.selected]);
   if (t.id === "bulk-exclude") return reviewAction("exclude", [...weekly.selected]);
@@ -729,4 +735,10 @@ $("#settings-save").addEventListener("click", async () => {
     await loadWeekly(false);
     renderWeek();
   } catch (err) { uiAlert(err.message, "出错了"); }
+});
+
+$("#return-review").addEventListener("click", () => {
+  $("#week-inputs").open = true;
+  $("#week-inputs").scrollIntoView({block:"start"});
+  $("#week-inputs > summary").focus();
 });

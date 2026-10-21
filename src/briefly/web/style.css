@@ -15,6 +15,14 @@
   --on-accent: #ffffff;
   --art-paper: #eee6d5;
   --shadow: 0 8px 28px #263e2c06;
+  --state-success: #286443;
+  --state-success-bg: #e7f2e9;
+  --state-warning: #855718;
+  --state-warning-bg: #fff2d9;
+  --state-danger: #b33230;
+  --state-danger-bg: #fbecea;
+  --state-info: #365e91;
+  --state-info-bg: #eaf0fa;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -31,6 +39,14 @@
     --on-accent: #172b20;
     --orange: #e5a178;
     --art-paper: #414632;
+    --state-success: #a7dcb5;
+    --state-success-bg: #293f31;
+    --state-warning: #f0ca81;
+    --state-warning-bg: #41351f;
+    --state-danger: #ffb6ae;
+    --state-danger-bg: #492d29;
+    --state-info: #b1cbed;
+    --state-info-bg: #29394e;
   }
 }
 
@@ -205,10 +221,18 @@ button:disabled { opacity: .5; cursor: default; }
 .toggle { display: flex; align-items: center; gap: 4px; color: var(--muted); }
 .meta { margin-top: 16px; color: var(--muted); font-size: 13px; }
 .meta table td { padding: 2px 12px 2px 0; }
-.status-pill { font-size: 12px; padding: 1px 8px; border-radius: 10px; background: var(--bg); color: var(--muted); }
-.status-pill.done { background: #e8f7ee; color: #2a8a4a; }
-.status-pill.failed { background: #fdecea; color: var(--danger); }
-.status-pill.running, .status-pill.pending { background: var(--accent-soft); color: var(--accent); }
+.status-pill, .badge {
+  display: inline-flex; align-items: center; gap: 5px; vertical-align: middle;
+  min-height: 24px; padding: 2px 8px; border: 1px solid transparent;
+  border-radius: 6px; font-size: 11px; font-weight: 500; line-height: 1.5;
+  background: var(--bg); color: var(--muted);
+}
+.status-pill.done, .badge.ok { background: var(--state-success-bg); color: var(--state-success); }
+.status-pill.failed, .badge.bad { background: var(--state-danger-bg); color: var(--state-danger); }
+.status-pill.running, .status-pill.doing { background: var(--state-info-bg); color: var(--state-info); }
+.status-pill.pending, .badge.warn { background: var(--state-warning-bg); color: var(--state-warning); }
+.status-pill::before { content: ""; width: 6px; height: 6px; flex: none; border-radius: 50%; background: currentColor; }
+.status-pill:empty { display: none; }
 .quote { border-left: 3px solid var(--accent); padding: 4px 10px; margin: 8px 0; background: var(--bg); white-space: pre-wrap; }
 
 dialog {
@@ -222,15 +246,14 @@ dialog h3 { margin-top: 0; }
 #tracking-body h4 { margin: 16px 0 8px; }
 .ev-group h5 { margin: 14px 0 6px; color: var(--muted); font-weight: 600; }
 .ev { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
-.ev.confirmed { border-left: 3px solid #2a8a4a; }
+.ev.confirmed { border-left: 3px solid var(--state-success); }
 .ev.rejected { opacity: .6; }
 .ev-head { display: flex; gap: 8px; align-items: flex-start; }
 .ev-head b { flex: 1; }
 .ev-meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .ev-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .ev-actions button, .src-row button { padding: 2px 10px; font-size: 12px; }
-.badge { font-size: 11px; padding: 0 6px; border-radius: 4px; background: var(--bg); color: var(--muted); white-space: nowrap; }
-.badge.warn { background: var(--warn-bg); color: #b26a00; }
+.badge { max-width: 100%; overflow-wrap: anywhere; }
 .src-row, .file-row { display: flex; gap: 8px; align-items: center; padding: 4px 0; font-size: 13px; flex-wrap: wrap; }
 .src-row span.path, .file-row span.path { flex: 1; min-width: 0; word-break: break-all; }
 .file-rows { margin-top: 10px; max-height: 260px; overflow-y: auto; }
@@ -244,8 +267,8 @@ dialog h3 { margin-top: 0; }
 .todo-list li.done .todo-name { color: var(--muted); text-decoration: line-through; }
 .todo-list li.archived .todo-name { color: var(--muted); }
 .todo-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--line); }
-.todo-dot.doing { background: var(--accent); }
-.todo-dot.done { background: #2a8a4a; }
+.todo-dot.doing { background: var(--state-info); }
+.todo-dot.done { background: var(--state-success); }
 .todo-info { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 13px; margin-bottom: 8px; }
 .todo-info dt { color: var(--muted); }
 .todo-info dd { margin: 0; white-space: pre-wrap; }
@@ -257,8 +280,6 @@ dialog h3 { margin-top: 0; }
 .todo-row .grow { min-width: 120px; }
 .todo-row a { color: var(--accent); cursor: pointer; }
 .mat-group { margin: 6px 0 2px; font-size: 12px; color: var(--muted); }
-.badge.ok { background: #e8f7ee; color: #2a8a4a; }
-.badge.bad { background: #fdecea; color: var(--danger); }
 .timeline { margin-top: 8px; font-size: 13px; max-height: 360px; overflow-y: auto; }
 .timeline .tl { display: flex; gap: 10px; padding: 3px 0; }
 .timeline .tl time { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -523,7 +544,7 @@ kbd { font: inherit; border: 1px solid var(--line); border-radius: 3px; padding:
 .week-foot { padding: 16px 0; gap: 16px; }
 #week-hint { margin-right: auto; font-size: 12px; }
 .ev { border-radius: 12px; padding: 16px; margin-bottom: 12px; }
-.ev.confirmed { background: var(--accent-soft); border-left-color: var(--accent); }
+.ev.confirmed { background: var(--state-success-bg); border-left-color: var(--state-success); }
 .todo-info { background: var(--bg); padding: 18px 20px; border-radius: 12px; gap: 9px 20px; }
 .todo-section { margin-top: 22px; padding-top: 20px; }
 .timeline .tl { padding: 9px 0; border-bottom: 1px solid var(--line); }
@@ -541,8 +562,7 @@ dialog h3 { font-size: 18px; font-weight: 600; }
   .start-icon.peach { color: #e5b491; background: #4b392e; }
   .start-icon.lavender { color: #c5aedc; background: #3c3546; }
   .msg.user .bubble { color: #edf5e9; }
-  .notice.error, .badge.bad, .status-pill.failed { background: #492d29; color: #ffb6a9; }
-  .badge.ok, .status-pill.done { background: #2c4431; color: #b4d5b5; }
+  .notice.error { background: var(--state-danger-bg); color: var(--state-danger); }
   .danger { color: #ffb6a9; }
 }
 @media (max-width: 1100px) {
@@ -660,7 +680,7 @@ dialog h3 { font-size: 18px; font-weight: 600; }
 .ticket-points li + li { margin-top: 6px; }
 .inline-children { list-style: none; margin: 0; padding: 0; }
 .inline-children li + li { margin-top: 7px; }
-.inline-child-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto 24px; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; background: var(--bg); }
+.inline-child-row { display: grid; grid-template-columns: minmax(0, 1fr) 32px; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; background: var(--bg); }
 .inline-child-open { text-align: left; padding: 3px 0; border: 0; background: none; white-space: normal; min-width: 0; }
 .inline-child-open:hover { color: var(--accent); }
 .inline-child-row select { padding: 5px 6px; font-size: 11px; }
@@ -669,11 +689,16 @@ dialog h3 { font-size: 18px; font-weight: 600; }
 .inline-child-editor { padding: 0; margin: 0; border: 0; min-width: 0; }
 .inline-child-editor:disabled { opacity: .65; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
-.inline-add-child { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
-.inline-add-child input[name="title"] { width: 100%; min-width: 0; font-size: 12px; }
-.inline-add-child select, .inline-add-child input[type="date"] { padding: 6px 8px; font-size: 11px; min-width: 0; }
-.inline-add-child input[type="date"] { flex: 1; }
-.inline-add-child button { padding: 6px 10px; }
+.inline-add-child { display: grid; grid-template-columns: minmax(0, 1fr) 120px; align-items: center; gap: 8px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.inline-child-input { position: relative; min-width: 0; }
+.inline-add-child input[name="title"] { width: 100%; min-width: 0; height: 40px; padding: 8px 40px 8px 10px; font-size: 12px; }
+.inline-add-child input[type="date"] { width: 100%; height: 40px; padding: 6px; font-size: 11px; min-width: 0; }
+.inline-add-child .inline-child-submit { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 32px; height: 32px; min-height: 0; padding: 5px; border: 0; background: transparent; border-radius: 50%; display: grid; place-items: center; }
+.inline-child-submit svg { width: 22px; height: 22px; display: block; }
+.inline-child-submit circle { fill: var(--accent); }
+.inline-child-submit path { stroke: var(--on-accent); }
+.inline-child-submit:hover:not(:disabled) { background: var(--accent-soft); }
+@media (max-width: 600px) { .inline-add-child { grid-template-columns: minmax(0, 1fr) 110px; gap: 6px; } }
 .inline-child-notice.notice { margin: 12px 0 0; font-size: 11px; }
 .inline-child-title { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
 .inline-child-hint { font-size: 10px; color: var(--muted); flex: none; }
@@ -747,4 +772,113 @@ button.material-cta { padding: 10px 20px; font-size: 13px; min-height: 40px; box
   .week-steps { margin-bottom: 20px; }
   .intake-options button { white-space: normal; }
   #add-tabs { width: 100%; flex-wrap: wrap; }
+}
+
+/* 待办状态：独立按钮、逐项菜单、子待办数量进度。 */
+button.ticket-status { width: 34px; height: 34px; padding: 4px; border: 0; border-radius: 8px; background: transparent; align-items: center; cursor: pointer; }
+button.ticket-status:hover { background: var(--line); }
+button.ticket-status:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.status-symbol { width: 22px; height: 22px; flex: none; }
+.status-symbol.todo { color: var(--muted); }
+.status-symbol.doing { color: var(--state-info); }
+.status-symbol.done { color: var(--state-success); }
+.status-symbol.remove, .status-remove { color: var(--state-danger); }
+.ticket-progress { display: flex; flex-direction: column; gap: 6px; font-size: 11px; }
+.ticket-progress progress { width: 125px; height: 5px; accent-color: var(--accent); border: 0; border-radius: 10px; overflow: hidden; }
+.ticket-progress progress::-webkit-progress-bar { background: var(--line); }
+.ticket-progress progress::-webkit-progress-value { background: var(--accent); border-radius: 10px; }
+.todo-status-menu { position: fixed; inset: auto; margin: 0; width: 210px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); box-shadow: 0 10px 35px #0002; }
+.status-menu-label { padding: 5px 9px 9px; font-size: 12px; color: var(--muted); }
+.todo-status-menu button { display: flex; align-items: center; gap: 9px; width: 100%; border: 0; background: transparent; text-align: left; padding: 7px 9px; border-radius: 6px; font-size: 13px; }
+.todo-status-menu button:hover, .todo-status-menu button:focus-visible { background: var(--bg); outline: none; }
+.status-check { margin-left: auto; color: var(--muted); }
+.todo-status-menu .status-remove { margin-top: 4px; border-top: 1px solid var(--line); border-radius: 0 0 6px 6px; color: var(--state-danger); }
+@media (max-width: 600px) { .ticket-progress { font-size: 9px; max-width: 102px; } .ticket-progress progress { width: 90px; } }
+/* 操作图标与交互状态共用规范；不改变各页信息排列。 */
+.action-icon { width: 16px; height: 16px; margin-right: 6px; vertical-align: -3px; pointer-events: none; }
+button > .action-icon:only-child { margin: 0; }
+button[data-close] { min-width: 32px; min-height: 32px; padding: 5px; }
+button[data-close] .icon { width: 16px; height: 16px; }
+button.primary { color: var(--on-accent); }
+button.primary:hover:not(:disabled) { filter: brightness(.94); box-shadow: 0 3px 10px #163c2420; }
+button.danger:hover:not(:disabled) { background: var(--state-danger-bg); border-color: var(--state-danger); color: var(--state-danger); }
+button.decision-include { background: var(--state-success-bg); border-color: var(--state-success); color: var(--state-success); }
+button.decision-include:hover:not(:disabled) { background: var(--state-success-bg); border-color: var(--state-success); color: var(--state-success); box-shadow: inset 0 0 0 1px currentColor; }
+button.decision-exclude { color: var(--muted); }
+button:active:not(:disabled) { box-shadow: inset 0 1px 3px #0002; }
+button:disabled { box-shadow: none; filter: none; }
+input:focus-visible, textarea:focus-visible, select:focus-visible, .button:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.todo-status-menu button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+#todo-status, #todo-note-status, [data-todo-status] { border-radius: 8px; font-size: 12px; min-height: 32px; }
+#todo-status:has(option[value="todo"]:checked), #todo-note-status:has(option[value="todo"]:checked), [data-todo-status]:has(option[value="todo"]:checked) { color: var(--muted); background: var(--bg); }
+#todo-status:has(option[value="doing"]:checked), #todo-note-status:has(option[value="doing"]:checked), [data-todo-status]:has(option[value="doing"]:checked) { color: var(--state-info); background: var(--state-info-bg); }
+#todo-status:has(option[value="done"]:checked), #todo-note-status:has(option[value="done"]:checked), [data-todo-status]:has(option[value="done"]:checked) { color: var(--state-success); background: var(--state-success-bg); }
+select option { background: var(--panel); color: var(--text); }
+.upload-visual { display: grid; place-items: center; width: 58px; height: 58px; margin: 0 auto 16px; border-radius: 18px; background: var(--accent-soft); color: var(--accent); box-shadow: 0 0 0 8px var(--panel); }
+.upload-visual .icon { width: 29px; height: 29px; }
+#drop { flex-direction: column; }
+
+.empty-icon .action-icon { margin: 0; }
+.warn-dot .action-icon { color: var(--state-warning); margin: 0; }
+/* 详情与轻量确认：使用同一个状态圆标，控件共享高度。 */
+.status-symbol.doing { color: #b38a00; }
+.todo-dot.doing { background: #b38a00; }
+.status-pill.doing, .status-pill.running { color: var(--state-warning); background: var(--state-warning-bg); }
+#todo-note-status:has(option[value="doing"]:checked), [data-todo-status]:has(option[value="doing"]:checked) { color: var(--state-warning); background: var(--state-warning-bg); }
+button.detail-status { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; min-height: 34px; background: transparent; }
+.detail-status .status-symbol { width: 22px; height: 22px; }
+button.icon-close, button[data-close]:has(>svg) { display: inline-grid; place-items: center; width: 34px; height: 34px; min-width: 34px; min-height: 34px; padding: 7px; border-radius: 50%; border: 0; background: var(--bg); color: var(--muted); }
+button.icon-close:hover, button[data-close]:has(>svg):hover { background: var(--accent-soft); color: var(--accent); }
+.icon-close .icon { width: 18px; height: 18px; margin: 0; }
+.todo-section .section-head .button, .todo-section .section-head button { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; height: 32px; padding: 5px 9px; line-height: 20px; font-size: 12px; border-radius: 8px; }
+.todo-section .section-head .action-icon { margin: 0 6px 0 0; }
+.todo-section .section-head .button:has(input:disabled) { opacity: .5; cursor: not-allowed; }
+.todo-status-menu.popconfirm { padding: 14px; overflow-wrap: anywhere; max-height: calc(100dvh - 16px); overflow-y: auto; }
+.popconfirm b { font-size: 14px; }
+.popconfirm p { margin: 8px 0; font-size: 13px; }
+.popconfirm small { display: block; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.todo-status-menu.popconfirm button { width: auto; border: 1px solid var(--line); padding: 5px 10px; min-height: 32px; }
+.todo-status-menu.popconfirm .danger-solid { background: var(--state-danger); border-color: var(--state-danger); color: var(--panel); }
+@media (prefers-color-scheme: dark) { .status-symbol.doing { color: #e2bc43; } .todo-dot.doing { background: #e2bc43; } }
+.child-card { border: 1px solid var(--line); border-radius: 8px; }
+button.child-detail-open { border: 0; padding: 0; background: none; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+/* 信息层级：当前行动优先，来源与历史按对象独立展开。 */
+.detail-disclosure > summary, .ev-group > summary { cursor: pointer; padding: 10px 0; font-weight: 600; }
+.detail-disclosure[open] > summary { margin-bottom: 12px; }
+.detail-disclosure .timeline { max-height: 340px; overflow-y: auto; }
+#todo-note-form { flex-wrap: wrap; }
+#todo-note { min-width: min(240px, 100%); }
+.inline-note-form button { align-self: flex-start; }
+.ticket-due.overdue { color: var(--state-danger); font-weight: 600; }
+.ticket-subtitle { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ev-group { margin: 14px 0; border-top: 1px solid var(--line); }
+.ev-group > summary { color: var(--text); }
+.ev-group[data-review-group="PENDING"] > summary { color: var(--state-warning); }
+.ev-flags { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0; }
+.ev-flags:empty { display: none; }
+.record-description { white-space: pre-wrap; overflow-wrap: anywhere; }
+details.record-description { margin: 8px 0; padding: 8px 10px; background: var(--bg); border-radius: 8px; }
+.record-description summary { cursor: pointer; font-size: 12px; color: var(--accent); }
+.record-description p { margin-bottom: 0; }
+.record-more { position: relative; }
+.record-more summary { cursor: pointer; padding: 2px 8px; color: var(--muted); font-size: 12px; }
+.record-more[open] > div { padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+#add-dialog.material-intake { width: min(760px, calc(100vw - 24px)); }
+#add-dialog .intake-grid { grid-template-columns: minmax(0, 1fr); }
+#add-dialog #drive-panel { border: 0; padding: 16px 0 0; }
+#add-dialog .intake-tabs { margin: 18px 0; }
+#add-dialog .intake-options { margin: 0 0 16px; }
+#cloud-tabs { flex-wrap: wrap; }
+#import-next { padding-top: 14px; border-top: 1px solid var(--line); margin-top: 14px; }
+.material-preview { max-height: 360px; overflow: auto; }
+.answer-nav { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 0; }
+.answer-nav button { max-width: 100%; white-space: normal; text-align: left; }
+.answer-heading { display: inline; font-weight: 600; scroll-margin-top: 20px; }
+.answer-table-scroll { max-width: 100%; overflow-x: auto; }
+.message-process { margin: 8px 0; font-size: 12px; color: var(--muted); }
+.message-process summary { cursor: pointer; }
+@media (max-width: 760px) {
+  #add-dialog.material-intake { padding: 18px; }
+  .ticket-overview-grid { grid-template-columns: minmax(0, 1fr); }
+  .prep-actions { flex-wrap: wrap; }
 }

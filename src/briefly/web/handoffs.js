@@ -70,7 +70,7 @@ function resultActions(el, message) {
 function actionDialog(title) {
   const dialog = document.createElement("dialog");
   dialog.className = "wide";
-  dialog.innerHTML = `<div class="dialog-head"><h3>${escapeHtml(title)}</h3><button class="ghost" data-close-action>关闭</button></div><div data-body></div><div class="notice hidden" data-error></div>`;
+  dialog.innerHTML = `<div class="dialog-head"><h3>${escapeHtml(title)}</h3><button class="ghost icon-close" data-close-action aria-label="关闭预览">${uiIcon("close")}</button></div><div data-body></div><div class="notice hidden" data-error></div>`;
   dialog.querySelector("[data-close-action]").onclick = () => dialog.close();
   dialog.addEventListener("close", () => dialog.remove());
   document.body.appendChild(dialog);
@@ -217,4 +217,18 @@ $("#add-follow").onclick = () => {
 
 function importedForAssistant(id) {
   if (addForAssistant) { state.picked.add(id); renderPicked(); }
+  const next = $("#import-next"); next.classList.remove("hidden");
+  next.innerHTML = `<span class="muted small">材料已保存，下一步：</span><button type="button" class="ghost small" data-import-chat>用于助理</button><button type="button" class="ghost small" data-import-todo>关联到待办</button><button type="button" class="ghost small" data-import-week>加入本周材料</button>`;
+  next.querySelector("[data-import-chat]").onclick = () => { $("#add-dialog").close(); useMaterial(id); };
+  next.querySelector("[data-import-week]").onclick = () => { $("#add-dialog").close(); transferToWeek({material_ids:[id]}); };
+  next.querySelector("[data-import-todo]").onclick = async () => {
+    $("#add-dialog").close(); activateTab("todos");
+    await loadTodos();
+    const options = todos.list.filter((t) => !t.archived_at).map((t) => ({value:String(t.id), label:t.title}));
+    if (!options.length) return uiAlert("请先创建待办，再在任务详情中从材料库选择这份材料。");
+    const choice = await uiPrompt({title:"关联到待办", fields:[{name:"todo", label:"选择待办", type:"select", options}], ok:"关联"});
+    if (!choice) return;
+    try { await api(`/todos/${choice.todo}/materials`, {method:"POST", json:{material_id:id}}); await loadTodos(); await openTodo(Number(choice.todo)); $("#todo-material-section").open = true; }
+    catch (err) { uiAlert(err.message,"关联失败"); }
+  };
 }

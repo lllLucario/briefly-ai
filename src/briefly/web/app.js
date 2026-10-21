@@ -43,6 +43,22 @@ function escapeHtml(text) {
   return String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+// 名称仅由界面代码指定，复用本地 sprite；装饰图标不重复朗读按钮文字。
+function uiIcon(name) {
+  return `<svg class="icon action-icon" aria-hidden="true"><use href="#i-${escapeHtml(name)}"/></svg>`;
+}
+
+// 仅在当前页面记住对象各自的展开状态，不跨周/任务复用。
+const disclosureState = new Map();
+function disclosureOpen(key, initial = false) {
+  return (disclosureState.has(key) ? disclosureState.get(key) : initial) ? "open" : "";
+}
+document.addEventListener("toggle", (e) => {
+  if (e.target.isConnected && e.target.matches?.("details[data-disclosure]")) {
+    disclosureState.set(e.target.dataset.disclosure, e.target.open);
+  }
+}, true);
+
 // Markdown 渲染；CDN 不可用时退回纯文本
 function renderMarkdown(text) {
   if (window.marked && window.DOMPurify) {
@@ -232,7 +248,7 @@ function renderMaterialRows() {
   }
   rows.innerHTML = state.materials.map((m) => `
     <tr class="clickable ${state.activeMaterial === m.id ? "active" : ""}" data-id="${m.id}">
-      <td>${escapeHtml(m.title)} ${m.warnings.length ? `<span class="warn-dot" title="${escapeHtml(m.warnings.join("\n"))}">⚠</span>` : ""}${m.source === "tracked" ? ` <span class="badge" title="随追踪自动更新为最新内容；以前的版本在“追踪的文件”里查看">最新版本</span>` : ""}</td>
+      <td>${escapeHtml(m.title)} ${m.warnings.length ? `<span class="warn-dot" title="${escapeHtml(m.warnings.join("\n"))}" role="img" aria-label="解析警告">${uiIcon("alert")}</span>` : ""}${m.source === "tracked" ? ` <span class="badge" title="随追踪自动更新为最新内容；以前的版本在“追踪的文件”里查看">最新版本</span>` : ""}</td>
       <td class="nowrap">${fileIcon(m.file_type || "paste")} ${escapeHtml(FILE_TYPES[m.file_type] || kindName(m.file_type || "paste"))}</td>
       <td class="track-cell">${trackCell(m)}</td>
       <td>${fmtTime(m.created_at)}</td>
@@ -329,6 +345,7 @@ async function showMaterialDetail(id) {
   box.innerHTML = `<p class="muted">加载中…</p>`;
   try {
     const m = await api(`/materials/${id}`);
+    if (state.activeMaterial !== id) return;
     const outline = m.sections.length
       ? m.sections.map((s) => `<div style="padding-left:${(s.level - 1) * 14}px">${escapeHtml(s.title)}</div>`).join("")
       : `<div class="muted">没有识别出章节</div>`;
@@ -338,7 +355,7 @@ async function showMaterialDetail(id) {
     box.innerHTML = `
       <div class="row gap wrap" style="justify-content:space-between">
         <h3 style="margin:0">${escapeHtml(m.title)}</h3>
-        <div class="row gap">
+        <div class="row gap wrap">
           <button class="ghost" id="use-in-chat">用于对话</button>
           <button class="ghost" data-material-skill="summarize">总结</button>
           <button class="ghost" data-material-skill="minutes">整理纪要</button>
@@ -349,10 +366,9 @@ async function showMaterialDetail(id) {
       </div>
       <details class="meta"><summary>技术信息</summary>编号 ${m.id} · ${m.char_count} 字 · ${m.chunk_count} 块 · ${m.section_count} 个章节 · 结构来源：${escapeHtml(m.structure || "-")}</details>
       ${warnings}
-      <div class="detail-grid">
-        <div><b>大纲</b><div class="outline">${outline}</div></div>
-        <div><b>正文</b><div class="content-box">${escapeHtml(m.content)}</div></div>
-      </div>
+      <p class="muted small">${m.source === "tracked" ? "追踪来源 · 展示最新版本" : "固定副本 · 原文件后续修改不会自动更新"}${m.warnings.length ? ` · ${m.warnings.length} 项解析提示，请先核对` : " · 未报告解析警告（不代表所有内容均已完整识别）"}</p>
+      <div><b>正文预览</b><div class="content-box material-preview">${escapeHtml(m.content)}</div></div>
+      <details class="meta" data-disclosure="material:${m.id}:outline" ${disclosureOpen(`material:${m.id}:outline`)}><summary>文档大纲（${m.sections.length} 个章节）</summary><div class="outline">${outline}</div></details>
       <details class="meta"><summary>解析报告</summary><pre class="content-box">${escapeHtml(JSON.stringify(report, null, 2))}</pre></details>`;
     $("#close-detail").onclick = () => { state.activeMaterial = null; box.classList.add("hidden"); renderMaterialRows(); };
     $("#use-in-chat").onclick = () => {
@@ -372,10 +388,25 @@ async function showMaterialDetail(id) {
 
 // ---------- 添加材料（弹窗：上传文件 / 粘贴文字 / 飞书链接）
 function showAddPane(name) {
-  document.querySelectorAll("#add-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.add === name));
+  const cloud = name === "cloud" || name === "link";
+  document.querySelectorAll("#add-tabs button").forEach((b) => {
+    const active = b.dataset.add === (cloud ? "cloud" : name);
+    b.classList.toggle("active", active); b.setAttribute("aria-pressed", String(active));
+  });
+  document.querySelectorAll("#cloud-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.add === name));
+  $(".intake-local").classList.toggle("hidden", cloud);
+  $("#cloud-intake").classList.toggle("hidden", !cloud);
+  $("#drive-panel").classList.toggle("hidden", name !== "cloud");
   $("#add-upload").classList.toggle("hidden", name !== "upload");
   $("#paste-form").classList.toggle("hidden", name !== "paste");
   $("#feishu-form").classList.toggle("hidden", name !== "link");
+  $("#local-title").textContent = name === "paste" ? "粘贴要处理的文字" : "导入本机文件";
+  if (cloud) loadFeishu().then(() => {
+    if (!$("#add-dialog").open || !["cloud", "link"].includes(state.intakePane)) return;
+    if (name === "cloud" && state.feishu?.user && !state.driveTree[""]) loadDriveFolder("");
+    else renderDrive();
+  });
+  state.intakePane = name;
 }
 
 $("#open-add").addEventListener("click", async () => {
@@ -383,18 +414,35 @@ $("#open-add").addEventListener("click", async () => {
   $("#add-msg").classList.add("hidden");
   showAddPane("upload");
   $("#add-dialog").showModal();
-  await loadFeishu();
-  if (state.feishu?.user && !state.driveTree[""]) loadDriveFolder("");
-  else renderDrive();
+  $("#import-next").classList.add("hidden");
 });
 
-$("#add-tabs").addEventListener("click", (e) => {
+$("#add-dialog").addEventListener("click", (e) => {
   const b = e.target.closest("[data-add]");
   if (b) showAddPane(b.dataset.add);
 });
 
 // 弹窗右上角的 ✕
 document.querySelectorAll("dialog [data-close]").forEach((b) => b.addEventListener("click", () => b.closest("dialog").close()));
+
+// 仅从遮罩开始并结束的点击才取消，拖选文字到弹窗外不会误关闭。
+let backdropStart = null;
+function outsideDialog(event, dialog) {
+  const r = dialog.getBoundingClientRect();
+  return event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom;
+}
+document.addEventListener("pointerdown", (e) => {
+  backdropStart = e.target.matches?.("dialog[open]") && outsideDialog(e, e.target) ? e.target : null;
+}, true);
+document.addEventListener("click", (e) => {
+  const dialog = backdropStart;
+  backdropStart = null;
+  if (!dialog || e.target !== dialog || !outsideDialog(e, dialog)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (dialog.id === "ui-dialog" && uiResolve) uiResolve(uiCancelValue());
+  else dialog.close();
+}, true);
 
 async function uploadFiles(files) {
   const msg = $("#add-msg");
@@ -474,7 +522,7 @@ function renderFeishuAccount() {
   const user = state.feishu?.user;
   $("#feishu-browser").classList.toggle("hidden", !user);
   if (!state.feishu?.configured) {
-    box.innerHTML = `<div class="cloud-empty"><span class="empty-icon">☁</span><b>${state.feishu ? "飞书云空间尚未配置" : "暂时无法连接飞书"}</b><p>${state.feishu ? "配置飞书后，可以在这里选择云文档。" : "请稍后重新打开此窗口重试。"}现在可以继续上传本地文件或粘贴文字。</p></div>`;
+    box.innerHTML = `<div class="cloud-empty"><span class="empty-icon">${uiIcon("cloud")}</span><b>${state.feishu ? "飞书云空间尚未配置" : "暂时无法连接飞书"}</b><p>${state.feishu ? "配置飞书后，可以在这里选择云文档。" : "请稍后重新打开此窗口重试。"}现在可以继续上传本地文件或粘贴文字。</p></div>`;
     return;
   }
   if (user) {
@@ -894,7 +942,13 @@ function appendMessage(m) {
     : `<div class="bubble">${escapeHtml(m.text)}</div>`;
   el.innerHTML = `<div class="message-author">${m.role === "user" ? "你" : 'Briefly <span>办公助理</span>'}</div>` + body + (meta.length ? `<div class="msg-meta">${meta.join(" · ")}</div>` : "");
   box.appendChild(el);
-  if (m.role === "assistant" && !m.pending) resultActions(el, m);
+  if (m.role === "assistant" && !m.pending) {
+    el.querySelectorAll(".bubble table").forEach((table) => { const wrap = document.createElement("div"); wrap.className = "answer-table-scroll"; wrap.tabIndex = 0; wrap.setAttribute("role","region"); wrap.setAttribute("aria-label","回答表格，可横向滚动"); table.before(wrap); wrap.append(table); });
+    const metaBox = el.querySelector(".msg-meta");
+    if (metaBox && m.tools?.length) { const detail = document.createElement("details"); detail.className = "message-process"; const summary = document.createElement("summary"); summary.textContent = "查看处理过程"; metaBox.before(detail); detail.append(summary,metaBox); }
+    resultActions(el, m);
+    addAnswerNavigation(el, m.text);
+  }
   return el;
 }
 
@@ -1099,3 +1153,38 @@ $("#inbox").addEventListener("click", async (e) => {
     showNotice($("#app-status"), `连接服务失败：${escapeHtml(err.message)}。请刷新页面重试。`, "error");
   }
 })();
+
+function addAnswerNavigation(el, text) {
+  const bubble = el.querySelector(".bubble");
+  // 不改变输出文本，不将标题识别用作业务保存依据。
+  if (text.length < 400) return;
+  let headings = [...bubble.querySelectorAll("h1,h2,h3")];
+  if (headings.length < 2) {
+    const pattern = /(?:^|\n)(【[^】\n]{1,32}】)/g;
+    const matches = [...text.matchAll(pattern)];
+    if (matches.length < 2) return;
+    // 遍历文本节点只标记独占一行的中文栏目；不注入用户HTML。
+    const walker = document.createTreeWalker(bubble, NodeFilter.SHOW_TEXT);
+    const nodes = []; while (walker.nextNode()) nodes.push(walker.currentNode);
+    for (const node of nodes) {
+      if (node.parentElement.closest("code,pre,table")) continue;
+      const parts = node.textContent.split(/(^【[^】\n]{1,32}】(?=\n|$))/gm);
+      if (parts.length < 2) continue;
+      const fragment = document.createDocumentFragment();
+      for (const part of parts) {
+        if (/^【[^】\n]{1,32}】$/.test(part)) {
+          const span = document.createElement("span"); span.className = "answer-heading"; span.textContent = part; fragment.append(span); headings.push(span);
+        } else fragment.append(document.createTextNode(part));
+      }
+      node.replaceWith(fragment);
+    }
+  }
+  if (headings.length < 2) return;
+  const nav = document.createElement("nav"); nav.className = "answer-nav"; nav.setAttribute("aria-label", "回答栏目导航");
+  for (const heading of headings) {
+    const button = document.createElement("button"); button.className = "ghost small"; button.type = "button"; button.textContent = heading.textContent;
+    button.onclick = () => { heading.scrollIntoView({block:"start"}); heading.tabIndex = -1; heading.focus({preventScroll:true}); };
+    nav.append(button);
+  }
+  bubble.before(nav);
+}

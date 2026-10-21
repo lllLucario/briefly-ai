@@ -3,7 +3,7 @@
 // 以及 weekly.js 里的 gotoWeek。
 "use strict";
 
-const todos = { list: [], id: null, filter: "open", detail: null, detailOpen: false, detailView: 0, expanded: new Set(), inlineBusy: false, inlineDrafts: new Map(), inlineNotices: new Map() };
+const todos = { list: [], id: null, filter: "open", detail: null, detailOpen: false, detailView: 0, expanded: new Set(), inlineBusy: false, inlineDrafts: new Map(), noteDrafts: new Map(), timeline: [], timelineLimit: 5, inlineNotices: new Map() };
 const TODO_STATUS = { todo: "未开始", doing: "进行中", done: "已完成" };
 const TRACK_STATUS = {
   present: ["追踪中", "ok"],
@@ -50,19 +50,37 @@ function visibleTodos() {
   return rows.filter((t) => t.status !== "done" || openChild.has(t.id));
 }
 
+function statusIcon(status) {
+  const shapes = {
+    todo: '<circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.7"/>',
+    doing: '<circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 5a7 7 0 0 1 0 14z" fill="currentColor"/>',
+    done: '<circle cx="12" cy="12" r="9" fill="currentColor"/><path d="m7.5 12 3 3 6-6" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>',
+    remove: '<circle cx="12" cy="12" r="9" fill="currentColor"/><path d="m9 9 6 6m0-6-6 6" stroke="white" stroke-width="1.8" stroke-linecap="round"/>'
+  };
+  return `<svg class="status-symbol ${status}" viewBox="0 0 24 24" aria-hidden="true">${shapes[status]}</svg>`;
+}
 function todoStatusMark(t) {
   const status = t.archived_at ? "已归档" : TODO_STATUS[t.status];
-  return `<span class="ticket-status" title="${status}" aria-label="${status}"><span class="card-status-icon" aria-hidden="true">${t.status === "done" ? "✓" : ""}</span></span>`;
+  return `<button type="button" class="ticket-status" data-status-menu="${t.id}" title="更改状态：${status}" aria-label="更改${escapeHtml(t.title)}的状态：${status}" aria-haspopup="menu" aria-expanded="false" ${t.archived_at ? "disabled" : ""}>${statusIcon(t.status)}</button>`;
+}
+function childProgress(t) {
+  if (!t.children_total) return "";
+  return `<span class="ticket-progress"><progress max="${t.children_total}" value="${t.children_done}" aria-label="子待办完成数量"></progress><span>已完成 ${t.children_done} / ${t.children_total} 个子待办</span></span>`;
+}
+
+function defaultChildDueDate(now = new Date()) {
+  const day = new Date(now);
+  if (day.getHours() * 60 + day.getMinutes() >= 15 * 60 + 30) day.setDate(day.getDate() + 1);
+  return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
 }
 
 function inlineChildren(t, children) {
-  const draft = todos.inlineDrafts.get(t.id) || {title:"", status:"todo", due:""};
+  const draft = todos.inlineDrafts.get(t.id) || {title:"", due:defaultChildDueDate()};
   const locked = Boolean(t.archived_at);
-  const options = (value) => Object.entries(TODO_STATUS).map(([key,label]) => `<option value="${key}" ${key === value ? "selected" : ""}>${label}</option>`).join("");
   const notice = todos.inlineNotices.get(t.id);
   return `<fieldset class="inline-child-editor" data-inline-editor="${t.id}" data-locked="${locked ? "1" : "0"}" ${locked || todos.inlineBusy ? "disabled" : ""}><legend class="sr-only">${escapeHtml(t.title)}的子待办操作</legend>
-    ${children.length ? `<ul class="inline-children">${children.map((c) => `<li class="${c.status}"><div class="inline-child-row"><button class="inline-child-open" type="button" data-inline-detail="${c.id}" aria-label="查看子待办详情：${escapeHtml(c.title)}"><span class="inline-child-title">${escapeHtml(c.title)}</span></button><select data-inline-status="${c.id}" data-parent="${t.id}" aria-label="${escapeHtml(c.title)}的状态" ${c.archived_at ? "disabled" : ""}>${options(c.status)}</select><button type="button" class="ghost small danger" data-inline-remove="${c.id}" data-parent="${t.id}" aria-label="移除子待办：${escapeHtml(c.title)}" ${c.archived_at ? "disabled" : ""}>移除</button>${todoStatusMark(c)}</div></li>`).join("")}</ul>` : '<p class="muted small">暂无子待办。</p>'}
-    ${!t.parent_id && !locked ? `<form class="inline-add-child" data-inline-add="${t.id}"><label class="sr-only" for="inline-child-title-${t.id}">子待办标题</label><input id="inline-child-title-${t.id}" name="title" required maxlength="200" placeholder="添加一条子待办…" value="${escapeHtml(draft.title)}"><div class="row gap wrap"><select name="status" aria-label="新子待办状态">${options(draft.status)}</select><input name="due" type="date" aria-label="新子待办截止日期" value="${escapeHtml(draft.due)}"><button type="submit" class="primary small">＋ 添加</button></div></form>` : ""}
+    ${children.length ? `<ul class="inline-children">${children.map((c) => `<li class="${c.status}"><div class="inline-child-row"><button class="inline-child-open" type="button" data-inline-detail="${c.id}" aria-label="查看子待办详情：${escapeHtml(c.title)}"><span class="inline-child-title">${escapeHtml(c.title)}</span></button>${todoStatusMark(c)}</div></li>`).join("")}</ul>` : '<p class="muted small">暂无子待办。</p>'}
+    ${!t.parent_id && !locked ? `<form class="inline-add-child" data-inline-add="${t.id}"><label class="sr-only" for="inline-child-title-${t.id}">子待办标题</label><div class="inline-child-input"><input id="inline-child-title-${t.id}" name="title" required maxlength="200" placeholder="添加一条子待办…" value="${escapeHtml(draft.title)}"><button type="submit" class="inline-child-submit" title="添加子待办（回车提交）" aria-label="添加子待办"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v10M7 12h10" fill="none" stroke-width="1.8" stroke-linecap="round"/></svg></button></div><input name="due" type="date" aria-label="新子待办截止日期（可选）" title="截止日期（可选）" value="${escapeHtml(draft.due)}"></form>` : ""}
     </fieldset><div class="notice inline-child-notice ${notice ? notice.kind : "hidden"}" data-inline-notice="${t.id}" role="status">${notice ? escapeHtml(notice.text) : ""}</div>`;
 }
 
@@ -70,19 +88,22 @@ function todoItem(t) {
   const parent = t.parent_id ? todos.list.find((x) => x.id === t.parent_id) : null;
   const points = String(t.description || "").split(/\n+/).map((x) => x.trim()).filter(Boolean);
   const children = todos.list.filter((x) => x.parent_id === t.id);
-  const summary = points[0] || "暂无任务说明";
+  const summary = t.latest_progress ? `最近进展 · ${fmtTime(t.latest_progress.at)}：${t.latest_progress.text}` : points[0] || "暂无任务说明";
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
+  const overdue = t.due_date && t.due_date < today && t.status !== "done" && !t.archived_at;
   return `<li data-todo="${t.id}" class="${t.status} ${t.archived_at ? "archived" : ""} ${t.id === todos.id ? "active" : ""}">
     <details class="todo-ticket" data-ticket="${t.id}" ${todos.expanded.has(t.id) ? "open" : ""}>
       <summary class="todo-ticket-row">
         <span class="ticket-chevron" aria-hidden="true">›</span>
-        <span class="ticket-copy"><b class="todo-name">${escapeHtml(t.title)}</b><span class="ticket-subtitle">${escapeHtml(summary)}</span></span>
-        <span class="ticket-meta">${t.due_date ? `<span class="ticket-due">${shortDay(t.due_date)}</span>` : ""}<span class="ticket-child-count">${t.children_total || 0} 项子待办</span></span>
+        <span class="ticket-copy"><b class="todo-name">${escapeHtml(t.title)}</b><span class="ticket-subtitle" title="${escapeHtml(summary)}">${escapeHtml(summary)}</span></span>
+        <span class="ticket-meta">${t.due_date ? `<span class="ticket-due ${overdue ? "overdue" : ""}">${overdue ? "已逾期 · " : ""}${shortDay(t.due_date)}</span>` : ""}${childProgress(t)}</span>
         ${todoStatusMark(t)}
       </summary>
       <div class="ticket-expanded">
         <div class="ticket-overview-head"><span class="eyebrow">${parent ? `所属主任务 · ${escapeHtml(parent.title)}` : "主任务概览"}</span><button type="button" class="ghost small" data-inline-detail="${t.id}">展开详情 ↗</button></div>
         <div class="ticket-overview-grid">
-          <section><h4>任务要点 <small>原始说明</small></h4>${points.length ? `<ul class="ticket-points">${points.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul>` : '<p class="muted small">暂无说明，可在详情中补充。</p>'}</section>
+          <section><h4>推进这项工作</h4><form class="inline-note-form stack" data-inline-note="${t.id}"><label class="sr-only" for="inline-note-${t.id}">记录进展</label><input id="inline-note-${t.id}" name="note" maxlength="500" required placeholder="记录一条进展，不修改任务状态" value="${escapeHtml(todos.noteDrafts.get(t.id) || "")}" ${t.archived_at ? "disabled" : ""}><button class="ghost small" ${t.archived_at || todos.inlineBusy ? "disabled" : ""}>记录进展</button></form><p class="muted small">关联材料 ${t.materials || 0} 份 · 完整来源与历史在详情中查看</p><details class="meta" data-disclosure="todo:${t.id}:description" ${disclosureOpen(`todo:${t.id}:description`)}><summary>原始说明</summary>${points.length ? `<ul class="ticket-points">${points.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul>` : '<p class="muted small">暂无说明，可在详情中补充。</p>'}</details></section>
           <section><div class="section-head"><h4>子待办 <small>${t.children_done || 0} / ${t.children_total || 0} 项已完成</small></h4></div>
           ${inlineChildren(t, children)}</section>
         </div>
@@ -96,6 +117,7 @@ function renderTodoList() {
   const top = rows.filter((t) => !t.parent_id || !ids.has(t.parent_id));
   const html = top.map(todoItem).join("");
   const empty = { open: "没有未完成的待办", all: "还没有待办", archived: "没有归档的待办" }[todos.filter];
+  if (typeof statusMenu !== "undefined" && statusMenu.matches(":popover-open")) statusMenu.hidePopover();
   $("#todo-list").innerHTML = html || `<li class="cards-empty muted">${empty}</li>`;
   $("#todo-empty-panel").classList.toggle("hidden", Boolean(top.length));
   $("#todo-count").textContent = top.length ? `${top.length} 项工作 · 点击任务行展开要点和子待办` : "把工作放在眼前，一件一件向前推进。";
@@ -104,8 +126,9 @@ function renderTodoList() {
 $("#todo-list").addEventListener("click", (e) => {
   const button = e.target.closest("[data-inline-detail]");
   if (button) openTodo(Number(button.dataset.inlineDetail));
-  const remove = e.target.closest("[data-inline-remove]");
-  if (remove) removeInlineChild(Number(remove.dataset.parent), Number(remove.dataset.inlineRemove));
+  const trigger = e.target.closest("[data-status-menu]");
+  if (trigger) { e.preventDefault(); e.stopPropagation(); openStatusMenu(trigger); }
+
 });
 
 function inlineNotice(parent, text, kind = "") {
@@ -120,10 +143,14 @@ async function saveInlineChild(parent, action, success) {
   document.querySelectorAll("[data-inline-editor]").forEach((el) => el.disabled = true);
   inlineNotice(parent, "正在保存…");
   try {
-    await action();
+    const result = await action();
+    if (result === null) { inlineNotice(parent, "操作已取消。"); return; }
     const refreshed = await loadTodos();
     inlineNotice(parent, refreshed ? success : "已保存，但列表刷新失败。请点击列表上方的重试。", refreshed ? "" : "warn");
+    return refreshed;
   } catch (err) {
+    showNotice($("#todo-load-msg"), escapeHtml(err.message), "error");
+    if (todos.detailOpen) todoMsg(escapeHtml(err.message), "error");
     todos.inlineNotices.set(parent, {text:err.message, kind:"error"});
     renderTodoList(); // 失败时恢复服务端原状态；新增草稿单独保存。
   } finally {
@@ -134,17 +161,14 @@ async function saveInlineChild(parent, action, success) {
 
 function rememberInlineDraft(e) {
   const form = e.target.closest("[data-inline-add]");
-  if (form) todos.inlineDrafts.set(Number(form.dataset.inlineAdd), {title:form.elements.title.value, status:form.elements.status.value, due:form.elements.due.value});
+  if (form) todos.inlineDrafts.set(Number(form.dataset.inlineAdd), {title:form.elements.title.value, due:form.elements.due.value});
 }
 $("#todo-list").addEventListener("input", rememberInlineDraft);
-$("#todo-list").addEventListener("change", (e) => {
-  rememberInlineDraft(e);
-  const select = e.target.closest("[data-inline-status]");
-  if (!select) return;
-  const id = Number(select.dataset.inlineStatus), parent = Number(select.dataset.parent);
-  const child = todos.list.find((x) => x.id === id && x.parent_id === parent);
-  if (!child) return;
-  saveInlineChild(parent, () => api(`/todos/${id}/status`, {method:"POST", json:{status:select.value}}), "子待办状态已更新；主任务状态保持不变。");
+$("#todo-list").addEventListener("change", rememberInlineDraft);
+$("#todo-list").addEventListener("focusin", (e) => {
+  const form = e.target.closest("[data-inline-add]");
+  // 首次开始填写时重新取本机日期，避免页面打开很久后仍沿用旧默认值。
+  if (form && !todos.inlineDrafts.has(Number(form.dataset.inlineAdd))) form.elements.due.value = defaultChildDueDate();
 });
 $("#todo-list").addEventListener("submit", (e) => {
   const form = e.target.closest("[data-inline-add]");
@@ -154,17 +178,92 @@ $("#todo-list").addEventListener("submit", (e) => {
   const parent = Number(form.dataset.inlineAdd), draft = todos.inlineDrafts.get(parent);
   if (!draft?.title.trim()) return inlineNotice(parent, "请填写子待办标题。", "error");
   saveInlineChild(parent, async () => {
-    await api("/todos", {method:"POST", json:{parent_id:parent, title:draft.title.trim(), status:draft.status, due_date:draft.due || null}});
+    await api("/todos", {method:"POST", json:{parent_id:parent, title:draft.title.trim(), status:"todo", due_date:draft.due || null}});
     todos.inlineDrafts.delete(parent);
   }, "子待办已添加。");
 });
 
-async function removeInlineChild(parent, id) {
+// 单个浮层菜单，避免列表重绘或卡片 overflow 裁切菜单。
+const statusMenu = document.createElement("div");
+statusMenu.id = "todo-status-menu";
+statusMenu.className = "todo-status-menu";
+statusMenu.setAttribute("popover", "auto");
+statusMenu.setAttribute("role", "menu");
+statusMenu.setAttribute("aria-label", "更改待办状态");
+document.body.append(statusMenu);
+let statusTarget = null, statusTrigger = null;
+function openStatusMenu(trigger) {
   if (todos.inlineBusy) return;
-  const child = todos.list.find((x) => x.id === id && x.parent_id === parent);
-  if (!child || !(await uiConfirm(`移除“${child.title}”？它会归档，可在“已归档”中恢复；材料和历史记录保留。`, {title:"移除子待办", ok:"移除并归档", danger:true}))) return;
-  saveInlineChild(parent, () => api(`/todos/${id}`, {method:"DELETE"}), "子待办已移除，可在“已归档”中恢复。");
+  const task = todos.list.find((t) => t.id === Number(trigger.dataset.statusMenu));
+  if (!task || task.archived_at) return;
+  if (statusMenu.matches(":popover-open")) statusMenu.hidePopover();
+  // 模态框之外的 DOM 会变成 inert；菜单挂在触发者所在弹窗内才可操作。
+  (trigger.closest("dialog") || document.body).append(statusMenu);
+  statusTarget = task.id; statusTrigger = trigger;
+  statusMenu.classList.remove("popconfirm");
+  statusMenu.setAttribute("role", "menu");
+  statusMenu.setAttribute("aria-label", "更改待办状态");
+  statusMenu.innerHTML = `<div class="status-menu-label">更改状态</div>` + Object.entries(TODO_STATUS).map(([key,label]) => `<button type="button" role="menuitemradio" aria-checked="${task.status === key}" data-status-choice="${key}">${statusIcon(key)}<span>${label}</span><span class="status-check">${task.status === key ? "✓" : ""}</span></button>`).join("") + `<button type="button" role="menuitem" class="status-remove" data-status-choice="remove">${statusIcon("remove")}<span>移除</span></button>`;
+  statusMenu.showPopover();
+  positionStatusMenu();
+  trigger.setAttribute("aria-expanded", "true");
+  statusMenu.querySelector('[aria-checked="true"]').focus();
 }
+statusMenu.addEventListener("toggle", (e) => {
+  if (e.newState === "closed" && statusTrigger) statusTrigger.setAttribute("aria-expanded", "false");
+});
+statusMenu.addEventListener("keydown", (e) => {
+  const buttons = [...statusMenu.querySelectorAll("button")];
+  if (["ArrowDown","ArrowUp","Home","End"].includes(e.key)) {
+    e.preventDefault();
+    const i = buttons.indexOf(document.activeElement);
+    buttons[e.key === "Home" ? 0 : e.key === "End" ? buttons.length-1 : (i + (e.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length].focus();
+  }
+});
+statusMenu.addEventListener("click", async (e) => {
+  const choice = e.target.closest("[data-status-choice]")?.dataset.statusChoice;
+  const task = todos.list.find((t) => t.id === statusTarget);
+  if (!choice || !task || todos.inlineBusy) return;
+  const parent = task.parent_id || task.id;
+  if (choice === "remove") {
+    statusMenu.classList.add("popconfirm");
+    statusMenu.setAttribute("role", "dialog");
+    statusMenu.setAttribute("aria-label", "确认移除待办");
+    statusMenu.innerHTML = `<b>移除这项待办？</b><p>“${escapeHtml(task.title)}”${task.children_total ? "及所有子待办将被删除" : "将被删除"}，无法恢复。</p><small>原始文件、材料和历史周报保留；无其他引用的关联文件将停止追踪。</small><div class="row gap end"><button type="button" data-remove-cancel>取消</button><button type="button" class="danger-solid" data-status-choice="delete">确认移除</button></div>`;
+    positionStatusMenu();
+    statusMenu.querySelector("[data-remove-cancel]").focus();
+    return;
+  }
+  statusMenu.hidePopover();
+  statusTrigger?.focus();
+  if (choice === "delete") {
+    await saveInlineChild(parent, async () => {
+      await api(`/todos/${task.id}/permanent?confirm=true`, {method:"DELETE"});
+      if (todos.id === task.id || todos.detail?.parent_id === task.id) $("#todo-panel").close();
+    }, "待办已彻底删除。");
+  } else if (choice !== task.status) {
+    const updated = await saveInlineChild(parent, () => withConfirm((confirm) => api(`/todos/${task.id}/status`, {method:"POST", json:{status:choice, confirm}}), "完成父待办"), "待办状态已更新；其他待办状态保持不变。");
+    if (todos.detailOpen && updated) todoMsg(`状态已更新：${TODO_STATUS[choice]}。`);
+  }
+});
+statusMenu.addEventListener("click", (e) => {
+  if (e.target.closest("[data-remove-cancel]")) {
+    statusMenu.hidePopover();
+    statusTrigger?.focus();
+  }
+});
+
+function positionStatusMenu() {
+  if (!statusTrigger?.isConnected) return;
+  const rect = statusTrigger.getBoundingClientRect();
+  const width = Math.min(statusMenu.classList.contains("popconfirm") ? 300 : 210, innerWidth - 16);
+  statusMenu.style.width = `${width}px`;
+  const height = statusMenu.getBoundingClientRect().height;
+  const top = rect.bottom + 6 + height <= innerHeight - 8 ? rect.bottom + 6 : rect.top - height - 6;
+  statusMenu.style.left = `${Math.max(8, Math.min(rect.right - width, innerWidth - width - 8))}px`;
+  statusMenu.style.top = `${Math.max(8, Math.min(top, innerHeight - height - 8))}px`;
+}
+window.addEventListener("resize", () => { if (statusMenu.matches(":popover-open")) positionStatusMenu(); });
 $("#todo-list").addEventListener("toggle", (e) => {
   const detail = e.target;
   if (!detail.isConnected || !detail.matches("details[data-ticket]")) return;
@@ -200,6 +299,7 @@ $("#new-todo").addEventListener("click", async () => {
 // ---------- 详情
 async function openTodo(id, scroll = true) {
   const view = ++todos.detailView;
+  if (todos.id !== id) todos.timelineLimit = 5;
   todos.id = id;
   todos.detailOpen = true;
   renderTodoList();
@@ -223,12 +323,15 @@ async function openTodo(id, scroll = true) {
 }
 
 $("#todo-close").addEventListener("click", () => $("#todo-panel").close());
-$("#todo-panel").addEventListener("close", () => { todos.detailOpen = false; todos.detailView++; });
+$("#todo-panel").addEventListener("close", () => { if (statusMenu.matches(":popover-open")) statusMenu.hidePopover(); todos.detailOpen = false; todos.detailView++; });
 
 function renderTodo(t, timeline, reports) {
   const archived = Boolean(t.archived_at);
   $("#todo-title").textContent = t.title;
-  $("#todo-status").value = t.status;
+  $("#todo-status").dataset.statusMenu = t.id;
+  $("#todo-status").dataset.state = t.status;
+  $("#todo-status").innerHTML = `${statusIcon(t.status)}<span>${archived ? "已归档" : TODO_STATUS[t.status]}</span>`;
+  $("#todo-status").setAttribute("aria-label", `更改${t.title}的状态：${archived ? "已归档" : TODO_STATUS[t.status]}`);
   $("#todo-status").disabled = archived;
   $("#todo-edit").disabled = archived;
   $("#todo-promote").classList.toggle("hidden", !t.parent_id || archived);
@@ -249,10 +352,19 @@ function renderTodo(t, timeline, reports) {
   $("#todo-children-box").classList.toggle("hidden", Boolean(t.parent_id));
   $("#todo-progress").textContent = t.children_total ? `${t.children_done}/${t.children_total} 个子待办已完成` : "";
   $("#todo-children").innerHTML = t.children.length
-    ? t.children.map((k) => `<button type="button" class="child-card" data-open-todo="${k.id}"><span class="todo-dot ${k.status}"></span><span class="grow">${escapeHtml(k.title)}</span>
-        <span class="badge">${TODO_STATUS[k.status]}</span>${k.due_date ? `<span class="muted">截止 ${shortDay(k.due_date)}</span>` : ""}<span aria-hidden="true">→</span></button>`).join("")
+    ? t.children.map((k) => `<div class="child-card"><button type="button" class="child-detail-open grow" data-open-todo="${k.id}">${escapeHtml(k.title)}</button>
+        <span class="muted small">${TODO_STATUS[k.status]}</span>${k.due_date ? `<span class="muted small">截止 ${shortDay(k.due_date)}</span>` : ""}${todoStatusMark(k)}</div>`).join("")
     : `<p class="muted small">没有子待办。大的工作可以拆成几个子待办，各自有状态和截止日期。</p>`;
 
+  for (const [selector, part] of [["#todo-material-section","materials"],["#todo-history-section","history"],["#todo-report-section","reports"]]) {
+    const el = $(selector), key = `todo:${t.id}:${part}`;
+    el.dataset.disclosure = key;
+    el.open = Boolean(disclosureOpen(key));
+  }
+  const materialIssues = t.material_list.filter((m) => !m.current_id || m.tracking?.last_error || ["missing", "unreachable"].includes(m.tracking?.status)).length;
+  $("#todo-material-count").textContent = `${t.material_list.length} 份${materialIssues ? ` · ${materialIssues} 项异常，请展开核对` : ""}`;
+  $("#todo-material-count").classList.toggle("danger", materialIssues > 0);
+  $("#todo-report-count").textContent = `${reports.length} 份`;
   renderTodoMaterials(t);
   renderTimeline(timeline);
   $("#todo-reports").innerHTML = reports.length
@@ -308,7 +420,9 @@ const EVENT_TEXT = {
 const CHANGE_TEXT = { MODIFIED: "修改", CREATED: "新出现", DELETED: "被删除", POSSIBLY_MOVED: "可能移动/改名" };
 
 function renderTimeline(items) {
-  const rows = [...items].reverse().map((x) => {
+  todos.timeline = items;
+  $("#todo-history-count").textContent = `共 ${items.length} 条 · 当前显示最近 ${Math.min(todos.timelineLimit, items.length)} 条`;
+  const rows = [...items].reverse().slice(0, todos.timelineLimit).map((x) => {
     if (x.kind === "file_change") {
       const name = String(x.path).replace(/\\/g, "/").split("/").pop();
       const versions = x.to_version ? ` v${x.from_version || "-"}→v${x.to_version}` : "";
@@ -318,10 +432,13 @@ function renderTimeline(items) {
     const text = (EVENT_TEXT[x.event_type] || (() => x.event_type))(x);
     return `<div class="tl"><time>${fmtTime(x.at)}</time><span>${escapeHtml(text)}</span></div>`;
   });
-  $("#todo-timeline").innerHTML = rows.join("") || `<p class="muted small">还没有活动。</p>`;
+  $("#todo-timeline").innerHTML = (rows.join("") || `<p class="muted small">还没有活动。</p>`) + (items.length > todos.timelineLimit ? `<button type="button" class="ghost small" data-more-activities>查看全部 ${items.length} 条活动</button>` : "");
 }
 
 $("#todo-panel").addEventListener("click", async (e) => {
+  if (e.target.closest("[data-more-activities]")) { todos.timelineLimit = todos.timeline.length; renderTimeline(todos.timeline); return; }
+  const status = e.target.closest("[data-status-menu]");
+  if (status) return openStatusMenu(status);
   const openT = e.target.closest("[data-open-todo]");
   if (openT) return openTodo(Number(openT.dataset.openTodo));
   const openM = e.target.closest("[data-open-material]");
@@ -355,17 +472,8 @@ async function withConfirm(call, title) {
   }
 }
 
-$("#todo-status").addEventListener("change", async (e) => {
-  const status = e.target.value;
-  try {
-    const t = await withConfirm((confirm) => api(`/todos/${todos.id}/status`, { method: "POST", json: { status, confirm } }), "完成父待办");
-    if (!t) { e.target.value = todos.detail.status; return; }
-    await loadTodos();
-    todoMsg(t.notices.length ? t.notices.map(escapeHtml).join("<br>") : `状态已改为${TODO_STATUS[status]}。`, t.notices.length ? "warn" : "");
-  } catch (err) {
-    e.target.value = todos.detail.status;
-    todoMsg(escapeHtml(err.message), "error");
-  }
+$("#todo-upload").closest("label").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("#todo-upload").click(); }
 });
 
 $("#todo-edit").addEventListener("click", async () => {
@@ -491,4 +599,22 @@ $("#todo-pick").addEventListener("click", async () => {
   } catch (err) { todoMsg(escapeHtml(err.message), "error"); }
   openTodo(todos.id, false);
   loadTodos();
+});
+
+$("#todo-list").addEventListener("input", (e) => {
+  const form = e.target.closest("[data-inline-note]");
+  if (form) todos.noteDrafts.set(Number(form.dataset.inlineNote), form.elements.note.value);
+});
+$("#todo-list").addEventListener("submit", async (e) => {
+  const form = e.target.closest("[data-inline-note]");
+  if (!form) return;
+  e.preventDefault();
+  const id = Number(form.dataset.inlineNote), text = form.elements.note.value.trim();
+  if (!text || todos.inlineBusy) return;
+  const button = form.querySelector("button"); button.disabled = true;
+  await saveInlineChild(id, async () => {
+    await api(`/todos/${id}/notes`, {method:"POST", json:{text}});
+    todos.noteDrafts.delete(id);
+  }, "进展已记录，任务状态未修改。");
+  if (button.isConnected) button.disabled = false;
 });

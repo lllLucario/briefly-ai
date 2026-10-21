@@ -77,6 +77,9 @@ function renderTree(node, depth, key) {
 async function loadTrackedFiles() {
   const [sources, files] = await Promise.all([api("/tracking/sources"), api("/tracking/files"), loadTrackingSummary()]);
   const used = new Set();
+  sources.sort((a,b) => Number(Boolean(b.last_error)) - Number(Boolean(a.last_error)) || Number(b.status === "paused") - Number(a.status === "paused"));
+  const anomalies = files.filter((f) => f.status !== "present" && f.status !== "untracked").length;
+  if (anomalies || sources.some((s) => s.status === "paused" || s.last_error)) $("#tracked-label").textContent += ` · ${anomalies} 个文件异常，${sources.filter((s) => s.status === "paused").length} 个来源暂停`;
   const blocks = sources.map((s) => {
     const inFeishuFolder = (f) => (f.folders || []).find((m) => m.source_id === s.id);
     const own = s.kind === "folder" ? files.filter((f) => lower(f.path).startsWith(lower(s.path) + "/"))
@@ -85,12 +88,12 @@ async function loadTrackedFiles() {
     own.forEach((f) => used.add(f.id));
     const paused = s.status === "paused" ? `<span class="badge">已暂停</span>` : "";
     const error = s.last_error ? `<span class="badge warn" title="${escapeHtml(s.last_error)}">${escapeHtml(s.last_error.slice(0, 50))}</span>` : "";
-    const actions = `${s.status === "active" ? `<button class="ghost small" data-src="${s.id}" data-act="pause">暂停</button>`
-      : `<button class="ghost small" data-src="${s.id}" data-act="resume">恢复</button>`}
-      <button class="ghost small danger" data-src="${s.id}" data-act="remove">移除</button>`;
+    const actions = `${s.status === "active" ? `<button class="ghost small" data-src="${s.id}" data-act="pause">${uiIcon("pause")}暂停</button>`
+      : `<button class="ghost small" data-src="${s.id}" data-act="resume">${uiIcon("play")}恢复</button>`}
+      <button class="ghost small danger" data-src="${s.id}" data-act="remove">${uiIcon("trash")}移除</button>`;
     if (s.kind === "folder" || s.kind === "feishu_folder") {
       const key = `s${s.id}`;
-      const open = !tracking.collapsed.has(key);
+      const open = tracking.collapsed.has(key);
       const feishu = s.kind === "feishu_folder";
       const label = feishu ? `${s.folder?.name || "飞书文件夹"}（飞书）` : `${s.path}${s.recursive ? "" : "（仅第一层）"}`;
       const meta = feishu ? `${own.length} 篇文档${s.folder?.skipped ? ` · ${s.folder.skipped} 个非文档未追踪` : ""}` : `${own.length} 个文件`;
