@@ -19,6 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from .. import config
+from ..clock import tz_label
 from ..tracking.scheduler import daily_time, run_due_daily, tzinfo
 from .models import (
     PENDING,
@@ -187,6 +188,7 @@ class Schedule:
                 s.commit()
             except IntegrityError:
                 return None  # 另一个进程刚开始执行同一个时间点
+        log.info("每周自动整理：时区 %s，计划时间 %s，整理 %s 所在的一周", tz_label(occ_local), occ_local.isoformat(), occ_local.date())
         return self._execute(run, occ_local.date())
 
     def _execute(self, run: ScheduledRun, day: date) -> str:
