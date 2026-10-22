@@ -217,6 +217,8 @@ def visible_messages(messages: list[AnyMessage]) -> list[MessageOut]:
                     warnings.append("回答可能未完整保留材料中相互冲突的说法，请核对双方原文后再使用。")
                 if m.response_metadata.get("fidelity_issues"):
                     warnings.append("回答仍可能遗漏重要事实、混淆事项对应的信息或改变原文章节编号，请核对原材料后再使用。")
+                if m.response_metadata.get("date_issues"):
+                    warnings.append(f"回答中的日期换算可能有误（{'；'.join(m.response_metadata['date_issues'])}），请按原文核对。")
                 if m.response_metadata.get("length_limit"):
                     warnings.append(f"回答仍超过你要求的 {m.response_metadata['length_limit']} 字上限（当前 {m.response_metadata['actual_chars']} 字），可以精简要求后重试。")
                 system = bool(m.response_metadata.get(SYSTEM_REPLY))
