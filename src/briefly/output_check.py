@@ -30,7 +30,8 @@ def reply_char_limit(messages) -> int | None:
         text = re.sub(r"(?:不要|不用|不必|无需)\s*(?:再)?\s*(?:控制在|限制在|遵守)\s*\d+\s*字(?:以内|以下|内)?", "取消字数限制", text)
         text = re.sub(r"\d+\s*[-—–~～至到]\s*\d+\s*字(?:以内|以下|内)?", "", text)
         local = bool(re.search(r"仅本次|这次|本轮", text))
-        if re.search(r"(?:取消|解除|不再限制|不限制|不限|不用控制)\s*(?:输出|回复|回答)?\s*字数(?:限制)?", text):
+        if re.search(r"(?:取消|解除|(?:不|不用|不必|无需|不需要|别)\s*(?:再)?\s*(?:限制|控制|限|管))\s*(?:输出|回复|回答)?\s*(?:的)?\s*字数(?:限制|上限)?"
+                     r"|字数\s*(?:不限|(?:不用|不必|无需|不需要|不再)\s*(?:限制|控制)|随意)", text):
             current = None
             if not local:
                 persistent = None

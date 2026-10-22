@@ -122,6 +122,12 @@ def test_character_limit_failure_is_explicit_in_the_web_history(store):
     (["写100到200字以内"], None),
     (["输出最多100字", "不用再控制在100字以内"], None),
     (["回复不要超过100字"], 100),
+    (["输出都控制在100字以内", "不用限制字数了，完整总结这份报告"], None),  # 2026-10-22 实测 M8：曾仍按 100 字强制重写
+    (["输出都控制在100字以内", "不必再限制字数", "继续"], None),
+    (["输出都控制在100字以内", "字数不用限制了", "继续"], None),
+    (["输出都控制在100字以内", "别管字数"], None),
+    (["输出都控制在100字以内", "这次不用限制字数", "继续"], 100),
+    (["输出都控制在100字以内", "限制字数在50字以内"], 50),
 ])
 def test_explicit_character_limit_scope_and_cancellation(texts, expected):
     from briefly.output_check import reply_char_limit
