@@ -186,3 +186,8 @@ def test_conflict_needs_each_value_written_not_just_cited():
     assert conflict_problems([c], lambda n: one_line.get(n, [])) and "#1（10 月 20 日）" in conflict_problems([c], lambda n: one_line.get(n, []))[0]
     both = {1: ["- 交付时间：10 月 20 日〔#1〕/ 10 月 25 日〔#2〕"], 2: ["- 交付时间：10 月 20 日〔#1〕/ 10 月 25 日〔#2〕"]}
     assert conflict_problems([c], lambda n: both.get(n, [])) == []
+    # 写了这件事、却一个日期都没写（2026-10-22 实测 W6）：两个说法都要补
+    neither = {1: ["- 项目A：完成接口联调〔#1〕"], 2: ["- 项目A：确认验收标准〔#2〕"]}
+    [problem] = conflict_problems([c], lambda n: neither.get(n, []))
+    assert "#1（10 月 20 日）" in problem and "#2（10 月 25 日）" in problem
+    assert conflict_problems([c], lambda n: []) == []  # 整件事都没写：由漏写提醒处理

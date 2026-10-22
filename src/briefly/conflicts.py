@@ -460,7 +460,8 @@ def conflict_problems(conflicts: list[FactConflict], lines_of: Callable[[int], l
             continue
         numbered = [(n, v) for n, v, o in zip(c.numbers, c.values, c.origins) if o != BRIEF and n]
         missing = [n for n, v in numbered if not any(value_in(line, v) for line in lines_of(n))]
-        if len({v for _, v in numbered}) > 1 and missing and len(missing) < len(numbered):
+        # 只写了一种说法，或写了这件事却一个取值都没写（2026-10-22 实测 W6）；整件事都没写的交给漏写提醒
+        if len({v for _, v in numbered}) > 1 and missing and (len(missing) < len(numbered) or any(lines_of(n) for n in missing)):
             values = "、".join(f"#{n}（{v}）" for n, v in numbered if n in missing)
             problems.append(
                 f"{c.subject} 的{ATTRIBUTES[c.attribute]}各来源说法不一致，正文缺少 {values}：请同时写出各个说法并分别标注编号，不要只写一个"
