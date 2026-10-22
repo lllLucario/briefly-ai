@@ -68,6 +68,32 @@ def chosen(draft, **changes):
     return {"index":0,"title":x["title"],"description":x["description"],"due_date":x["due_date"], **changes}
 
 
+@pytest.mark.parametrize("field", ["owner", "deadline", "both"])
+def test_candidate_fields_from_different_passage_warn_and_preserve_exact_quotes(field):
+    text = "需要整理接口文档。\n另一项：李强负责测试，截止2026-10-23。"
+    spec = {"title": "整理接口文档", "source_id": "m1", "quote": "需要整理接口文档。"}
+    if field in ("owner", "both"):
+        spec.update(owner="李强", owner_quote="李强负责测试")
+    if field in ("deadline", "both"):
+        spec.update(deadline="2026-10-23", deadline_quote="截止2026-10-23")
+    model = FunctionModel(respond=lambda _: structured("TodoCandidates", items=[spec]), calls=[])
+    items, _ = verified_candidates(model, {"answer": "整理接口文档", "sources": [{"id": "m1", "title": "记录", "content": text}]})
+    assert items[0]["review_warnings"] == ["负责人/期限依据与任务原话不在同一处，请核对"]
+    for quote in [spec.get("owner_quote"), spec.get("deadline_quote")]:
+        if quote:
+            assert quote in items[0]["description"]
+
+
+@pytest.mark.parametrize("deadline_quote", ["", "截止2026-10-24", "原文没有这句话2026-10-23"])
+def test_deadline_elsewhere_in_source_without_verified_quote_is_cleared(deadline_quote):
+    text = "需要整理接口文档。另一项周报截止2026-10-23。"
+    spec = {"title": "整理接口文档", "source_id": "u1", "quote": "需要整理接口文档。", "deadline": "2026-10-23", "deadline_quote": deadline_quote}
+    model = FunctionModel(respond=lambda _: structured("TodoCandidates", items=[spec]), calls=[])
+    items, warnings = verified_candidates(model, {"answer": "整理接口文档", "sources": [{"id": "u1", "title": "输入", "content": text}]})
+    assert items[0]["deadline"] == "待定" and items[0]["due_date"] is None
+    assert warnings and not items[0]["review_warnings"]
+
+
 def test_preview_does_not_create_and_confirm_preserves_source_and_owner(env):
     c, app, _, thread, _ = env
     draft = preview(env)

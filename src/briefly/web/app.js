@@ -33,6 +33,7 @@ async function api(path, options = {}) {
     } catch (_) { /* 非 JSON 错误 */ }
     const err = new Error(detail);
     err.status = resp.status;
+    err.threadId = body?.thread_id || null;
     err.needsConfirm = resp.status === 409 && Boolean(body?.confirm); // 需要用户确认后带 confirm / force 重试
     throw err;
   }
@@ -1047,6 +1048,11 @@ $("#composer").addEventListener("submit", async (e) => {
   } catch (err) {
     pending.remove();
     if (state.viewRevision !== view) return;
+    if (err.threadId) {
+      state.threadId = err.threadId;
+      setSessionButtons();
+      loadSessions();
+    }
     const el = appendMessage({ role: "assistant", text: `出错了：${err.message}`, pending: true });
     el.querySelector(".bubble").classList.add("danger");
     $("#input").value = text; // 失败时把输入放回去

@@ -3,6 +3,33 @@ import pytest
 pytestmark = pytest.mark.browser
 
 
+def test_candidate_separate_evidence_warns_before_explicit_selection(web_page):
+    from .flows import send, preview
+    from playwright.sync_api import expect
+    page = web_page
+    page.locator('[data-tab="chat"]').click()
+    answer = send(page, "提取待办：整理测试记录。\n负责人另处依据：李强负责测试。\n期限另处依据：截止2026-10-23。")
+    dialog = preview(page, answer)
+    expect(dialog.locator("[data-item='0'] .notice")).to_contain_text("依据与任务原话不在同一处")
+    expect(dialog.locator("[data-selected]")).not_to_be_checked()
+    expect(dialog.locator("[data-description]")).to_have_value(__import__('re').compile("李强负责测试.*截止2026-10-23", __import__('re').S))
+    assert page.request.get(page.url.rstrip("/") + "/todos").json() == []
+
+
+def test_failed_chat_history_is_visible_after_reload(web_page):
+    from playwright.sync_api import expect
+    page = web_page
+    page.locator('[data-tab="chat"]').click()
+    page.locator("#input").fill("模拟失败")
+    page.locator("#send").click()
+    expect(page.locator(".msg.assistant").last).to_contain_text("出错了")
+    page.reload()
+    page.locator('[data-tab="chat"]').click()
+    page.locator("#session-list li").filter(has_text="模拟失败").click()
+    expect(page.locator(".msg.assistant").last).to_contain_text("本轮调用失败，未生成回答")
+    assert page.locator(".msg.user").count() == 1
+
+
 @pytest.mark.parametrize("prompt,warning", [("证据缺口：整理当前输入", "本次回答基于部分内容"), ("虚报成功：保存待办", "操作未执行")])
 def test_reliability_warning_is_visible_after_reload_without_business_write(web_page, prompt, warning):
     from .flows import send

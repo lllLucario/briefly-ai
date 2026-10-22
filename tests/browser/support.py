@@ -32,6 +32,11 @@ def fake_model():
         system, prompt = str(messages[0].content), str(messages[-1].content)
         if "TodoCandidates" in system:
             sources = json.loads(prompt)["原始来源"]
+            separate = next((s for s in sources if "负责人另处依据" in s["content"]), None)
+            if separate:
+                return structured("TodoCandidates", items=[dict(title="整理测试记录", source_id=separate["id"],
+                    quote="整理测试记录。", owner="李强", owner_quote="李强负责测试。",
+                    deadline="2026-10-23", deadline_quote="截止2026-10-23。")])
             source = next(s for s in sources if TASK in s["content"])
             return structured("TodoCandidates", items=[dict(title="整理测试记录", source_id=source["id"],
                 quote=TASK, owner="李强", owner_quote=TASK, deadline="2026-10-23")])

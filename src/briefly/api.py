@@ -211,6 +211,8 @@ def visible_messages(messages: list[AnyMessage]) -> list[MessageOut]:
                 tools += [c["name"] for c in m.tool_calls]
             elif m.text:
                 warnings = []
+                if m.response_metadata.get("number_issues"):
+                    warnings.append("以下数字未在本次依据中找到，请核对：" + "、".join(m.response_metadata["number_issues"]) + "。")
                 if m.response_metadata.get("false_success_claims"):
                     warnings.append("回答声称的保存、发送或修改操作未执行，请在对应页面确认实际结果。")
                 if m.response_metadata.get("evidence_gaps"):
@@ -324,7 +326,9 @@ def create_app(
                 raise
             except Exception as e:  # 模型接口出错（网络、密钥、限流等）
                 log.exception("对话失败")
-                raise HTTPException(status_code=502, detail=f"模型调用失败：{e}") from e
+                sessions.touch(thread_id, body.text)
+                from fastapi.responses import JSONResponse
+                return JSONResponse(status_code=502, content={"detail": f"模型调用失败：{e}", "thread_id": thread_id})
             sessions.touch(thread_id, body.text)
         return ChatOut(thread_id=thread_id, reply=reply)
 

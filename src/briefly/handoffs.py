@@ -44,6 +44,7 @@ class Candidate(BaseModel):
     owner_quote: str = ""
     deadline: str = Field(default="", description="原文中的期限，逐字摘录；没有留空，不换算相对日期")
     deadline_source_id: str = ""
+    deadline_quote: str = Field(default="", description="包含期限的原文逐字摘录；未提及期限时留空")
 
 
 class TodoCandidates(BaseModel):
@@ -108,6 +109,21 @@ def conversation_input(agent, store, thread_id: str, message_id: str) -> dict:
     return {"revision": digest([message_id, sources]), "message_id": message_id, "answer": latest.text, "sources": sources}
 
 
+def quotes_overlap(content: str, first: str, second: str) -> bool:
+    """两段逐字摘录在来源正文中的位置有交集；不把同份材料当作同一事项。"""
+    a = [(m.start(), m.start() + len(first)) for m in re.finditer(f"(?={re.escape(first)})", content)] if first else []
+    b = [(m.start(), m.start() + len(second)) for m in re.finditer(f"(?={re.escape(second)})", content)] if second else []
+    i = j = 0
+    while i < len(a) and j < len(b):
+        if max(a[i][0], b[j][0]) < min(a[i][1], b[j][1]):
+            return True
+        if a[i][1] <= b[j][1]:
+            i += 1
+        else:
+            j += 1
+    return False
+
+
 def verified_candidates(model, snapshot: dict) -> tuple[list[dict], list[str]]:
     payload = json.dumps({"原始来源": snapshot["sources"], "当前回答（仅用于确定要保存哪些任务，不是事实依据）": snapshot["answer"]}, ensure_ascii=False)
     prompt = read_prompt("todo_import")
@@ -124,9 +140,14 @@ def verified_candidates(model, snapshot: dict) -> tuple[list[dict], list[str]]:
         owner_source = sources.get(item.owner_source_id or item.source_id)
         owner_ok = not item.owner or bool(owner_source and item.owner_quote and item.owner in item.owner_quote and item.owner_quote in owner_source["content"])
         deadline_source = sources.get(item.deadline_source_id or item.source_id)
-        deadline_ok = not item.deadline or bool(deadline_source and item.deadline in deadline_source["content"])
+        # 兼容缺少新增字段的输出时，只允许用已核实的任务摘录本身补足，不回退到整篇来源。
+        deadline_quote = item.deadline_quote or (item.quote if item.deadline and item.deadline in item.quote and deadline_source == source else "")
+        deadline_ok = not item.deadline or bool(deadline_source and deadline_quote and item.deadline in deadline_quote and deadline_quote in deadline_source["content"])
         owner = item.owner if owner_ok else ""
         deadline = item.deadline if deadline_ok else ""
+        owner_separate = bool(owner and (owner_source != source or not quotes_overlap(source["content"], item.quote, item.owner_quote)))
+        deadline_separate = bool(deadline and (deadline_source != source or not quotes_overlap(source["content"], item.quote, deadline_quote)))
+        review_warnings = ["负责人/期限依据与任务原话不在同一处，请核对"] if owner_separate or deadline_separate else []
         if not owner_ok or not deadline_ok:
             warnings.append(f"“{item.title}”有无法核对的负责人或期限，相关字段已置为待定")
         due = None
@@ -144,12 +165,15 @@ def verified_candidates(model, snapshot: dict) -> tuple[list[dict], list[str]]:
         if deadline and deadline_source not in refs:
             refs.append(deadline_source)
         description = f"负责人：{owner or '待定'}\n原文期限：{deadline or '待定'}\n来源：{source['title']}\n原话：{item.quote}"
-        if owner and owner_source != source:
+        if owner and (owner_source != source or owner_separate):
             description += f"\n负责人依据（{owner_source['title']}）：{item.owner_quote}"
-        if deadline and deadline_source != source:
-            description += f"\n期限依据：{deadline_source['title']}"
+        if deadline and (deadline_source != source or deadline_separate):
+            description += f"\n期限依据（{deadline_source['title']}）：{deadline_quote}"
+        if review_warnings:
+            description += "\n核对提醒：" + "；".join(review_warnings)
         items.append({"title": item.title, "description": description, "owner": owner or "待定", "deadline": deadline or "待定", "due_date": due,
-                      "source_id": source["id"], "quote": item.quote, "material_ids": list(dict.fromkeys(s["material_id"] for s in refs if s.get("material_id")))})
+                      "source_id": source["id"], "quote": item.quote, "review_warnings": review_warnings,
+                      "material_ids": list(dict.fromkeys(s["material_id"] for s in refs if s.get("material_id")))})
     return items, warnings
 
 

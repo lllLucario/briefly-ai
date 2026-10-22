@@ -7,7 +7,7 @@ import logging
 import re
 
 from langchain.agents.middleware import AgentMiddleware, ModelResponse
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 log = logging.getLogger(__name__)
 
@@ -161,13 +161,20 @@ class InternalTermCheck(AgentMiddleware):
         self.length_limit = length_limit or (lambda request: reply_char_limit(request.messages))
 
     def wrap_model_call(self, request, handler):
-        response = handler(request)
+        context = getattr(getattr(request, "runtime", None), "context", None)
+        state = getattr(context, "output_check", {})
+        effective = request
+        if state.get("retried") and state.get("hint"):
+            base = request.system_message.text if request.system_message else ""
+            effective = request.override(system_message=SystemMessage(base + "\n\n" + state["hint"]))
+        response = handler(effective)
         answer = _final_answer(response)
         if answer is None:
             return response
         annotate_evidence(answer, request.messages)
         claims = false_success_claims(answer.text)
         sources = self._sources(request)  # 一次最终回答只取一次，重试沿用同一依据
+        self._numbers(answer, sources, context)
         conflicts = turn_conflicts(request.messages)
         terms = find_internal_terms(answer.text, sources)
         missing = missing_conflict_values(answer.text, conflicts)
@@ -176,6 +183,9 @@ class InternalTermCheck(AgentMiddleware):
         limit = self.length_limit(request)
         too_long = limit is not None and reply_chars(answer.text) > limit
         if not terms and not missing and not too_long and not fidelity and not dates and not claims:
+            return response
+        if state.get("retried"):
+            self._mark(answer, terms, missing, too_long, fidelity, dates, claims, limit)
             return response
         log.warning("回答检查未通过（内部信息 %s，缺少的冲突说法 %s，超出字数上限 %s，事实/编号问题 %s 项，日期换算错误 %s 处，虚报操作成功 %s 处），重试一次", terms, missing, limit if too_long else None,len(fidelity), len(dates), len(claims))
         hints = []
@@ -192,12 +202,14 @@ class InternalTermCheck(AgentMiddleware):
         if too_long:
             hints.append(f"上一条回复共 {reply_chars(answer.text)} 字，违反用户仍有效的整条回复最多 {limit} 字要求。请重新压缩，所有标题、正文、说明和注合计不得超过 {limit} 字（不计空白）。保留原文事实、数字、日期和确定程度；精简修改说明，不添加可选的注，不截断或删除关键事实。")
         hint = HumanMessage("\n".join(hints), additional_kwargs={"internal": True})
+        state.update(retried=True, hint="【本轮纠正要求，仍须遵守】\n" + hint.text + "\n【上一版回答，仅作修改对照，不是事实来源】\n" + answer.text)
         retry = handler(request.override(messages=[*request.messages, answer, hint]))
         second = _final_answer(retry)
         if second is None:
             # 重试可能因预算被拒绝，或需要继续读取工具；不能悄悄退回已知有问题的原回答。
             return retry
         annotate_evidence(second, request.messages)
+        self._numbers(second, sources, context)
         left_claims = false_success_claims(second.text)
         if left_claims:
             second.response_metadata["false_success_claims"] = left_claims
@@ -208,16 +220,28 @@ class InternalTermCheck(AgentMiddleware):
         left_dates = self._dates(second.text, request, sources)
         if dates:
             log.info("日期纠正：重写后%s", "已无明确错误" if not left_dates else f"仍有 {len(left_dates)} 处错误")
-        if left or left_conflicts or left_length or left_fidelity or left_dates or left_claims:
-            log.warning("重试后回答仍未通过检查（内部信息 %s，缺少的冲突说法 %s，超出字数上限 %s，事实/编号问题 %s 项，日期换算错误 %s 处，虚报操作成功 %s 处），需要人工排查", left, left_conflicts, limit if left_length else None,len(left_fidelity), len(left_dates), len(left_claims))
-            second.response_metadata = {**second.response_metadata, "internal_terms": left, "missing_conflicts": left_conflicts}
-            if left_length:
-                second.response_metadata.update({"length_limit": limit, "actual_chars": reply_chars(second.text)})
-            if left_fidelity:
-                second.response_metadata["fidelity_issues"] = left_fidelity
-            if left_dates:
-                second.response_metadata["date_issues"] = left_dates
+        self._mark(second, left, left_conflicts, left_length, left_fidelity, left_dates, left_claims, limit)
         return retry
+
+    def _numbers(self, answer, sources, context):
+        from .number_check import number_issues
+        issues = number_issues(answer.text, sources, getattr(context, "now", None))
+        if issues:
+            answer.response_metadata["number_issues"] = issues
+
+    def _mark(self, answer, terms, missing, too_long, fidelity, dates, claims, limit):
+        if not any((terms, missing, too_long, fidelity, dates, claims)):
+            return
+        log.warning("重试后回答仍未通过检查，需要人工排查")
+        answer.response_metadata.update(internal_terms=terms, missing_conflicts=missing)
+        if too_long:
+            answer.response_metadata.update(length_limit=limit, actual_chars=reply_chars(answer.text))
+        if fidelity:
+            answer.response_metadata["fidelity_issues"] = fidelity
+        if dates:
+            answer.response_metadata["date_issues"] = dates
+        if claims:
+            answer.response_metadata["false_success_claims"] = claims
 
     def _dates(self, text, request, sources, record: bool = False) -> list[str]:
         """明确的日期换算错误；record 时记录核对指标（只记数量，不记回答内容）。"""

@@ -101,6 +101,7 @@ async function previewTodos(thread, message, resultBox) {
         <label class="toggle"><input type="checkbox" data-selected>保存这条${x.possible_duplicate ? "（已有同名待办，请确认是否重复）" : ""}</label>
         <label>任务标题<input data-title class="block" maxlength="200" value="${escapeHtml(x.title)}"></label>
         <p>原文负责人：${escapeHtml(x.owner)} · 原文期限：${escapeHtml(x.deadline)}</p>
+        ${(x.review_warnings || []).map((w) => `<p class="notice warn">${escapeHtml(w)}</p>`).join("")}
         <p class="quote">${escapeHtml(x.quote)}</p>
         <label>说明与来源<textarea data-description class="block" rows="3">${escapeHtml(x.description)}</textarea></label>
         <div class="row gap wrap"><label>截止日期（相对日期请确认后填写）<input type="date" data-due value="${escapeHtml(x.due_date || "")}"></label>

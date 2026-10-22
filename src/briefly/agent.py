@@ -196,21 +196,47 @@ class Agent:
         material_ids = [*(material_ids or []), *stored]  # 转存的长输入只给引用，不再全文附回
         compacted = self._compact(thread_id, run_id)
         meta = {"display": display, "material_ids": material_ids, "skill": skill}
-        message = HumanMessage(text, additional_kwargs=meta)
-        result = self.graph.invoke(
-            {"messages": [message]},
-            config={"configurable": {"thread_id": thread_id}},
-            context=Context(
-                skill=skill,
-                material_ids=scope,
-                thread_id=thread_id,
-                run_id=run_id,
-                compacted=compacted,
-                reply_limit=reply_char_limit([*self.history_of(thread_id), message]),
-                now=started.now,
-            ),
-        )
+        message = HumanMessage(text, id=uuid.uuid4().hex, additional_kwargs=meta)
+        try:
+            result = self.graph.invoke(
+                {"messages": [message]},
+                config={"configurable": {"thread_id": thread_id}},
+                context=Context(
+                    skill=skill,
+                    material_ids=scope,
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    compacted=compacted,
+                    reply_limit=reply_char_limit([*self.history_of(thread_id), message]),
+                    now=started.now,
+                ),
+            )
+        except Exception:
+            try:
+                self._close_failed_turn(thread_id, message.id)
+            except Exception:
+                log.exception("保存本轮调用失败说明失败")
+            raise
         return result["messages"][-1].text
+
+    def _close_failed_turn(self, thread_id, message_id):
+        """闭合已入checkpoint的失败轮次，不删除用户原话，不重发或恢复旧工具任务。"""
+        messages = self.history_of(thread_id)
+        start = max((i for i, m in enumerate(messages) if isinstance(m, HumanMessage) and not m.additional_kwargs.get("internal")), default=-1)
+        if start < 0 or messages[start].id != message_id:
+            return
+        tail = messages[start + 1:]
+        if any(isinstance(m, AIMessage) and not m.tool_calls and m.text for m in tail):
+            return
+        pending = {}
+        for m in tail:
+            if isinstance(m, AIMessage):
+                pending.update({c["id"]: c["name"] for c in m.tool_calls})
+            elif isinstance(m, ToolMessage):
+                pending.pop(m.tool_call_id, None)
+        closed = [ToolMessage("本轮调用失败，工具结果不可用，请重新提问后查询。", tool_call_id=cid, name=name, status="error") for cid, name in pending.items()]
+        closed.append(system_reply("本轮调用失败，未生成回答。请修改要求或稍后重试。"))
+        self.graph.update_state({"configurable": {"thread_id": thread_id}}, {"messages": closed}, as_node="model")
 
     def _compact(self, thread_id: str, run_id: str) -> bool:
         """对话前按需压缩。失败不影响本次对话：Context Builder 会降级并提示有未纳入的历史。"""
