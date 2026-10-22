@@ -714,7 +714,7 @@ CASES: list[Case] = [
     Case(
         "I6", "指令识别", "指定能力优先：材料像会议记录，但用户指定文本优化",
         turns=[Turn("把这段话写得更书面一些", skill="polish", materials=("meeting.txt",), checks=[
-            POLISH, lacks("【会议信息】", "【行动项】"), has_all("李强", "赵琳"), no_new_numbers(fixture("meeting.txt")),
+            POLISH, lacks("【会议信息】", "【行动项】"), has_all("李强", "赵琳"), no_new_numbers(fixture("meeting.txt")), no_internal_terms(),
         ])],
     ),
     # ---- 时间上下文（当前时间由程序注入）
@@ -741,7 +741,7 @@ CASES: list[Case] = [
             Turn("总结这份报告", materials=("report.md",), checks=[SUMMARIZE]),
             Turn("整理这份会议记录", materials=("meeting.txt",), checks=[MINUTES]),
             Turn("梳理这些待办", materials=("todo.txt",), checks=[TODO]),
-            Turn("最开始那份报告里，发票业务的自动解决率是多少？第四季度目标是多少？", checks=[has_all("32%", "65%"), lacks("赵琳")]),
+            Turn("最开始那份报告里，发票业务的自动解决率是多少？第四季度目标是多少？", checks=[has_all("32%", "65%"), lacks("赵琳"), no_internal_terms()]),
         ],
     ),
     Case(
