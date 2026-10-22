@@ -6,9 +6,12 @@
 
 周报按自然周（周一到周日）。重新生成仍是同一份周报，被替换的正文存为历史版本。
 """
+import logging
+import threading
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from langchain_core.language_models import BaseChatModel
 from sqlalchemy import select, update
@@ -31,10 +34,20 @@ from .models import (
     EvidenceReview,
     WeeklyReport,
     WeeklyReportVersion,
+    WeeklyGenerationLease,
     WeeklySettings,
     WorkEvidence,
 )
 from .review import ReviewService, reopen
+
+log = logging.getLogger(__name__)
+GENERATION_TIMEOUT = timedelta(minutes=30)
+GENERATION_HEARTBEAT_SECONDS = 60
+
+
+def generation_now():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
 
 MAX_NOTE = 2000
 
@@ -66,7 +79,6 @@ class WeeklyService:
         self._model_factory = model_factory
         self._tracking = tracking
         self._session = sessionmaker(store.engine, expire_on_commit=False)
-        self._fail_interrupted()
 
     @property
     def tracking(self):
@@ -77,14 +89,52 @@ class WeeklyService:
         return self._tracking
 
     def _fail_interrupted(self) -> None:
-        """服务重启时还在生成中的周报不会再继续，标记为失败，免得一直显示“生成中”。"""
+        """只有租约失联超过阈值才恢复；旧库无租约的活动任务先获得完整宽限期。"""
+        now = generation_now()
         with self._session() as s:
-            s.execute(
-                update(WeeklyReport)
-                .where(WeeklyReport.status.in_([PENDING_GEN, RUNNING]))
-                .values(status=FAILED, error="服务重启，生成中断，请重新生成")
-            )
+            missing = list(s.scalars(select(WeeklyReport.id).where(
+                WeeklyReport.status.in_([PENDING_GEN, RUNNING]),
+                ~select(WeeklyGenerationLease.report_id).where(WeeklyGenerationLease.report_id == WeeklyReport.id).exists(),
+            )))
+        for report_id in missing:
+            with self._session() as s:
+                s.add(WeeklyGenerationLease(report_id=report_id, token=uuid.uuid4().hex, heartbeat_at=now))
+                try:
+                    s.commit()
+                except IntegrityError:  # 另一个进程已初始化或周报已删除
+                    s.rollback()
+        with self._session() as s:
+            expired = select(WeeklyGenerationLease.report_id).where(
+                WeeklyGenerationLease.report_id == WeeklyReport.id,
+                WeeklyGenerationLease.heartbeat_at < now - GENERATION_TIMEOUT,
+            ).exists()
+            s.execute(update(WeeklyReport).where(
+                WeeklyReport.status.in_([PENDING_GEN, RUNNING]), expired,
+            ).values(status=FAILED, error="生成中断：超过30分钟未收到任务续期，请重新生成"))
             s.commit()
+
+    def _owns_generation(self, report_id, token):
+        return select(WeeklyGenerationLease.report_id).where(
+            WeeklyGenerationLease.report_id == report_id,
+            WeeklyGenerationLease.token == token,
+        ).exists()
+
+    def _renew_generation(self, report_id, token) -> bool:
+        with self._session() as s:
+            result = s.execute(update(WeeklyGenerationLease).where(
+                WeeklyGenerationLease.report_id == report_id, WeeklyGenerationLease.token == token,
+                select(WeeklyReport.id).where(WeeklyReport.id == report_id, WeeklyReport.status == RUNNING).exists(),
+            ).values(heartbeat_at=generation_now()))
+            s.commit()
+            return result.rowcount == 1
+
+    def _heartbeat_generation(self, report_id, token, stop):
+        while not stop.wait(GENERATION_HEARTBEAT_SECONDS):
+            try:
+                if not self._renew_generation(report_id, token):
+                    return
+            except Exception:
+                log.exception("周报生成续期失败，稍后重试")
 
     # ---- 设置
     def settings(self) -> WeeklySettings:
@@ -133,6 +183,7 @@ class WeeklyService:
             return report
 
     def report(self, report_id: int) -> WeeklyReport:
+        self._fail_interrupted()
         with self._session() as s:
             report = s.get(WeeklyReport, report_id)
         if report is None:
@@ -140,6 +191,7 @@ class WeeklyService:
         return report
 
     def list_reports(self) -> list[WeeklyReport]:
+        self._fail_interrupted()
         with self._session() as s:
             return list(s.scalars(select(WeeklyReport).order_by(WeeklyReport.period_start.desc())))
 
@@ -235,46 +287,78 @@ class WeeklyService:
             raise ValueError("没有已确认的工作记录，也没有本周材料或本周说明，无法生成周报")
         settings = self.settings()
         bridge = TodoEvidence(self.engine, self.store)
-        bridge.freeze(report_id)  # 冻结关联待办的审核快照
         inputs = {
             "audience": (audience or "").strip() or settings.audience or None,
             "name": (name or "").strip() or settings.author or None,
             "evidence_ids": confirmed,
-            "todo_refs": bridge.report_refs(confirmed),  # 旧周报按当时的待办标题、状态、层级显示，写作时按父待办分组
         }
+        token = uuid.uuid4().hex
         with self._session() as s:
-            s.execute(
+            claimed = s.execute(
                 update(WeeklyReport)
-                .where(WeeklyReport.id == report_id)
+                .where(WeeklyReport.id == report_id, WeeklyReport.status.not_in([PENDING_GEN, RUNNING]))
                 .values(checklist=CONFIRMED_LIST, confirmed_at=datetime.now(), inputs=inputs, status=PENDING_GEN, error="")
             )
+            if claimed.rowcount != 1:
+                raise ValueError("这份周报正在生成，请稍等")
+            bridge.freeze(report_id, session=s)
+            inputs["todo_refs"] = bridge.report_refs(confirmed, session=s)
+            s.execute(update(WeeklyReport).where(WeeklyReport.id == report_id).values(inputs=inputs))
+            lease = s.get(WeeklyGenerationLease, report_id)
+            if lease is None:
+                s.add(WeeklyGenerationLease(report_id=report_id, token=token, heartbeat_at=generation_now()))
+            else:
+                lease.token, lease.heartbeat_at = token, generation_now()
             s.add(EvidenceReview(report_id=report_id, action="generate", after={"evidence_ids": confirmed}, note=f"确认清单并生成：{len(confirmed)} 条工作记录"))
             s.commit()
-        return self.report(report_id)
+        result = self.report(report_id)
+        result.generation_token = token
+        return result
 
-    def run_generation(self, report_id: int) -> None:
-        """后台执行：出错时记为失败并保存原因，不向外抛出。旧正文（含你改过的）先存为历史版本。"""
+    def run_generation(self, report_id: int, token: str | None = None) -> None:
+        """只有认领本次 pending 的任务可运行；续期或结果写回均核对同一身份。"""
         report = self.report(report_id)
-        self._update(report_id, status=RUNNING, error="")
+        with self._session() as s:
+            lease = s.get(WeeklyGenerationLease, report_id)
+            token = token or (lease.token if lease else None)
+            if not token:
+                return
+            claimed = s.execute(update(WeeklyReport).where(
+                WeeklyReport.id == report_id, WeeklyReport.status == PENDING_GEN,
+                self._owns_generation(report_id, token),
+            ).values(status=RUNNING, error=""))
+            s.commit()
+            if claimed.rowcount != 1:
+                return
+        self._renew_generation(report_id, token)
+        stop = threading.Event()
+        heartbeat = threading.Thread(target=self._heartbeat_generation, args=(report_id, token, stop), daemon=True)
+        heartbeat.start()
         try:
             content, items, generation = ReportWriter(self.store, self._model_factory).write(report)
-        except Exception as e:  # 后台任务没有调用方接异常，必须记下来
-            self._update(report_id, status=FAILED, error=f"{type(e).__name__}: {e}"[:1000])
-            return
-        with self._session() as s:
-            if report.content:
-                s.add(WeeklyReportVersion(report_id=report_id, content=report.content, reason="regenerate"))
-            s.execute(
-                update(WeeklyReport)
-                .where(WeeklyReport.id == report_id)
-                .values(status=DONE, content=content, items=items, generation=generation, generated_at=datetime.now())
-            )
-            s.commit()
+            with self._session() as s:
+                saved = s.execute(update(WeeklyReport).where(
+                    WeeklyReport.id == report_id, WeeklyReport.status == RUNNING,
+                    self._owns_generation(report_id, token),
+                ).values(status=DONE, content=content, items=items, generation=generation, generated_at=datetime.now()))
+                if saved.rowcount == 1 and report.content:
+                    s.add(WeeklyReportVersion(report_id=report_id, content=report.content, reason="regenerate"))
+                s.commit()
+        except Exception as e:
+            with self._session() as s:
+                s.execute(update(WeeklyReport).where(
+                    WeeklyReport.id == report_id, WeeklyReport.status == RUNNING,
+                    self._owns_generation(report_id, token),
+                ).values(status=FAILED, error=f"{type(e).__name__}: {e}"[:1000]))
+                s.commit()
+        finally:
+            stop.set()
+            heartbeat.join()
 
     def generate(self, report_id: int, audience: str | None = None, name: str | None = None) -> WeeklyReport:
         """同步生成（命令行、测试用）。"""
-        self.start_generation(report_id, audience, name)
-        self.run_generation(report_id)
+        report = self.start_generation(report_id, audience, name)
+        self.run_generation(report_id, report.generation_token)
         return self.report(report_id)
 
     # ---- 正文
@@ -287,8 +371,10 @@ class WeeklyService:
         if content.strip() == report.content:
             return report
         with self._session() as s:
+            changed = s.execute(update(WeeklyReport).where(WeeklyReport.id == report_id, WeeklyReport.status == DONE, WeeklyReport.content == report.content).values(content=content.strip()))
+            if changed.rowcount != 1:
+                raise ValueError("周报已变化或正在生成，请刷新后重试")
             s.add(WeeklyReportVersion(report_id=report_id, content=report.content, reason="edit"))
-            s.execute(update(WeeklyReport).where(WeeklyReport.id == report_id).values(content=content.strip()))
             s.commit()
         return self.report(report_id)
 
@@ -300,13 +386,17 @@ class WeeklyService:
     def restore_version(self, report_id: int, version_id: int) -> WeeklyReport:
         """恢复某个历史版本：当前正文也先存为版本，不会丢。"""
         report = self.report(report_id)
+        if report.status in (PENDING_GEN, RUNNING):
+            raise ValueError("这份周报正在生成，不能恢复版本")
         with self._session() as s:
             version = s.get(WeeklyReportVersion, version_id)
             if version is None or version.report_id != report_id:
                 raise ReportNotFound(f"版本 {version_id} 不存在")
+            changed = s.execute(update(WeeklyReport).where(WeeklyReport.id == report_id, WeeklyReport.status.not_in([PENDING_GEN, RUNNING]), WeeklyReport.content == report.content).values(content=version.content, status=DONE))
+            if changed.rowcount != 1:
+                raise ValueError("周报已变化或正在生成，请刷新后重试")
             if report.content:
                 s.add(WeeklyReportVersion(report_id=report_id, content=report.content, reason="restore"))
-            s.execute(update(WeeklyReport).where(WeeklyReport.id == report_id).values(content=version.content, status=DONE))
             s.commit()
         return self.report(report_id)
 

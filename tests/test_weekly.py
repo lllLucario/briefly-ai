@@ -248,12 +248,12 @@ def test_generation_needs_something_to_write(store):
     assert (report.period_start, report.period_end) == (date(2026, 10, 12), date(2026, 10, 18))
 
 
-def test_interrupted_reports_are_marked_failed_on_restart(store, material):
+def test_new_service_does_not_interrupt_active_reports(store, material):
     weekly, _ = service(store)
     report = draft(weekly, [material.id])
     restarted, _ = service(store)
     interrupted = restarted.report(report.id)
-    assert interrupted.status == FAILED and "生成中断" in interrupted.error
+    assert interrupted.status == PENDING_GEN and not interrupted.error
 
 
 def test_edit_and_export(store, material):

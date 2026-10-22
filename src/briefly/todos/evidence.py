@@ -16,6 +16,7 @@
 """
 import hashlib
 import json
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -360,10 +361,10 @@ class TodoEvidence:
         return todo, notices
 
     # ---- 历史快照
-    def freeze(self, report_id: int) -> None:
+    def freeze(self, report_id: int, session=None) -> None:
         """确认清单时冻结：每条记录（已确认、已排除）的文案、审核状态，以及关联待办此刻的标题、状态、层级。"""
         now = datetime.now().isoformat(timespec="seconds")
-        with self._session() as s:
+        with (nullcontext(session) if session is not None else self._session()) as s:
             rows = list(
                 s.execute(
                     select(EvidenceTodoLink, WorkEvidence, Todo)
@@ -382,13 +383,14 @@ class TodoEvidence:
                     "synced": link.synced_at is not None,
                     "frozen_at": now,
                 }
-            s.commit()
+            if session is None:
+                s.commit()
 
-    def report_refs(self, evidence_ids: list[int]) -> list[dict]:
+    def report_refs(self, evidence_ids: list[int], session=None) -> list[dict]:
         """生成周报时写进周报的关联快照（只含已确认的记录）：之后待办怎么改，旧周报都按这份显示。"""
         if not evidence_ids:
             return []
-        with self._session() as s:
+        with (nullcontext(session) if session is not None else self._session()) as s:
             rows = list(s.scalars(select(EvidenceTodoLink).where(EvidenceTodoLink.evidence_id.in_(evidence_ids)).order_by(EvidenceTodoLink.id)))
             todos = {t.id: t for t in s.scalars(select(Todo).where(Todo.id.in_([x.todo_id for x in rows])))}
             parents = {t.id: t for t in s.scalars(select(Todo).where(Todo.id.in_([t.parent_id for t in todos.values() if t.parent_id])))}

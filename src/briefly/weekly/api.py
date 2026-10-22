@@ -265,7 +265,7 @@ def register(app: FastAPI) -> None:
     @app.post("/weekly/{report_id}/generate", tags=[docs.WEEKLY], status_code=202, summary="确认清单并生成正文（后台生成，轮询详情看进度；会调用模型）")
     def generate(report_id: int, body: GenerateIn, background: BackgroundTasks):
         report = weekly().start_generation(report_id, body.audience, body.name)
-        background.add_task(weekly().run_generation, report.id)
+        background.add_task(weekly().run_generation, report.id, report.generation_token)
         return detail(report)
 
     @app.put("/weekly/{report_id}/content", tags=[docs.WEEKLY], summary="保存修改后的正文（修改前的存为历史版本）")

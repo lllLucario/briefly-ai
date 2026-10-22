@@ -52,6 +52,15 @@ class WeeklyReport(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class WeeklyGenerationLease(Base):
+    """跨进程生成租约；独立表兼容已有周报数据库，无需改旧表。时间统一为 UTC。"""
+
+    __tablename__ = "weekly_generation_leases"
+    report_id: Mapped[int] = mapped_column(ForeignKey("weekly_reports.id", ondelete="CASCADE"), primary_key=True)
+    token: Mapped[str] = mapped_column(String(32))
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime)
+
+
 class WeeklyReportVersion(Base):
     """被替换掉的正文：重新生成前、手动修改前各存一份，可以查看和恢复。"""
 

@@ -233,6 +233,7 @@ class Schedule:
 
 def run_due(weekly, now: datetime | None = None) -> list[str]:
     """到期的每日扫描和每周自动整理。返回给人看的执行记录。"""
+    weekly._fail_interrupted()
     messages = run_due_daily(weekly.tracking, now)
     message = Schedule(weekly).run_due(now)
     return messages + ([message] if message else [])
