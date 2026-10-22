@@ -245,6 +245,7 @@ def test_material_detail_opens_as_modal_and_returns_to_list(web_page):
     page.locator("#material-close").click()
     page.locator("#lib-q").fill("材料1")
     expect(rows(page)).to_have_count(1)
+    expect(rows(page).first).to_contain_text("材料1")
 
     rows(page).first.locator(".lib-open").click()
     expect(panel).to_be_visible()
