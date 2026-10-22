@@ -80,8 +80,9 @@ def get_current_date() -> str:
 def resolve_date(expression: str, base_date: str = "") -> str:
     """把相对时间（明天、后天、下周一、本周五、上周三、3天后、两周后、月底、下个月5号等）换算成具体日期。由程序计算，不要心算星期。
 
-    base_date：换算的基准日期。材料里的相对时间以材料中的日期为基准（如会议日期“10月14日”或“2026-10-14”）；
-    材料没有日期、或用户说的是相对今天的时间时留空，按今天计算。一周从周一开始。
+    base_date：换算的基准日期，照抄材料原文。材料里的相对时间以材料中的日期为基准（如会议日期“10月14日”）；
+    原文没写年份就不要补年份（程序按今年计算），不要自己推测年份。材料没有日期、或用户说的是相对今天的时间时留空，按今天计算。
+    一周从周一开始。
     """
     today = date.today()
     base = parse_base_date(base_date, today) if base_date.strip() else today
@@ -92,6 +93,8 @@ def resolve_date(expression: str, base_date: str = "") -> str:
     if result is None:
         return f"无法换算“{expression}”（基准日期 {label}）：请在回答中保留原话，不要自行推算。"
     note = ""
+    if base_date.strip() and base.year != today.year:
+        note += f"；基准日期的年份 {base.year} 不是今年，请确认材料原文确实写了这个年份，原文没写年份时只传月和日"
     if re.fullmatch(r"(?:周|星期|礼拜)[一二三四五六日天]", re.sub(r"\s+", "", expression)) and result < base:
-        note = "；注意：按“本周”理解这一天早于基准日期，原意可能是下周，请保留原话或向用户确认"
+        note += "；注意：按“本周”理解这一天早于基准日期，原意可能是下周，请保留原话或向用户确认"
     return f"“{expression}” = {result.isoformat()} {_weekday_name(result)}（基准日期 {label}{note}）"

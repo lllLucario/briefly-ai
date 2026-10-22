@@ -48,6 +48,9 @@ def test_tool_reports_base_and_keeps_unknown_expressions_verbatim():
     # 不带“本/下”的周几早于基准日期：提示可能是下周，不擅自改成下周
     assert "原意可能是下周" in resolve_date.invoke({"expression": "周一", "base_date": "2026-10-14"})
     assert "（今天）" in resolve_date.invoke({"expression": "明天"})
+    # 2026-10-22 实测：材料只写“10月14日”，模型自行补成 2025 年，算出错误星期
+    assert "不是今年" in resolve_date.invoke({"expression": "下周一", "base_date": f"{date.today().year - 1}-10-14"})
+    assert "不是今年" not in resolve_date.invoke({"expression": "下周一", "base_date": "10月14日"})
 
 
 def test_agent_has_date_tools():
