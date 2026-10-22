@@ -227,6 +227,25 @@ def test_material_detail_opens_as_modal_and_returns_to_list(web_page):
     expect(page.locator("#lib-q")).to_have_value("材料1")
     expect(rows(page).first).not_to_have_class(re.compile("active"))
 
+    # 弹窗本身不滚动：鼠标在标题上滚轮也滚正文，标题和操作常驻
+    add(page, "长材料", "\n\n".join(f"第{i}段虚构正文。" * 8 for i in range(80)))
+    page.evaluate("loadLibrary()")
+    page.locator("#lib-q").fill("长材料")
+    expect(rows(page)).to_have_count(1)
+    expect(rows(page).first).to_contain_text("长材料")
+    rows(page).first.click()
+    title = panel.locator("#material-title")
+    expect(title).to_have_text("长材料")
+    box = title.bounding_box()
+    page.mouse.move(box["x"] + 10, box["y"] + 5)
+    page.mouse.wheel(0, 600)
+    page.wait_for_function("document.querySelector('#material-body').scrollTop > 0")
+    assert page.evaluate("document.querySelector('#material-panel').scrollTop") == 0
+    expect(title).to_be_in_viewport()
+    page.locator("#material-close").click()
+    page.locator("#lib-q").fill("材料1")
+    expect(rows(page)).to_have_count(1)
+
     rows(page).first.locator(".lib-open").click()
     expect(panel).to_be_visible()
     page.keyboard.press("Escape")

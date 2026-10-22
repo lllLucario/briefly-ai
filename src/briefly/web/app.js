@@ -362,15 +362,19 @@ async function showMaterialDetail(id) {
           <button class="ghost" id="material-to-week">加入本周材料</button>
         </div>
       </div>
+      <div class="material-top">
       <details class="meta"><summary>技术信息</summary>编号 ${m.id} · ${m.char_count} 字 · ${m.chunk_count} 块 · ${m.section_count} 个章节 · 结构来源：${escapeHtml(m.structure || "-")}</details>
       ${warnings}
       <p class="muted small">${escapeHtml(sourceLabel(m))} · ${m.source === "tracked" ? "追踪最新版本 · 随追踪更新" : m.tracking_state && m.tracking_state !== "fixed" ? "固定副本 · 已开启追踪（这份内容不变，新版本另存为材料）" : "固定副本 · 原文件后续修改不会自动更新"}${m.tracking_note ? ` · ${escapeHtml(m.tracking_note)}` : ""} · 添加时间 ${fmtTime(m.created_at)}${m.warnings.length ? ` · ${m.warnings.length} 项解析提示，请先核对` : " · 未报告解析警告（不代表所有内容均已完整识别）"}</p>
       <div class="detail-todos"><b>关联待办</b>${relatedCell({ ...m, id: `detail-${m.id}` })}</div>
+      <div class="material-extras">
+      <details class="meta" data-disclosure="material:${m.id}:outline" ${disclosureOpen(`material:${m.id}:outline`)}><summary>文档大纲（${m.sections.length} 个章节）</summary><div class="outline">${outline}</div></details>
+      <details class="meta"><summary>解析报告</summary><pre class="content-box">${escapeHtml(JSON.stringify(report, null, 2))}</pre></details>
+      </div>
+      </div>
       <div class="preview-head"><b>正文预览</b>${RICH_TYPES.has(m.file_type) ? `<div class="segmented" role="group" aria-label="预览方式">
         <button type="button" data-preview="rich" aria-pressed="false">排版</button><button type="button" data-preview="raw" aria-pressed="false">原文</button></div>` : ""}</div>
-      <div id="material-body" class="content-box material-preview"></div>
-      <details class="meta" data-disclosure="material:${m.id}:outline" ${disclosureOpen(`material:${m.id}:outline`)}><summary>文档大纲（${m.sections.length} 个章节）</summary><div class="outline">${outline}</div></details>
-      <details class="meta"><summary>解析报告</summary><pre class="content-box">${escapeHtml(JSON.stringify(report, null, 2))}</pre></details>`;
+      <div id="material-body" class="content-box material-preview" tabindex="0" aria-label="正文"></div>`;
     box.querySelectorAll("[data-lib-todo]").forEach((b) => b.onclick = () => openTodoFromLibrary(Number(b.dataset.libTodo)));
     const showBody = (mode) => {
       const rich = RICH_TYPES.has(m.file_type) && mode === "rich";
@@ -398,6 +402,22 @@ async function showMaterialDetail(id) {
 }
 
 $("#material-close").addEventListener("click", () => $("#material-panel").close());
+
+// 弹窗本身不滚动：滚轮落在标题、按钮等不能滚动的地方时交给正文，不会“滚不动”
+function scrollableIn(el, stop, dy) {
+  for (; el && el !== stop; el = el.parentElement) {
+    const style = getComputedStyle(el);
+    if (!/(auto|scroll)/.test(style.overflowY) || el.scrollHeight <= el.clientHeight) continue;
+    if (dy < 0 ? el.scrollTop > 0 : el.scrollTop + el.clientHeight < el.scrollHeight - 1) return el;
+  }
+  return null;
+}
+$("#material-panel").addEventListener("wheel", (e) => {
+  const body = $("#material-body");
+  if (!body || e.ctrlKey || body.contains(e.target) || scrollableIn(e.target, e.currentTarget, e.deltaY)) return;
+  e.preventDefault();
+  body.scrollBy({ top: e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? body.clientHeight : 1) });
+}, { passive: false });
 $("#material-panel").addEventListener("close", () => { state.activeMaterial = null; renderMaterialRows(); });
 
 // ---------- 添加材料（弹窗：上传文件 / 粘贴文字 / 飞书链接）
