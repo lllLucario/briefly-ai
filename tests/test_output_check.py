@@ -220,3 +220,20 @@ def test_weekly_report_warns_about_internal_terms(store):
 
 def test_retry_hint_names_terms():
     assert "第 3 块" in RETRY_HINT.format(terms="第 3 块")
+
+
+def test_material_number_leak_is_retried_even_though_the_header_is_in_the_message(store):
+    """2026-10-22 实测：回答写出“材料1《meeting.txt》”。附件标题由程序拼进用户消息，不能用来豁免。"""
+    m, _ = store.add_text("meeting.txt", "王敏：上线定在10月20日。")
+    leak = f"材料{m.id}《meeting.txt》属于会议记录，润色如下：上线定于10月20日。"
+    model = scripted(leak, "这份会议记录润色如下：上线定于10月20日。")
+    agent = Agent(model, tools=[], store=store)
+    assert agent.chat("写得更书面一些", material_ids=[m.id]) == "这份会议记录润色如下：上线定于10月20日。"
+    assert len(model.calls) == 2 and "材料编号" in model.calls[1][-1].text
+
+
+def test_material_reference_written_by_the_user_is_not_a_leak(store):
+    model = scripted("材料1《需求》写的是十月上线，材料2《设计》写的是十一月。")
+    agent = Agent(model, tools=[], store=store)
+    agent.chat("请对比材料1《需求》和材料2《设计》里的上线时间")
+    assert len(model.calls) == 1

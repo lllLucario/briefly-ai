@@ -34,7 +34,7 @@ from .context_store import ContextStore
 from .db import create_db_engine
 from .llm import create_chat_model
 from .materials import MaterialStore, wrap_material
-from .output_check import InternalTermCheck, reply_char_limit
+from .output_check import PROGRAM_MATERIAL_REF, InternalTermCheck, reply_char_limit
 from .skills import SKILLS, read_prompt
 from .tokens import TokenCounter
 from .tool_budget import ToolBudgetMiddleware, turn_key
@@ -264,7 +264,8 @@ class Agent:
         texts = []
         for m in request.messages:
             if isinstance(m, HumanMessage) and not m.additional_kwargs.get("internal"):
-                texts += [m.text, m.additional_kwargs.get("display") or ""]
+                # 消息正文里程序附加的材料编号去掉，只留用户自己输入的原话（display）原样
+                texts += [PROGRAM_MATERIAL_REF.sub("", m.text), m.additional_kwargs.get("display") or ""]
         if self.store is not None:
             context = request.runtime.context
             ids = context.material_ids if context else None
