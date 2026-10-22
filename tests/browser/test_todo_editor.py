@@ -71,6 +71,10 @@ def test_failed_edit_preserves_draft_and_blocks_duplicate_save(web_page):
     p.mouse.click(2, 2)
     p.keyboard.press("Escape")
     expect(p.locator("#todo-panel")).to_be_visible()
+    for _ in range(50):  # 拦截回调在请求到达后才执行；负载高时不能假定点击后立即拦截到
+        if held:
+            break
+        p.wait_for_timeout(100)
     assert len(held) == 1
     held[0].fulfill(status=503, json={"detail": "模拟保存失败"})
     expect(p.locator("#todo-msg")).to_contain_text("保存失败")
