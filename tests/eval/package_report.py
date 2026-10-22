@@ -106,7 +106,7 @@ def case_list(results: dict) -> str:
     return "\n".join(lines)
 
 
-def environment(dirs: list[Path], results: dict) -> str:
+def environment(dirs: list[Path], results: dict, note: str = "") -> str:
     from briefly import config
 
     commit = subprocess.run(["git", "-C", str(REPO), "log", "-1", "--format=%h %s"], capture_output=True, text=True, encoding="utf-8").stdout.strip()
@@ -115,7 +115,8 @@ def environment(dirs: list[Path], results: dict) -> str:
         "# 测试方法与环境", "",
         f"- 整理时间：{datetime.now():%Y-%m-%d %H:%M}",
         f"- 模型：{config.MODEL}（OpenAI 兼容接口，服务商由本地配置决定；密钥不在本包内）",
-        f"- 代码版本：{commit}",
+        f"- 代码版本（整理时）：{commit}",
+        *([f"- 版本说明：{note}"] if note else []),
         f"- Python：{platform.python_version()}；系统：{platform.system()} {platform.release()}",
         f"- 每个用例重复运行：{'、'.join(map(str, sorted(runs)))} 次；原始结果目录：{'、'.join(d.name for d in dirs)}",
         "",
@@ -134,6 +135,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="整理实测结果为汇报包")
     ap.add_argument("dirs", nargs="+", type=Path)
     ap.add_argument("-o", "--out", type=Path, required=True)
+    ap.add_argument("--note", default="", help="代码版本说明，例如各批结果分别对应哪个提交")
     ap.add_argument("--retest", nargs="*", type=Path, default=[], help="修复后复测的结果目录：单独列出，不计入主统计")
     args = ap.parse_args()
     out = args.out
@@ -143,7 +145,7 @@ def main() -> None:
     (out / "02-用例清单.md").write_text(case_list(results), encoding="utf-8")
     reports = [f"<!-- 来自 {d.name} -->\n" + (d / "report.md").read_text(encoding="utf-8") for d in args.dirs]
     (out / "03-逐项检查结果.md").write_text("\n\n".join(reports), encoding="utf-8")
-    (out / "05-测试方法与环境.md").write_text(environment(args.dirs, results), encoding="utf-8")
+    (out / "05-测试方法与环境.md").write_text(environment(args.dirs, results, args.note), encoding="utf-8")
     if args.retest:
         retest = load(args.retest)
         reports = "\n\n".join((d / "report.md").read_text(encoding="utf-8") for d in args.retest)
