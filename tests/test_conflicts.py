@@ -52,6 +52,31 @@ def test_superseded_needs_change_words_found_in_original():
     assert "以 #2 为准" in describe(conflicts, items)
 
 
+@pytest.mark.parametrize("current,value,evidence,expected", [
+    (1, "10月25日", "推迟到 10 月 25 日", UNRESOLVED),
+    (2, "10月25日", "推迟到 10 月 25 日", SUPERSEDED),
+    (2, "10-25", "推迟到 10 月 25 日", SUPERSEDED),
+    (2, "2026-10-25", "推迟到 10 月 25 日", UNRESOLVED),
+    (0, "10月25日", "推迟到 10 月 25 日", UNRESOLVED),
+    (3, "10月25日", "推迟到 10 月 25 日", UNRESOLVED),
+])
+def test_superseded_current_value_must_appear_in_verified_change_evidence(current, value, evidence, expected):
+    items = [item(A, "10月20日", "1-1"), item(B_CHANGED, value, "2-1")]
+    conflicts = detect_conflicts(items)
+    # 复用对象时，降级也必须清除旧的“当前说法”和证据。
+    conflicts[0].current, conflicts[0].evidence = "1-1.1", "旧的依据"
+    classify(judge({"index": 1, "resolution": "superseded", "current": current, "evidence": evidence, "explanation": "发生变更"}), conflicts, items)
+    assert conflicts[0].resolution == expected
+    description = describe(conflicts, items)
+    if expected == UNRESOLVED:
+        assert conflicts[0].current == conflicts[0].evidence == ""
+        assert "以 #1 为准" not in description
+        assert "看不出哪个为准" in description
+    else:
+        assert conflicts[0].current == "2-1.1"
+        assert "以 #2 为准" in description
+
+
 @pytest.mark.parametrize(
     "judgment",
     [

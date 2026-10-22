@@ -398,14 +398,15 @@ def classify(model: BaseChatModel, conflicts: list[FactConflict], items: list[Wo
         c.explanation = j.explanation.strip()
         if j.resolution == NOT_SAME and c.needs_identity:
             c.resolution = NOT_SAME
-        elif j.resolution == SUPERSEDED and grounded and any(w in j.evidence for w in CHANGE_WORDS) and 1 <= j.current <= len(members):
+        elif (j.resolution == SUPERSEDED and grounded and any(w in j.evidence for w in CHANGE_WORDS)
+              and 1 <= j.current <= len(members) and value_in(j.evidence, members[j.current - 1].value)):
             c.resolution, c.current, c.evidence = SUPERSEDED, members[j.current - 1].fact_id, j.evidence.strip()
         elif j.resolution == CONTEXT and grounded:
             c.resolution, c.evidence = CONTEXT, j.evidence.strip()
         else:
-            c.resolution = UNRESOLVED  # 依据核对不上：不替用户选定
+            c.resolution, c.current, c.evidence = UNRESOLVED, "", ""  # 依据核对不上：不替用户选定
             if j.resolution not in (UNRESOLVED, NOT_SAME):
-                c.explanation = (c.explanation + "（模型判断的依据在原文中找不到，按未解决处理）").strip()
+                c.explanation = (c.explanation + "（模型判断的依据或当前取值无法核对，按未解决处理）").strip()
     # 没有得到判断的候选：无法确认是同一对象，不判冲突
     conflicts[:] = [
         c for k, c in enumerate(conflicts, start=1) if c.resolution != NOT_SAME and not (c.needs_identity and k not in judged)
