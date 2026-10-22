@@ -48,11 +48,11 @@ def sections(*heads: str) -> Check:
 def section_of(out: str, head: str) -> str:
     """输出中某一栏（如【决议】）的内容：从栏目标题到下一个【……】标题。"""
     # 只认行首的栏目标题：正文里可能写着“见【行动项】”
-    m = re.search(rf"(?m)^\s*{re.escape(head)}", out)
+    m = re.search(rf"(?m)^\s*(?:\*\*)?{re.escape(head)}(?:\*\*)?", out)
     if not m:
         return ""
     rest = out[m.end():]
-    end = re.search(r"(?m)^\s*【", rest)
+    end = re.search(r"(?m)^\s*(?:\*\*)?【", rest)
     return rest if not end else rest[:end.start()]
 
 
@@ -112,9 +112,12 @@ _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 _ORDINAL = re.compile(r"(?m)^\s*(?:[-*]\s*)?(?:\d{1,2}[.、)）]|议题\s*\d{1,2}|第\s*\d{1,2}\s*[条项])")
 
 
+_INLINE_ORDINAL = re.compile(r"(?<![\d.\-/月])\d{1,2}(?:[、)）]|\.(?!\d))|第\s*\d{1,2}\s*[条项轮个行列]")
+
+
 def numbers_in(text: str) -> set[str]:
     text = re.sub(r"(\d{1,2}):00(?!\d)", r"\1", text.replace(",", ""))  # “22:00”与原文“22 点”是同一个数
-    return set(_NUMBER.findall(_ORDINAL.sub("", text)))
+    return set(_NUMBER.findall(_INLINE_ORDINAL.sub("", _ORDINAL.sub("", text))))
 
 
 def no_new_numbers(*sources: str, extra: tuple[str, ...] = ()) -> Check:
@@ -130,6 +133,38 @@ def no_new_numbers(*sources: str, extra: tuple[str, ...] = ()) -> Check:
         return not (numbers_in(out) - allowed)
 
     return Check("没有材料以外的数字", check)
+
+
+# meeting.txt 会议日期 10 月 14 日（周三）：下周三 = 10-21，下周一 = 10-19。按会议日期正确换算出的日期允许出现
+MEETING_DATES = ("19", "21", "2026")
+_WRONG_MEETING_DATES = {"评估": ("10-20", "10月20日", "10-26", "10月26日"), "提测": ("10-22", "10月22日", "10-28", "10月28日")}
+
+
+def meeting_dates_right() -> Check:
+    """会议记录里的“下周一（工作量评估）”“下周三（提测）”若换算成日期，必须按会议日期算对。"""
+
+    def check(out, *_):
+        for line in out.splitlines():
+            flat = _flat(line)
+            for keyword, wrong in _WRONG_MEETING_DATES.items():
+                if keyword in flat and "上线" not in flat and any(w in flat for w in wrong):
+                    return False
+        return True
+
+    return Check("会议中的相对日期按会议日期换算正确", check)
+
+
+def added_or_already_there() -> Check:
+    """补漏：要么补上了（数据库超时与李强），要么明确说上一条已经写了；整份重写时其他人也不能丢。"""
+
+    def check(out, *_):
+        flat = _flat(out)
+        acknowledged = any(w in flat for w in ("已包含", "已经包含", "已写", "已经写", "已写入", "已经写入", "已有", "无需补充", "不需要补充", "无需补", "已列出", "已经列出"))
+        added = all(w in flat for w in ("数据库", "超时", "李强"))
+        reprinted_ok = "【会议信息】" not in out or all(w in flat for w in ("赵琳", "王敏"))  # 整份重写时
+        return (acknowledged or added) and reprinted_ok
+
+    return Check("已补上，或说明上一条已包含；整份重写时其他内容不丢", check)
 
 
 def invalid_input_reply() -> Check:
@@ -423,13 +458,14 @@ CASES: list[Case] = [
     Case(
         "S8", "五项能力", "待办梳理：从会议记录里列出大家要做的事（不指定能力）",
         turns=[Turn("把会议里大家要做的事情列成待办", materials=("meeting.txt",), checks=[
-            TODO, has_all("赵琳", "李强", "压测报告"), has_any("10月18日", "10-18", "10 月 18 日"), no_new_numbers(fixture("meeting.txt")),
+            TODO, has_all("赵琳", "李强", "压测报告"), has_any("10月18日", "10-18", "10 月 18 日"),
+            no_new_numbers(fixture("meeting.txt"), extra=MEETING_DATES), meeting_dates_right(),
         ])],
     ),
     Case(
         "S9", "五项能力", "文本优化：指定读者为客户，时间不能改",
         turns=[Turn(f"把这段改成发给客户的通知，语气礼貌：\n{NOTICE}", checks=[
-            POLISH, has_any("10点", "10 点", "22:00", "22点", "晚上十点"), has_any("12点", "12 点", "24:00", "零点", "0点", "十二点"),
+            POLISH, has_any("10点", "10 点", "10:00", "22:00", "22点", "晚上十点"), has_any("12点", "12 点", "12:00", "24:00", "零点", "0点", "十二点"),
             has_any("客服"), no_new_numbers(NOTICE, extra=("22", "24", "0")),
         ])],
     ),
@@ -484,7 +520,7 @@ CASES: list[Case] = [
     Case(
         "E11", "异常输入", "会议信息不足：说明缺什么，不编造",
         turns=[Turn("帮我整理会议纪要：今天开了个会，讨论了一些事", skill="minutes", checks=[
-            has_any("补充", "未提及", "信息不足", "请提供", "缺少"), lacks("李强", "赵琳", "王敏"),
+            has_any("补充", "未提及", "信息不足", "请提供", "缺少", "发给我", "贴给我", "请把", "没有可整理"), lacks("李强", "赵琳", "王敏"),
         ])],
     ),
     Case(
@@ -536,7 +572,7 @@ CASES: list[Case] = [
         turns=[
             Turn("整理这份会议记录", materials=("meeting.txt",), checks=[MINUTES]),
             Turn("上一条里如果没写测试环境数据库超时的问题，补上；其他内容不要变", checks=[
-                has_all("数据库", "超时", "李强"), has_all("赵琳", "王敏"), no_new_numbers(fixture("meeting.txt")),
+                added_or_already_there(), no_new_numbers(fixture("meeting.txt")),
             ]),
         ],
     ),
@@ -580,7 +616,8 @@ CASES: list[Case] = [
         turns=[
             Turn("整理这份会议记录", materials=("meeting.txt",), checks=[MINUTES]),
             Turn("把里面的行动项转成我的待办清单", checks=[
-                TODO, has_all("赵琳", "李强", "压测报告"), has_any("10月18日", "10-18", "10 月 18 日"), no_new_numbers(fixture("meeting.txt")),
+                TODO, has_all("赵琳", "李强", "压测报告"), has_any("10月18日", "10-18", "10 月 18 日"),
+                no_new_numbers(fixture("meeting.txt"), extra=MEETING_DATES), meeting_dates_right(),
             ]),
         ],
     ),
@@ -605,7 +642,7 @@ CASES: list[Case] = [
         "I4", "指令识别", "一次三项任务：纪要、待办、发给团队的通知",
         turns=[Turn("这份会议记录：先整理纪要，再列出待办，最后写一段发给团队的上线通知", materials=("meeting.txt",), checks=[
             has_all("【会议信息】", "【待办清单】"), has_any("【优化后】", "通知"), has_all("赵琳", "李强"),
-            has_any("10月20日", "10-20", "10 月 20 日"), no_new_numbers(fixture("meeting.txt")),
+            has_any("10月20日", "10-20", "10 月 20 日"), no_new_numbers(fixture("meeting.txt"), extra=MEETING_DATES), meeting_dates_right(),
         ])],
     ),
     Case(
@@ -646,7 +683,9 @@ CASES: list[Case] = [
             Turn("整理这份会议记录", materials=("meeting.txt",), checks=[MINUTES]),
             Turn("行动项里加一列“优先级”，上线相关的标高", checks=[has_table(), has_all("优先级", "高"), has_all("赵琳", "李强")]),
             Turn("去掉【遗留问题】这一栏，其他保持", checks=[lacks("【遗留问题】"), has_all("优先级", "【行动项】")]),
-            Turn("再压缩一下议题部分，行动项表格保持不变", checks=[has_table(), has_all("优先级", "压测报告"), no_new_numbers(fixture("meeting.txt"))]),
+            Turn("再压缩一下议题部分，行动项表格保持不变", checks=[
+                has_table(), has_all("优先级", "压测报告"), no_new_numbers(fixture("meeting.txt"), extra=MEETING_DATES), meeting_dates_right(),
+            ]),
         ],
     ),
     # ---- 长材料（本地文件，不在仓库里）
