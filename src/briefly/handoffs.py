@@ -18,6 +18,7 @@ from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
 from .context_builder import input_limit
 from .db import Base
 from .skills import read_prompt
+from .sources import conversation_material_ids
 from .todos.service import TodoService
 from .todos.models import Todo
 from .tokens import estimate_tokens
@@ -96,26 +97,12 @@ def conversation_input(agent, store, thread_id: str, message_id: str) -> dict:
     latest = next((m for m in reversed(messages) if isinstance(m, AIMessage) and not m.tool_calls and m.text), None)
     if latest is None or latest.id != message_id:
         raise HTTPException(409, "会话已有新回答，请回到最新回答重新预览")
-    sources, material_ids, turn = [], [], 0
+    sources, turn = [], 0
     for m in messages:
         if isinstance(m, HumanMessage) and not m.additional_kwargs.get("internal"):
             turn += 1
             sources.append({"id": f"u{turn}", "title": f"用户第 {turn} 轮原始输入", "content": m.additional_kwargs.get("display", m.text)})
-            material_ids += m.additional_kwargs.get("material_ids") or []
-        if isinstance(m, AIMessage):
-            for c in m.tool_calls:
-                if c["name"] in {"read_material", "get_outline", "summarize_materials", "search_materials"}:
-                    args = c.get("args", {})
-                    material_ids += args.get("material_ids") or []
-                    if args.get("material_id"):
-                        material_ids.append(args["material_id"])
-        if isinstance(m, ToolMessage) and isinstance(m.artifact, dict):
-            material_ids += m.artifact.get("material_ids") or []
-            for item in m.artifact.get("items", []):
-                prefix = str(item.get("source", "")).split("-", 1)[0]
-                if prefix.isdigit():
-                    material_ids.append(int(prefix))
-    for mid in dict.fromkeys(material_ids):
+    for mid in conversation_material_ids(messages):
         material = store.get(mid)  # 删除后不使用旧消息里的副本偷偷回填
         sources.append({"id": f"m{mid}", "title": material.title, "content": material.content, "material_id": mid})
     return {"revision": digest([message_id, sources]), "message_id": message_id, "answer": latest.text, "sources": sources}

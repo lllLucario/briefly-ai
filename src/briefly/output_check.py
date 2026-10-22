@@ -142,11 +142,12 @@ class InternalTermCheck(AgentMiddleware):
         answer = _final_answer(response)
         if answer is None:
             return response
+        sources = self._sources(request)  # 一次最终回答只取一次，重试沿用同一依据
         conflicts = turn_conflicts(request.messages)
-        terms = find_internal_terms(answer.text, self._sources(request))
+        terms = find_internal_terms(answer.text, sources)
         missing = missing_conflict_values(answer.text, conflicts)
-        fidelity = self._fidelity(answer.text,request)
-        dates = self._dates(answer.text, request, record=True)
+        fidelity = self._fidelity(answer.text,request, sources)
+        dates = self._dates(answer.text, request, sources, record=True)
         limit = self.length_limit(request)
         too_long = limit is not None and reply_chars(answer.text) > limit
         if not terms and not missing and not too_long and not fidelity and not dates:
@@ -169,11 +170,11 @@ class InternalTermCheck(AgentMiddleware):
         if second is None:
             # 重试可能因预算被拒绝，或需要继续读取工具；不能悄悄退回已知有问题的原回答。
             return retry
-        left = find_internal_terms(second.text, self._sources(request))
+        left = find_internal_terms(second.text, sources)
         left_conflicts = missing_conflict_values(second.text, conflicts)
         left_length = limit is not None and reply_chars(second.text) > limit
-        left_fidelity = self._fidelity(second.text,request)
-        left_dates = self._dates(second.text, request)
+        left_fidelity = self._fidelity(second.text,request, sources)
+        left_dates = self._dates(second.text, request, sources)
         if dates:
             log.info("日期纠正：重写后%s", "已无明确错误" if not left_dates else f"仍有 {len(left_dates)} 处错误")
         if left or left_conflicts or left_length or left_fidelity or left_dates:
@@ -187,24 +188,24 @@ class InternalTermCheck(AgentMiddleware):
                 second.response_metadata["date_issues"] = left_dates
         return retry
 
-    def _dates(self, text, request, record: bool = False) -> list[str]:
+    def _dates(self, text, request, sources, record: bool = False) -> list[str]:
         """明确的日期换算错误；record 时记录核对指标（只记数量，不记回答内容）。"""
         from .date_check import review_dates
 
         runtime = getattr(request, "runtime", None)
         now = getattr(getattr(runtime, "context", None), "now", None)  # 本次请求的时间；没有时用配置时区的今天
-        review = review_dates(text, self._sources(request), now.date() if now else None)
+        review = review_dates(text, sources, now.date() if now else None)
         if record and review.checked:
             log.info("日期核对：可核对 %d 处，明确错误 %d 处，基准不确定（按宽松规则放行）%d 处",
                      review.checked, len(review.problems), review.uncertain)
         return review.problems
 
-    def _fidelity(self, text, request) -> list[str]:
+    def _fidelity(self, text, request, sources) -> list[str]:
         from .fidelity import current_instruction, fact_problems, outline_problems
 
         problems = fact_problems(text,request.messages)
         if "编号" in current_instruction(request.messages):
-            problems += outline_problems(text,request.messages,self._sources(request))
+            problems += outline_problems(text,request.messages,sources)
         return problems
 
     def _sources(self, request) -> list[str]:

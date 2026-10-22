@@ -81,6 +81,8 @@ def run_once(case: Case, model_factory) -> dict:
             record["generation"] = report.generation
             record["checks"] = [{"turn": 1, "name": c.name, "ok": bool(c.fn(report))} for c in case.checks]
         else:
+            # 模拟日常使用已有材料库，防止输出检查误把无关日期当作依据。
+            store.add_text("无关历史记录", "2025年8月12日：完成办公室设备盘点，第3块区域已登记。")
             agent = Agent(model_factory(), store=store)
             for n, turn in enumerate(case.turns, start=1):
                 ids = [_load(store, m) for m in turn.materials] or None

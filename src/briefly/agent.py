@@ -20,7 +20,7 @@ from pathlib import Path
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelRequest, ToolErrorMiddleware, before_model, dynamic_prompt
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
@@ -34,8 +34,9 @@ from .context_store import ContextStore
 from .db import create_db_engine
 from .llm import create_chat_model
 from .materials import MaterialStore, wrap_material
-from .output_check import PROGRAM_MATERIAL_REF, InternalTermCheck, reply_char_limit
+from .output_check import INTERNAL_PATTERNS, PROGRAM_MATERIAL_REF, InternalTermCheck, reply_char_limit
 from .skills import SKILLS, read_prompt
+from .sources import conversation_material_ids
 from .tokens import TokenCounter
 from .tool_budget import ToolBudgetMiddleware, turn_key
 from .feishu import configured as feishu_configured
@@ -191,6 +192,7 @@ class Agent:
             return str(e)
         if material_ids:
             text = self._attach_materials(text, material_ids)
+        scope = [*material_ids, *stored] if material_ids else None
         material_ids = [*(material_ids or []), *stored]  # 转存的长输入只给引用，不再全文附回
         compacted = self._compact(thread_id, run_id)
         meta = {"display": display, "material_ids": material_ids, "skill": skill}
@@ -200,7 +202,7 @@ class Agent:
             config={"configurable": {"thread_id": thread_id}},
             context=Context(
                 skill=skill,
-                material_ids=material_ids or None,
+                material_ids=scope,
                 thread_id=thread_id,
                 run_id=run_id,
                 compacted=compacted,
@@ -260,16 +262,25 @@ class Agent:
         )
 
     def _check_sources(self, request) -> list[str]:
-        """输出检查的依据：用户说过的话和可访问材料的正文（原文里本来就有的“第 3 块”之类不算泄漏）。"""
+        """输出检查的依据：用户原话、会话涉及材料及本轮工具结果（原文里本来就有的“第 3 块”之类不算泄漏）。"""
         texts = []
         for m in request.messages:
             if isinstance(m, HumanMessage) and not m.additional_kwargs.get("internal"):
                 # 消息正文里程序附加的材料编号去掉，只留用户自己输入的原话（display）原样
                 texts += [PROGRAM_MATERIAL_REF.sub("", m.text), m.additional_kwargs.get("display") or ""]
         if self.store is not None:
-            context = request.runtime.context
-            ids = context.material_ids if context else None
-            texts += [m.content for m in self.store.list_materials(ids)]
+            for mid in conversation_material_ids(request.messages):
+                try:
+                    texts.append(self.store.get(mid).content)
+                except ValueError:  # 已删除的材料不扩大为全库
+                    continue
+        start = max((i for i, m in enumerate(request.messages) if isinstance(m, HumanMessage) and not m.additional_kwargs.get("internal")), default=-1)
+        for m in request.messages[start + 1:]:
+            if isinstance(m, ToolMessage):
+                body = m.text
+                for pattern in INTERNAL_PATTERNS:
+                    body = pattern.sub("", body)  # 工具附加的处理编号不能豁免泄漏；原文在上面单独收集
+                texts.append(body)
         return texts
 
     def _reply_limit(self, request) -> int | None:
