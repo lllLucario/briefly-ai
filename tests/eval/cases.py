@@ -572,7 +572,7 @@ CASES: list[Case] = [
         turns=[
             Turn("整理这份会议记录", materials=("meeting.txt",), checks=[MINUTES]),
             Turn("上一条里如果没写测试环境数据库超时的问题，补上；其他内容不要变", checks=[
-                added_or_already_there(), no_new_numbers(fixture("meeting.txt")),
+                added_or_already_there(), no_new_numbers(fixture("meeting.txt"), extra=MEETING_DATES), meeting_dates_right(),
             ]),
         ],
     ),
