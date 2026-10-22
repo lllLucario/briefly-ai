@@ -1139,7 +1139,8 @@ button.note-toggle { width: 100%; min-height: 62px; display: flex; align-items: 
 .material-modal .material-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .material-modal .material-head h3 { margin: 0; font-size: 19px; overflow-wrap: anywhere; min-width: 0; }
 .material-modal .material-head .row { justify-content: flex-start; }
-.material-modal .material-preview { max-height: 50dvh; }
+/* 正文完整展开，只由弹窗一层滚动：避免内外两层滚动抢滚轮、内框到底时顿挫 */
+.material-modal .material-preview { max-height: none; overflow: visible; }
 .material-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 34px; margin-bottom: 16px; color: var(--muted); font-size: 12px; }
 
 /* 材料正文：排版预览与原文切换。 */
