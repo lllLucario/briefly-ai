@@ -3,7 +3,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, String, Text, select
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, select
 from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
 
 from .. import config
@@ -11,7 +11,7 @@ from ..db import Base
 from ..materials import Material, MaterialStore
 from .bitable import read_table
 from .client import FeishuClient, FeishuError
-from .docx import create_document, document_meta, document_url, read_document, share_with
+from .docx import create_document, doc_url, document_meta, document_url, read_document, share_with
 from .links import BITABLE, DOCX, FOLDER, MINUTES, WIKI, FeishuLink, parse_link
 from .minutes import read_minutes
 
@@ -93,6 +93,23 @@ class FeishuExport(Base):
     share_error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
+    @property
+    def status(self):
+        return getattr(self, "_export_status", "done")
+
+    @property
+    def error(self):
+        return getattr(self, "_export_error", "")
+
+
+class FeishuExportProgress(Base):
+    """独立状态表兼容旧导出记录；旧记录没有该行时视为已完成。"""
+    __tablename__ = "feishu_export_progress"
+    export_id: Mapped[int] = mapped_column(ForeignKey("feishu_exports.id", ondelete="CASCADE"), primary_key=True)
+    status: Mapped[str] = mapped_column(String(12), default="writing")
+    error: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
 
 def export_weekly(client: FeishuClient, weekly, report_id: int, me: str = "") -> FeishuExport:
     """把周报（去掉出处标记的正文）写成一篇新的飞书文档，并把用户加为协作者。
@@ -104,7 +121,33 @@ def export_weekly(client: FeishuClient, weekly, report_id: int, me: str = "") ->
     text = _SECTION.sub(lambda m: f"## {m.group(1)}" + (f"\n\n{m.group(2).strip()}" if m.group(2).strip() else ""), text)
     name = (report.inputs or {}).get("name")
     title = f"{name + ' ' if name else ''}周报 {report.period_start:%m.%d}–{report.period_end:%m.%d}"
-    document_id = create_document(client, title, text, config.FEISHU_FOLDER_TOKEN)
+    sessions = sessionmaker(weekly.store.engine, expire_on_commit=False)
+    export = FeishuExport(report_id=report_id, document_id="", url="", title=title)
+    with sessions() as s:
+        s.add(export)
+        s.flush()
+        s.add(FeishuExportProgress(export_id=export.id, status="writing"))
+        s.commit()
+    export._export_status = "writing"
+
+    def created(document_id):
+        export.document_id, export.url = document_id, doc_url(document_id)
+        with sessions() as s:
+            s.merge(export)
+            s.commit()
+
+    try:
+        document_id = create_document(client, title, text, config.FEISHU_FOLDER_TOKEN, on_created=created)
+    except Exception as exc:
+        error = f"创建或写入未完成：{type(exc).__name__}: {exc}"[:1500]
+        if not export.document_id:
+            error += "。未取得文档链接；创建结果可能未知，请检查飞书空间后再决定是否重试。"
+        with sessions() as s:
+            progress = s.get(FeishuExportProgress, export.id)
+            progress.status, progress.error = "failed", error
+            s.commit()
+        export._export_status, export._export_error = "failed", error
+        return export
     shared, error = "", ""
     owner = document_meta(client, document_id).get("owner_id", "") if me else ""
     if me and owner == me:
@@ -122,20 +165,23 @@ def export_weekly(client: FeishuClient, weekly, report_id: int, me: str = "") ->
                 )
     elif not config.FEISHU_FOLDER_TOKEN:
         error = "未设置 FEISHU_NOTIFY_USER 或 FEISHU_FOLDER_TOKEN：文档在应用自己的空间里，你可能看不到"
-    export = FeishuExport(
-        report_id=report_id,
-        document_id=document_id,
-        url=document_url(client, document_id),
-        title=title,
-        shared_with=shared,
-        share_error=error,
-    )
-    with sessionmaker(weekly.store.engine, expire_on_commit=False)() as s:
-        s.add(export)
+    export.shared_with, export.share_error = shared, error
+    export.url = document_url(client, document_id)
+    with sessions() as s:
+        s.merge(export)
+        progress = s.get(FeishuExportProgress, export.id)
+        progress.status, progress.error = "done", ""
         s.commit()
+    export._export_status = "done"
     return export
 
 
 def exports_of(engine, report_id: int) -> list[FeishuExport]:
     with sessionmaker(engine, expire_on_commit=False)() as s:
-        return list(s.scalars(select(FeishuExport).where(FeishuExport.report_id == report_id).order_by(FeishuExport.id.desc())))
+        rows = list(s.scalars(select(FeishuExport).where(FeishuExport.report_id == report_id).order_by(FeishuExport.id.desc())))
+        progress = {p.export_id: p for p in s.scalars(select(FeishuExportProgress).where(FeishuExportProgress.export_id.in_([r.id for r in rows])))}
+        for row in rows:
+            state = progress.get(row.id)
+            if state:
+                row._export_status, row._export_error = state.status, state.error
+        return rows

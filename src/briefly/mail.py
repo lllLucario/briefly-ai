@@ -20,7 +20,7 @@ from .db import Base
 
 log = logging.getLogger(__name__)
 _EMAIL = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$")
-SENT, FAILED = "sent", "failed"
+SENT, FAILED, UNKNOWN = "sent", "failed", "unknown"
 
 
 class MailNotConfigured(ValueError):
@@ -71,7 +71,14 @@ def _connect() -> smtplib.SMTP:
     return smtp
 
 
-def _describe(e: Exception) -> str:
+def _uncertain(e: Exception) -> bool:
+    return (isinstance(e, (TimeoutError, ConnectionError, smtplib.SMTPServerDisconnected))
+            or isinstance(e, OSError) and not isinstance(e, smtplib.SMTPException))
+
+
+def _describe(e: Exception, send_started: bool = False) -> str:
+    if send_started and _uncertain(e):
+        return f"发送结果不确定，邮件可能已发出，请先检查已发送邮件再重试（{type(e).__name__}: {e}）"
     if isinstance(e, smtplib.SMTPAuthenticationError):
         return "邮箱登录失败：请检查 SMTP_USER 和 SMTP_PASSWORD（QQ、163 等邮箱要填“授权码”，不是登录密码）"
     if isinstance(e, smtplib.SMTPDataError) and e.smtp_code == 554:
@@ -114,10 +121,12 @@ def send_weekly(
     subject = f"{name + ' ' if name else ''}周报 {report.period_start:%m.%d}–{report.period_end:%m.%d}"
     msg = build_message(subject, text, to, cc, (filename, text))
     record = MailSend(report_id=report_id, to=", ".join(to), cc=", ".join(cc), subject=subject, message_id=msg["Message-ID"])
+    send_started = False
     try:
         smtp = connect()
         try:
             smtp.login(config.SMTP_USER, config.SMTP_PASSWORD)
+            send_started = True
             smtp.send_message(msg)
         finally:
             try:
@@ -127,7 +136,8 @@ def send_weekly(
         record.status = SENT
     except (smtplib.SMTPException, OSError) as e:
         log.warning("周报邮件发送失败：%s", e)
-        record.status, record.error = FAILED, _describe(e)
+        record.status = UNKNOWN if send_started and _uncertain(e) else FAILED
+        record.error = _describe(e, send_started)
     with sessionmaker(weekly.store.engine, expire_on_commit=False)() as s:
         s.add(record)
         s.commit()

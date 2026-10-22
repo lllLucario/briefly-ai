@@ -35,6 +35,8 @@ class ExportOut(BaseModel):
     title: str
     shared_with: str
     share_error: str  # 加协作者失败等提示；文档已写入
+    status: str = "done"
+    error: str = ""
     created_at: datetime
 
 

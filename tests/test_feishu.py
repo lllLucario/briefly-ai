@@ -438,6 +438,37 @@ def test_export_weekly_creates_doc_and_shares(store, monkeypatch):
     assert [e.id for e in exports_of(store.engine, report_id)] == [export.id]
 
 
+@pytest.mark.parametrize("phase", ["convert", "insert"])
+def test_partial_export_is_recorded_before_content_write_and_failure_keeps_link(store, phase):
+    weekly, report_id = done_report(store)
+    routes = write_routes([])
+    path = f"{API}/docx/v1/documents/blocks/convert" if phase == "convert" else f"{API}/docx/v1/documents/{DOC}/blocks/{DOC}/descendant"
+    def fail(request):
+        rows = exports_of(store.engine, report_id)
+        assert len(rows) == 1 and rows[0].document_id == DOC
+        assert rows[0].status == "writing" and rows[0].url.endswith(DOC)
+        return feishu_error(1770032, "forbidden", 403)
+    routes[("POST", path)] = fail
+    fake = FakeFeishu(routes)
+    with fake.client() as client:
+        export = export_weekly(client, weekly, report_id)
+    assert export.status == "failed" and "未完成" in export.error
+    [saved] = exports_of(store.engine, report_id)
+    assert saved.status == "failed" and saved.url.endswith(DOC)
+    assert len(fake.calls("POST", f"{API}/docx/v1/documents")) == 1
+
+
+def test_export_create_failure_has_a_reachable_attempt_record(store):
+    weekly, report_id = done_report(store)
+    fake = FakeFeishu({("POST", f"{API}/docx/v1/documents"): feishu_error(1770032, "forbidden", 403)})
+    with fake.client() as client:
+        result = export_weekly(client, weekly, report_id)
+    [saved] = exports_of(store.engine, report_id)
+    assert result.status == saved.status == "failed"
+    assert not saved.document_id and not saved.url
+    assert "未取得文档链接" in saved.error
+
+
 def test_export_weekly_warns_when_nobody_can_see_it(store, monkeypatch):
     monkeypatch.setattr(config, "FEISHU_NOTIFY_USER", "")
     monkeypatch.setattr(config, "FEISHU_FOLDER_TOKEN", "")

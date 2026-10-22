@@ -644,7 +644,11 @@ $("#print-weekly").addEventListener("click", () => {
 
 // ---------- 写入飞书、发送邮件（只由用户手动操作）
 function feishuLinks(exports) {
-  return exports.map((x) => `<a href="${escapeHtml(x.url)}" target="_blank" rel="noopener">${escapeHtml(x.title)}</a>（${fmtTime(x.created_at)}）`
+  return exports.map((x) => `${x.status && x.status !== "done" ? '<b class="danger">上次写入未完成</b>：' : "已写入："}`
+    + (x.url ? `<a href="${escapeHtml(x.url)}" target="_blank" rel="noopener">${escapeHtml(x.title)}</a>` : escapeHtml(x.title) + "（未取得文档链接）")
+    + `（${fmtTime(x.created_at)}）`
+    + (x.error ? `<br><span class="danger">${escapeHtml(x.error)}</span>` : "")
+    + (x.status && x.status !== "done" ? "<br>请先打开飞书文档检查；可在飞书删除半成品，再决定是否重新写入。" : "")
     + (x.share_error ? `<br><span class="danger">${escapeHtml(x.share_error)}</span>` : "")).join("<br>");
 }
 
@@ -652,26 +656,36 @@ async function loadFeishuExports(id) {
   try {
     const exports = await api(`/weekly/${id}/feishu`);
     if (id !== weekly.current?.id) return;
-    if (exports.length) showNotice($("#weekly-feishu"), `<b>已写入飞书</b><br>${feishuLinks(exports.slice(0, 3))}`);
+    if (exports.length) showNotice($("#weekly-feishu"), `<b>飞书写入记录</b><br>${feishuLinks(exports.slice(0, 3))}`);
     else $("#weekly-feishu").classList.add("hidden");
   } catch (_) { /* 只是展示历史，失败不影响周报 */ }
 }
 
 $("#feishu-weekly").addEventListener("click", async () => {
+  const reportId = weekly.current?.id;
+  if (!reportId) return;
   const box = $("#weekly-feishu");
   const btn = $("#feishu-weekly");
   btn.disabled = true;
   showNotice(box, "正在写入飞书文档…");
   try {
-    const x = await api(`/weekly/${weekly.current.id}/feishu`, { method: "POST" });
-    showNotice(box, `<b>已写入飞书</b>（出处标记不写入）<br>${feishuLinks([x])}`, x.share_error ? "warn" : "");
+    const existing = await api(`/weekly/${reportId}/feishu`);
+    if (weekly.current?.id !== reportId) return;
+    if (existing.some((x) => x.status && x.status !== "done")) {
+      showNotice(box, `<b>飞书写入记录</b><br>${feishuLinks(existing.slice(0, 3))}`, "warn");
+      if (!(await uiConfirm("上次写入未完成。请先检查记录中的飞书链接；再次写入会新建文档，可能产生重复。继续？"))) return;
+    }
+    if (weekly.current?.id !== reportId) return;
+    const x = await api(`/weekly/${reportId}/feishu`, { method: "POST" });
+    if (weekly.current?.id !== reportId) return;
+    showNotice(box, `<b>${x.status && x.status !== "done" ? "飞书写入未完成" : "已写入飞书"}</b><br>${feishuLinks([x])}`, x.share_error || (x.status && x.status !== "done") ? "warn" : "");
   } catch (err) {
-    showNotice(box, escapeHtml(err.message), "error");
+    if (weekly.current?.id === reportId) showNotice(box, escapeHtml(err.message), "error");
   } finally { btn.disabled = false; }
 });
 
 function mailLines(sends) {
-  return sends.map((x) => `${fmtTime(x.created_at)} ${x.status === "sent" ? "已发送" : "<span class=\"danger\">发送失败</span>"} → ${escapeHtml(x.to)}`
+  return sends.map((x) => `${fmtTime(x.created_at)} ${x.status === "sent" ? "已发送" : x.status === "unknown" ? "<span class=\"danger\">发送结果待核对</span>" : "<span class=\"danger\">发送失败</span>"} → ${escapeHtml(x.to)}`
     + (x.cc ? `（抄送 ${escapeHtml(x.cc)}）` : "") + (x.error ? `<br><span class="danger">${escapeHtml(x.error)}</span>` : "")).join("<br>");
 }
 
@@ -685,21 +699,24 @@ async function loadMailSends(id) {
 }
 
 $("#mail-weekly").addEventListener("click", async () => {
+  const reportId = weekly.current?.id;
+  if (!reportId) return;
   const answer = await uiPrompt({
     title: "发送周报邮件",
     message: `从 <b>${escapeHtml(state.mail.sender)}</b> 发出，正文去掉出处标记，附件是 Markdown 文件。<br><span class="danger">发出后无法撤回。</span>`,
     fields: [{ name: "to", label: "收件人", value: state.mail?.default_to || "", placeholder: "多个用逗号分隔", required: true }],
     ok: "发送",
   });
-  if (!answer) return;
+  if (!answer || weekly.current?.id !== reportId) return;
   const btn = $("#mail-weekly");
   btn.disabled = true;
   showNotice($("#weekly-mail"), "正在发送邮件…");
   try {
-    const x = await api(`/weekly/${weekly.current.id}/email`, { method: "POST", json: { to: answer.to } });
+    const x = await api(`/weekly/${reportId}/email`, { method: "POST", json: { to: answer.to } });
+    if (weekly.current?.id !== reportId) return;
     showNotice($("#weekly-mail"), `<b>邮件</b><br>${mailLines([x])}`, x.status === "sent" ? "" : "error");
   } catch (err) {
-    showNotice($("#weekly-mail"), escapeHtml(err.message), "error");
+    if (weekly.current?.id === reportId) showNotice($("#weekly-mail"), escapeHtml(err.message), "error");
   } finally { btn.disabled = false; }
 });
 

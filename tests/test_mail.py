@@ -69,6 +69,23 @@ def test_parse_addresses():
         mail.parse_addresses("a@x.com, 导师")
 
 
+@pytest.mark.parametrize("failure", [TimeoutError("等待DATA响应超时"), smtplib.SMTPServerDisconnected("断线")])
+def test_send_timeout_or_disconnect_is_unknown_and_never_retried(weekly, failure):
+    smtp = FakeSMTP(fail_send=failure)
+    record = mail.send_weekly(weekly, done_report(weekly), "mentor@example.com", connect=smtp)
+    assert record.status == mail.UNKNOWN
+    assert "可能已发出" in record.error and "检查已发送邮件" in record.error
+    assert smtp.connects == 1 and smtp.quit_called
+    assert mail.sends_of(weekly.engine, record.report_id)[0].status == mail.UNKNOWN
+
+
+def test_timeout_before_send_is_known_failure(weekly):
+    smtp = FakeSMTP(fail_login=TimeoutError("登录超时"))
+    record = mail.send_weekly(weekly, done_report(weekly), "mentor@example.com", connect=smtp)
+    assert record.status == mail.FAILED
+    assert "可能已发出" not in record.error and not smtp.sent
+
+
 def test_send_weekly(weekly):
     smtp = FakeSMTP()
     rid = done_report(weekly)

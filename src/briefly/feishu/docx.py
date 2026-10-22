@@ -221,13 +221,15 @@ def _clean(block: dict) -> dict:
     return block
 
 
-def create_document(client: FeishuClient, title: str, markdown: str, folder_token: str = "") -> str:
+def create_document(client: FeishuClient, title: str, markdown: str, folder_token: str = "", on_created=None) -> str:
     """新建文档并写入 Markdown 内容，返回 document_id。"""
     body = {"title": title[:800]}
     if folder_token:
         body["folder_token"] = folder_token
     # 新建文档没有去重标识：网络错误或 5xx 时不重试（可能已经建好），由用户决定是否重新写入
     document_id = client.post("/open-apis/docx/v1/documents", body)["document"]["document_id"]
+    if on_created is not None:
+        on_created(document_id)  # 先持久化文档身份，再进行转换、分批写入
     if markdown.strip():
         converted = client.post(  # 只做格式转换，不改任何文档，可以重试
             "/open-apis/docx/v1/documents/blocks/convert",
