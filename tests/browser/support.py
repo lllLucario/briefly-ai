@@ -79,7 +79,9 @@ def live_app(root: Path, model_factory=fake_model):
     sock = socket.socket()
     sock.bind(("127.0.0.1",0))
     port = sock.getsockname()[1]
-    server = uvicorn.Server(uvicorn.Config(app, log_level="error"))
+    # Windows 上连接异常关闭（_call_connection_lost 报错）时 asyncio 的 server.wait_closed() 可能永不返回；
+    # 设置优雅关闭超时，让 uvicorn 到时继续退出，而不是卡满 15 秒
+    server = uvicorn.Server(uvicorn.Config(app, log_level="error", timeout_graceful_shutdown=5))
     thread = threading.Thread(target=server.run, kwargs={"sockets":[sock]}, daemon=True)
     thread.start()
     try:
@@ -99,10 +101,27 @@ def live_app(root: Path, model_factory=fake_model):
     finally:
         server.should_exit = True
         thread.join(timeout=15)
+        # 退出超时时先记下服务在等什么（未关闭的连接、后台任务、各线程调用栈），再清理
+        stuck = shutdown_report(server, thread) if thread.is_alive() else ""
         sock.close()
         saver.conn.close()
         engine.dispose()
         for k,v in original.items():
             setattr(config,k,v)
         if thread.is_alive():
-            raise RuntimeError("隔离网页服务未正常退出")
+            (root/"shutdown-timeout.txt").write_text(stuck, encoding="utf-8")
+            raise RuntimeError(f"隔离网页服务未正常退出：\n{stuck}")
+
+
+def shutdown_report(server, thread) -> str:
+    import sys
+    import traceback
+    state = server.server_state
+    lines = [f"未关闭连接 {len(state.connections)} 个，后台任务 {len(state.tasks)} 个"]
+    for ident, frame in sys._current_frames().items():
+        if ident == threading.get_ident():
+            continue
+        name = next((t.name for t in threading.enumerate() if t.ident == ident), str(ident))
+        lines.append(f"--- 线程 {name}{'（服务主线程）' if ident == thread.ident else ''}")
+        lines += [x.rstrip() for x in traceback.format_stack(frame)[-8:]]
+    return "\n".join(lines)
