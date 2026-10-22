@@ -143,17 +143,54 @@ def numbers_in(text: str) -> set[str]:
     return set(_NUMBER.findall(_INLINE_ORDINAL.sub("", _ORDINAL.sub("", text))))
 
 
+_CN_DIGITS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+
+
+def _cn_number(text: str) -> int | None:
+    """一到九十九的中文数字：两、十、十二、二十、三十五。"""
+    if "十" not in text:
+        return _CN_DIGITS.get(text) if len(text) == 1 else None
+    tens, _, ones = text.partition("十")
+    if (tens and tens not in _CN_DIGITS) or (ones and ones not in _CN_DIGITS):
+        return None
+    return (_CN_DIGITS[tens] if tens else 1) * 10 + (_CN_DIGITS[ones] if ones else 0)
+
+
+def _source_dates(text: str) -> list:
+    from datetime import date
+
+    out = []
+    for m in re.finditer(r"(?<!\d)(?:(\d{4})[-/年])?(\d{1,2})[-/月](\d{1,2})日?", text):
+        try:
+            out.append(date(int(m.group(1) or 2026), int(m.group(2)), int(m.group(3))))
+        except ValueError:
+            continue
+    return out
+
+
 def no_new_numbers(*sources: str, extra: tuple[str, ...] = ()) -> Check:
-    """输出中的数字都必须出现在材料里（列表序号除外）。万级数字允许写成“1.2 万”。"""
+    """输出中的数字都必须出现在材料里（列表序号除外）。万级数字允许写成“1.2 万”。
+
+    以下由程序可确定为正确的数字也放行（2026-10-22 修正过严误判）：原文中文数字写成阿拉伯数字（两天→2天）、
+    运行当天的日期（时间上下文注入后会写“今天为 10-22”）、原文两个日期之间的天数（10-14 到 10-18 写“4 天”）。
+    """
     allowed = set(extra)
     for s in sources:
         for n in numbers_in(s):
             allowed.add(n)
             if "." not in n and int(n) >= 10000:
                 allowed.add(f"{int(n) / 10000:g}")
+        for word in re.findall(r"[一二两三四五六七八九十]{1,3}", s):
+            if (value := _cn_number(word)) is not None:
+                allowed.add(str(value))
+        dates = _source_dates(s)
+        allowed.update(str(abs((a - b).days)) for a in dates for b in dates if 0 < abs((a - b).days) <= 60)
 
     def check(out, *_):
-        return not (numbers_in(out) - allowed)
+        from briefly.clock import local_today
+
+        today = local_today()
+        return not (numbers_in(out) - allowed - {str(today.year), str(today.month), str(today.day)})
 
     return Check("没有材料以外的数字", check)
 
