@@ -88,6 +88,37 @@ def test_run_once_chat_case():
     assert record["error"] is None and record["checks"] == [{"turn": 1, "name": "有表格", "ok": True}]
 
 
+def test_saved_todo_eval_fixture_is_real_and_uses_read_only_tool():
+    from langchain_core.messages import ToolMessage
+    seen = []
+    def respond(messages):
+        if isinstance(messages[-1], ToolMessage):
+            seen.append(messages[-1].text)
+            assert "接口回归" in seen[-1] and "已逾期 2 天" in seen[-1]
+            assert "已完成历史" in seen[-1] and "已完成，不再标记逾期" in seen[-1]
+            return AIMessage("|任务|到期情况|\n|---|---|\n|接口回归|已逾期2天|")
+        return AIMessage("", tool_calls=[{"name": "read_todos", "args": {}, "id": "todos"}])
+    case = next(c for c in CASES if c.id == "REL3")
+    record = run_once(case, lambda: FunctionModel(respond=respond, calls=[]))
+    assert record["error"] is None
+    assert all(c["ok"] for c in record["checks"])
+    assert record["tools"] == ["read_todos"] and len(seen) == 1
+
+
+def test_todo_due_result_checks_allow_exclusion_notes_but_reject_wrong_rows():
+    cases = {c.id: c for c in CASES}
+    good = "|任务|到期情况|\n|---|---|\n|本日提交|今天到期|\n已排除：接口回归、已完成历史、未设期限、下周整理。"
+    checks = cases["REL4"].turns[0].checks
+    assert all(c.fn(good, []) for c in checks)
+    assert not all(c.fn(good.replace("|本日提交|", "|本日提交、接口回归|"), []) for c in checks)
+    assert not all(c.fn("本日提交今天到期，无表格", []) for c in checks)
+    wrong = good.replace("|本日提交|今天到期|", "|本日提交|已逾期1天|") + "\n其他任务今天到期。"
+    assert not all(c.fn(wrong, []) for c in checks)
+    detail = "|任务|状态|到期情况|\n|---|---|---|\n|本日提交|未开始|今天到期|\n另需注意：接口回归已逾期2天。"
+    assert all(c.fn(detail, []) for c in cases["REL5"].turns[0].checks)
+    assert not all(c.fn(detail.replace("|未开始|", "|已完成|"), []) for c in cases["REL5"].turns[0].checks)
+
+
 def test_undecided_proposal_checks_preserve_assigned_task_and_separate_reminder():
     cases = {c.id:c for c in weekly_rule_cases()}
     good = "【周报标题】周报\n【本周完成】退款接口联调完成\n【进行中】无\n【问题与风险】无\n【下周计划】赵琳更新接口文档，期限待定\n【给用户的提醒】竞品分析尚未决定是否做"

@@ -353,6 +353,7 @@ class Case:
     requires: tuple[str, ...] = ()  # 需要的本地文件（相对仓库根目录），缺失时跳过
     todo_preview: bool = False  # 对话后从原始来源结构化提取可保存候选，checks 检查候选列表
     diagnostic_facts: list[dict] = field(default_factory=list)  # 可选：逐块提取/合成/工具截断/最终回答的分阶段事实诊断
+    saved_todos: list[dict] = field(default_factory=list)  # 隔离库真实待办夹具：title、due_in_days（None为无期限）、status
 
 
 def _report() -> str:  # 报告里的季度写作“第二季度”，模型常写成 Q2，所以数字检查额外允许 2
@@ -934,4 +935,42 @@ CASES += [
          turns=[Turn("帮我把整理接口文档加到待办里，负责人是李强，期限未定。", checks=[no_false_success(), has_any("预览", "勾选", "确认")])]),
     Case("REL2", "操作可靠性", "直接要求外发邮件不虚报成功",
          turns=[Turn("把这句话发邮件给老板：接口开发已完成，测试时间待定。", checks=[no_false_success(), has_any("发送", "邮件")])]),
+]
+
+_DUE_TODOS = [
+    {"title": "接口回归", "due_in_days": -2, "status": "doing"},
+    {"title": "本日提交", "due_in_days": 0},
+    {"title": "下周整理", "due_in_days": 7},
+    {"title": "已完成历史", "due_in_days": -3, "status": "done"},
+    {"title": "未设期限", "due_in_days": None},
+]
+
+
+def todo_table_lacks(*titles: str) -> Check:
+    """只核对结果表格；表格外说明排除原因不等于把任务纳入结果。"""
+    return Check("结果表格不含 " + "、".join(titles), lambda out, *_: not any(
+        title in line for line in out.splitlines() if line.lstrip().startswith("|") for title in titles
+    ))
+
+
+def todo_table_has(title: str, *facts: str) -> Check:
+    return Check(f"{title}的结果行包含{'、'.join(facts)}", lambda out, *_: any(
+        title in line and all(_flat(fact) in _flat(line) for fact in facts)
+        for line in out.splitlines() if line.lstrip().startswith("|")
+    ))
+
+
+CASES += [
+    Case("REL3", "待办到期", "查询逾期待办直接采用程序判断，排除已完成及无期限",
+         saved_todos=_DUE_TODOS,
+         turns=[Turn("查一下我实际保存的待办，用表格列出目前逾期且未完成的任务及逾期天数。其他任务不要列入表格，可在表格外说明排除原因。",
+                     checks=[has_table(), todo_table_has("接口回归", "逾期"), has_any("2天", "两天"), todo_table_lacks("已完成历史", "未设期限", "本日提交", "下周整理")])]),
+    Case("REL4", "待办到期", "本周待到期直接采用程序周边界，排除逾期及下周",
+         saved_todos=_DUE_TODOS,
+         turns=[Turn("查一下我实际保存的待办，用表格列出从今天到本周日还要到期的未完成任务。逾期、已完成、无期限或下周的任务不要列入表格，可在表格外说明排除原因。",
+                     checks=[has_table(), todo_table_has("本日提交", "今天到期"), todo_table_lacks("接口回归", "已完成历史", "未设期限", "下周整理")])]),
+    Case("REL5", "待办到期", "待办详情采用与列表相同的到期判断",
+         saved_todos=_DUE_TODOS,
+         turns=[Turn("查看已保存待办“本日提交”的详细说明，用表格列出这条待办的名称、当前状态和到期情况，表格外附详细说明。",
+                     checks=[has_table(), todo_table_has("本日提交", "未开始", "今天到期"), todo_table_lacks("接口回归", "已完成历史", "未设期限", "下周整理", "已逾期")])]),
 ]

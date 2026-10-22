@@ -12,7 +12,7 @@ import sys
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from dataclasses import asdict
 from pathlib import Path
 
@@ -81,6 +81,16 @@ def run_once(case: Case, model_factory) -> dict:
             record["generation"] = report.generation
             record["checks"] = [{"turn": 1, "name": c.name, "ok": bool(c.fn(report))} for c in case.checks]
         else:
+            if case.saved_todos:
+                from briefly.clock import local_today
+                from briefly.todos.service import TodoService
+                todos = TodoService(engine, store)
+                today = local_today()
+                for spec in case.saved_todos:
+                    days = spec.get("due_in_days")
+                    todo = todos.create(spec["title"], spec.get("description", ""), due_date=today + timedelta(days=days) if days is not None else None)
+                    if spec.get("status", "todo") != "todo":
+                        todos.set_status(todo.id, spec["status"])
             # 模拟日常使用已有材料库，防止输出检查误把无关日期当作依据。
             store.add_text("无关历史记录", "2025年8月12日：完成办公室设备盘点，第3块区域已登记。")
             agent = Agent(model_factory(), store=store)

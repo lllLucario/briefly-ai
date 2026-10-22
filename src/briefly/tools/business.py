@@ -1,19 +1,45 @@
 """读取真实待办和正式周报；不创建、修改、生成或发送。"""
+from datetime import timedelta
+
+from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..clock import local_today
+from ..context import Context
 from ..materials import wrap_material
-from ..todos.models import Todo
+from ..todos.models import DONE, STATUS_NAMES, Todo
 from ..weekly.models import WeeklyReport
+
+
+def _due_label(todo, today) -> str:
+    if todo.due_date is None:
+        return "无期限"
+    if todo.status == DONE:
+        return "已完成，不再标记逾期"
+    days = (todo.due_date - today).days
+    if days < 0:
+        return f"已逾期 {-days} 天"
+    label = "今天到期" if days == 0 else f"{days} 天后到期"
+    if todo.due_date <= today + timedelta(days=6 - today.weekday()):
+        label += "，本周内到期"
+    return label
 
 
 def business_tools(store):
     @tool
-    def read_todos(todo_id: int | None = None, offset: int = 0, page: int = 1) -> str:
-        """只读查询实际保存的待办。用户问“我的待办/当前任务”时调用；不指定编号分页列出未归档任务（每页20条），指定todo_id按page读取说明（每页3000字）。不能修改状态。"""
+    def read_todos(todo_id: int | None = None, offset: int = 0, page: int = 1, runtime: ToolRuntime[Context] = None) -> str:
+        """只读查询实际保存的待办。用户问“我的待办/当前任务/逾期/本周到期”时调用。
+        不指定编号分页列出未归档任务（每页20条），指定todo_id按page读取说明（每页3000字）。
+        到期情况由程序按请求当天计算，直接采用“已逾期/今天到期/N天后到期/本周内到期”标记，不自行心算；已完成任务不标逾期。
+        本周内到期指今天至本周日（含当天）的未完成任务，不含已逾期任务。不能修改状态。
+        """
         if offset < 0 or page < 1:
             raise ValueError("offset不能小于0，page从1开始")
+        now = getattr(getattr(runtime, "context", None), "now", None)
+        today = now.date() if now else local_today()
+        basis = f"查询基准日期：{today.isoformat()}（按本次请求时区）；到期情况由程序计算。\n"
         with Session(store.engine) as s:
             if todo_id is not None:
                 t = s.get(Todo, todo_id)
@@ -23,11 +49,11 @@ def business_tools(store):
                 pages = max(1, (len(text)+2999)//3000)
                 if page > pages:
                     raise ValueError(f"页码超出范围，共{pages}页")
-                return wrap_material(f"待办 {t.id}《{t.title}》", f"状态：{t.status}；截止：{t.due_date or '待定'}；父待办：{t.parent_id or '无'}；已归档：{bool(t.archived_at)}\n说明（第{page}/{pages}页）：{text[(page-1)*3000:page*3000]}")
+                return wrap_material(f"待办 {t.id}《{t.title}》", basis + f"状态：{STATUS_NAMES[t.status]}；截止：{t.due_date or '待定'}；到期情况：{_due_label(t, today)}；父待办：{t.parent_id or '无'}；已归档：{'是' if t.archived_at else '否'}\n说明（第{page}/{pages}页）：{text[(page-1)*3000:page*3000]}")
             rows = list(s.scalars(select(Todo).where(Todo.archived_at.is_(None)).order_by(Todo.id).offset(offset).limit(21)))
             if not rows:
                 return "没有已保存的未归档待办；对话候选需预览确认后才会保存。"
-            return wrap_material("已保存待办", "\n".join(f"- {t.id}《{t.title}》：{t.status}，截止 {t.due_date or '待定'}" for t in rows[:20])) + (f"\n还有更多，用 offset={offset+20} 继续。" if len(rows)>20 else "")
+            return wrap_material("已保存待办", basis + "\n".join(f"- {t.id}《{t.title}》：{STATUS_NAMES[t.status]}，截止 {t.due_date or '待定'}，到期情况：{_due_label(t, today)}" for t in rows[:20])) + (f"\n还有更多，用 offset={offset+20} 继续。" if len(rows)>20 else "")
 
     @tool
     def read_weekly_reports(report_id: int | None = None, page: int = 1, offset: int = 0) -> str:
