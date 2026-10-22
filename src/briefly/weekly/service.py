@@ -23,6 +23,7 @@ from ..llm import create_chat_model
 from ..materials import MaterialNotFound, MaterialStore
 from .engine import ReportWriter, strip_source_tags
 from .evidence import BuildResult, EvidenceBuilder
+from .prepare_lock import PrepareLease
 from .models import (
     CONFIRMED,
     CONFIRMED_LIST,
@@ -179,7 +180,13 @@ class WeeklyService:
             if report is None and create:
                 report = WeeklyReport(period_start=start, period_end=end)
                 s.add(report)
-                s.commit()
+                try:
+                    s.commit()
+                except IntegrityError:
+                    s.rollback()
+                    report = s.scalar(select(WeeklyReport).where(WeeklyReport.period_start == start))
+                    if report is None:
+                        raise
             return report
 
     def report(self, report_id: int) -> WeeklyReport:
@@ -233,10 +240,14 @@ class WeeklyService:
     # ---- 整理审核清单
     def prepare(self, day: date | None = None, *, scan: bool = True) -> tuple[WeeklyReport, PrepareInfo]:
         """检查更新 + 把这一周的文件变化、待办进展整理成候选记录。重复执行是幂等的：没有新变化时不新增，已审核的不覆盖。"""
+        report = self.week(day)
+        with PrepareLease(self.engine, report.id) as lease:
+            return self._prepare(report, scan, lease)
+
+    def _prepare(self, report, scan, lease):
         from ..todos.evidence import TodoEvidence
         from ..tracking.models import PRE_REPORT
 
-        report = self.week(day)
         notes: list[str] = []
         scan_result = None
         if scan:
@@ -249,9 +260,13 @@ class WeeklyService:
                 notes.append(f"{scan_result.stats['unreachable']} 个文件暂时无法访问，未能采集最新版本")
             if scan_result.stats.get("unstable"):
                 notes.append(f"{len(scan_result.stats['unstable'])} 个文件可能正在写入，本次未采集")
-        build = EvidenceBuilder(self.tracking, self._model_factory, self.settings().owner_names).build(report)
-        todos = TodoEvidence(self.engine, self.store).build(report)
-        with self._session() as s:
+        builder = EvidenceBuilder(self.tracking, self._model_factory, self.settings().owner_names)
+        builder._session = lease.session  # 每个业务事务先做身份核对，失效旧工作进程不能写入
+        build = builder.build(report)
+        todo_builder = TodoEvidence(self.engine, self.store)
+        todo_builder._session = lease.session
+        todos = todo_builder.build(report)
+        with lease.session() as s:
             values: dict = {"prepared_at": datetime.now(), "prep_notes": notes}
             if scan_result:
                 values["final_scan_id"] = scan_result.run_id

@@ -40,6 +40,11 @@ def local_today() -> date:
     return now_local().date()
 
 
+def system_naive(moment: datetime) -> datetime:
+    """将有时区的业务时刻换算为系统本地 naive 时间，与现有数据库时间戳同口径。"""
+    return moment.astimezone().replace(tzinfo=None)
+
+
 @dataclass(frozen=True)
 class RequestTime:
     now: datetime  # 带时区

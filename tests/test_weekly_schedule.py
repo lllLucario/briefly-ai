@@ -159,6 +159,23 @@ def test_running_elsewhere_is_skipped_and_crash_recovered(env, monkeypatch):
     assert sorted(r.status for r in schedule.runs()) == [RUN_DONE, RUN_INTERRUPTED]
 
 
+def test_long_running_prepare_is_not_interrupted_while_lease_is_alive(env, monkeypatch):
+    from briefly.weekly.prepare_lock import PrepareLease
+    tracked_with_change(env)
+    weekly, schedule = schedule_at(env, minutes_ago=1)
+    report = weekly.week()
+    occ = latest_occurrence(weekly.settings(), now()).astimezone().replace(tzinfo=None)
+    with PrepareLease(env.svc.engine, report.id):
+        with sessionmaker(env.svc.engine)() as s:
+            s.add(ScheduledRun(report_id=report.id, occurrence=occ, status=RUN_RUNNING, started_at=datetime.now() - timedelta(hours=1)))
+            s.commit()
+        assert schedule.run_due() is None
+        assert schedule.runs()[0].status == RUN_RUNNING
+    monkeypatch.setattr(config, "TRACKING_RETRY_MINUTES", 0)
+    assert "自动整理完成" in schedule.run_due()
+    assert sorted(r.status for r in schedule.runs()) == [RUN_DONE, RUN_INTERRUPTED]
+
+
 def test_disable_and_update_schedule(env):
     tracked_with_change(env)
     weekly, schedule = schedule_at(env, minutes_ago=1)

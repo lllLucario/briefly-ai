@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.orm import sessionmaker
 
-from .. import config
+from .. import clock, config
 from ..context_builder import input_limit
 from ..context_store import ContextStore
 from ..llm import create_chat_model
@@ -87,7 +87,11 @@ class BuildResult:
 
 
 def period_bounds(report: WeeklyReport) -> tuple[datetime, datetime]:
-    return datetime.combine(report.period_start, time.min), datetime.combine(report.period_end, time.max)
+    if not config.TRACKING_TIMEZONE:
+        return datetime.combine(report.period_start, time.min), datetime.combine(report.period_end, time.max)
+    zone = clock.tzinfo()
+    return (clock.system_naive(datetime.combine(report.period_start, time.min, tzinfo=zone)),
+            clock.system_naive(datetime.combine(report.period_end, time.max, tzinfo=zone)))
 
 
 def fingerprint(file_id: int, base: FileSnapshot | None, end: FileSnapshot) -> str:

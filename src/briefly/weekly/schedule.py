@@ -19,7 +19,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from .. import config
-from ..clock import tz_label
+from ..clock import system_naive, tz_label
+from ..tracking.models import ScanLock
 from ..tracking.scheduler import daily_time, run_due_daily, tzinfo
 from .models import (
     PENDING,
@@ -90,7 +91,7 @@ def next_time(settings: WeeklySettings, now: datetime | None = None) -> datetime
 
 def _local_naive(moment: datetime) -> datetime:
     """转成系统本地时间、去掉时区：与数据库里其他时间戳（datetime.now()）一致。"""
-    return moment.astimezone().replace(tzinfo=None)
+    return system_naive(moment)
 
 
 # ---- 提醒
@@ -166,13 +167,16 @@ class Schedule:
         occ = _local_naive(occ_local)
         if occ < settings.schedule_updated_at.replace(microsecond=0) - timedelta(seconds=59):
             return None  # 设置之前的时间点：不补做
+        report = self.weekly.week(occ_local.date())
         with self._session() as s:
-            runs = list(s.scalars(select(ScheduledRun).where(ScheduledRun.occurrence == occ).order_by(ScheduledRun.attempt)))
-            stale = datetime.now() - timedelta(seconds=config.TRACKING_LOCK_SECONDS)
-            for r in runs:
-                if r.status == RUN_RUNNING and r.started_at < stale:  # 执行中的进程崩溃了
-                    r.status, r.error, r.finished_at = RUN_INTERRUPTED, "执行进程中断", datetime.now()
+            now_db = datetime.now()
+            active = select(ScanLock.name).where(ScanLock.name == f"prepare:{report.id}", ScanLock.expires_at >= now_db).exists()
+            s.execute(update(ScheduledRun).where(
+                ScheduledRun.occurrence == occ, ScheduledRun.status == RUN_RUNNING,
+                ScheduledRun.started_at < now_db - timedelta(seconds=config.TRACKING_LOCK_SECONDS), ~active,
+            ).values(status=RUN_INTERRUPTED, error="执行进程中断", finished_at=now_db))
             s.commit()
+            runs = list(s.scalars(select(ScheduledRun).where(ScheduledRun.occurrence == occ).order_by(ScheduledRun.attempt)))
         if any(r.status in (RUN_DONE, RUN_RUNNING) for r in runs):
             return None
         failures = [r for r in runs if r.status in (RUN_FAILED, RUN_INTERRUPTED)]
@@ -181,7 +185,7 @@ class Schedule:
         if failures and datetime.now() - (failures[-1].finished_at or failures[-1].started_at) < timedelta(minutes=config.TRACKING_RETRY_MINUTES):
             return None
         late = int((now_local - occ_local).total_seconds() // 60)
-        run = ScheduledRun(occurrence=occ, attempt=len(failures) + 1, late_minutes=late if late > LATE_GRACE_MINUTES else 0)
+        run = ScheduledRun(report_id=report.id, occurrence=occ, attempt=len(failures) + 1, late_minutes=late if late > LATE_GRACE_MINUTES else 0)
         with self._session() as s:
             s.add(run)
             try:
@@ -197,7 +201,8 @@ class Schedule:
         except Exception as e:  # 包括正在扫描（ScanBusy）：按失败记录，稍后重试
             log.exception("每周自动整理失败")
             error = f"{type(e).__name__}: {e}"[:1000]
-            self._finish(run.id, RUN_FAILED, error=error)
+            if not self._finish(run.id, RUN_FAILED, error=error):
+                return "原整理任务已中断，本次不再覆盖执行记录"
             if run.attempt > config.TRACKING_SCAN_RETRIES:
                 notify(
                     self.weekly.engine,
@@ -206,7 +211,8 @@ class Schedule:
                     f"已重试 {run.attempt} 次：{error[:200]}\n可以在周报页点“整理本周工作”，或运行：briefly weekly prepare",
                 )
             return f"每周自动整理失败（第 {run.attempt} 次）：{error[:100]}"
-        self._finish(run.id, RUN_DONE, report_id=report.id)
+        if not self._finish(run.id, RUN_DONE, report_id=report.id):
+            return "原整理任务已中断，本次不再覆盖执行记录"
         with self._session() as s:
             pending = len(s.scalars(select(WorkEvidence.id).where(WorkEvidence.report_id == report.id, WorkEvidence.review_status == PENDING)).all())
         late = f"（服务当时没有运行，晚了 {run.late_minutes} 分钟补做）" if run.late_minutes else ""
@@ -221,14 +227,15 @@ class Schedule:
         notify(self.weekly.engine, "weekly_ready", title, body, report.id)
         return f"每周自动整理完成：待确认 {pending} 条{late}"
 
-    def _finish(self, run_id: int, status: str, report_id: int | None = None, error: str = "") -> None:
+    def _finish(self, run_id: int, status: str, report_id: int | None = None, error: str = "") -> bool:
         with self._session() as s:
-            s.execute(
+            result = s.execute(
                 update(ScheduledRun)
-                .where(ScheduledRun.id == run_id)
+                .where(ScheduledRun.id == run_id, ScheduledRun.status == RUN_RUNNING)
                 .values(status=status, report_id=report_id, error=error, finished_at=datetime.now())
             )
             s.commit()
+            return result.rowcount == 1
 
 
 def run_due(weekly, now: datetime | None = None) -> list[str]:
