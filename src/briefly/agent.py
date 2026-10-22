@@ -69,7 +69,7 @@ INPUT_TAIL_CHARS = 400
 def build_system_prompt(skill: str | None = None) -> str:
     parts = [read_prompt("base"), "# 能力说明", *(s.prompt for s in SKILLS.values())]
     if skill:
-        parts.append(f"# 本次任务\n用户已指定使用「{SKILLS[skill].description}」能力，直接按该能力执行。")
+        parts.append(f"# 本次任务\n用户已指定使用「{SKILLS[skill].description}」能力，按该能力的规则和输出格式执行，不改用其他能力的格式；认为别的能力更合适时，只在末尾用一句话建议。")
     return "\n\n".join(parts)
 
 
