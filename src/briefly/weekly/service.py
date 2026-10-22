@@ -15,6 +15,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
+from ..clock import local_today
 from ..llm import create_chat_model
 from ..materials import MaterialNotFound, MaterialStore
 from .engine import ReportWriter, strip_source_tags
@@ -52,7 +53,7 @@ class PrepareInfo:
 
 def week_of(day: date | None = None) -> tuple[date, date]:
     """某天所在的自然周：周一到周日。由代码计算，不让模型算日期。"""
-    day = day or date.today()
+    day = day or local_today()
     monday = day - timedelta(days=day.weekday())
     return monday, monday + timedelta(days=6)
 

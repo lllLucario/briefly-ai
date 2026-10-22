@@ -6,8 +6,10 @@
 只核对能确定计算的说法；“提测后两天”这类相对事件的说法不核对。
 """
 import re
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 
+from .clock import local_today
 from .tools.builtin import relative_date
 
 _DATE = r"(?:(\d{4})[-/年.])?(\d{1,2})[-/月.](\d{1,2})日?"
@@ -35,9 +37,22 @@ def _dates_in(text: str, today: date) -> list[tuple[int, date]]:
     return out
 
 
-def _bases(expression: str, sources: list[str], today: date) -> list[date]:
-    """换算基准：原文里出现过这个说法时，取原文的第一个日期（通常是会议或记录日期）和它前面最近的日期
-    （分段记录里的当天日期）；那段原文没有日期时取今天。原文里没有这个说法时，今天和原文中的所有日期都算可能的基准。"""
+_BARE_WEEKDAY = re.compile(r"(?:周|星期|礼拜)([一二三四五六日天])")
+
+
+@dataclass
+class DateReview:
+    problems: list[str] = field(default_factory=list)  # 明确的换算错误
+    checked: int = 0  # 可核对的“日期 + 相对说法”数量
+    uncertain: int = 0  # 基准无法确定、按宽松规则放行的数量（不判为错误）
+
+
+def _bases(expression: str, sources: list[str], today: date) -> tuple[list[date], bool]:
+    """换算基准，以及基准是否确定。
+
+    原文里出现过这个说法：取原文第一个日期（通常是会议或记录日期）和它前面最近的日期，那段原文没有日期时取今天——基准确定。
+    原文里没有这个说法：原文也没有任何日期时按今天，基准确定；否则今天和原文所有日期都可能是基准，不确定。
+    """
     found: set[date] = set()
     for text in sources:
         if not text or expression not in text:
@@ -52,14 +67,15 @@ def _bases(expression: str, sources: list[str], today: date) -> list[date]:
             if before:
                 found.add(before[-1])
     if found:
-        return sorted(found)
-    return sorted({today, *(d for text in sources for _, d in _dates_in(text, today))})
+        return sorted(found), True
+    others = {d for text in sources for _, d in _dates_in(text, today)} - {today}
+    return sorted({today, *others}), not others
 
 
 def _matches(year: str | None, month: int, day: int, expression: str, bases: list[date]) -> bool:
     for base in bases:
         expected = [relative_date(expression, base)]
-        if re.fullmatch(r"(?:周|星期|礼拜)[一二三四五六日天]", expression) and expected[0]:
+        if _BARE_WEEKDAY.fullmatch(expression) and expected[0]:
             expected.append(expected[0] + timedelta(days=7))  # 只写“周一”：本周或下周都说得通
         for d in expected:
             if d and (d.month, d.day) == (month, day) and (not year or int(year) == d.year):
@@ -67,25 +83,50 @@ def _matches(year: str | None, month: int, day: int, expression: str, bases: lis
     return False
 
 
-def date_problems(answer: str, sources: list[str], today: date | None = None) -> list[str]:
-    """回答中换算不对的“日期 + 相对说法”，如 ['“下周三”写成了 10-22']。"""
-    today = today or date.today()
-    problems: list[str] = []
+def _pairs(answer: str) -> list[tuple]:
+    """(年, 月, 日, 相对说法, 原文片段, 是否星期标注)。“10月14日（周二）”这种日期后紧跟的星期是标注，不是换算。"""
     pairs = []
     for m in _DATE_THEN_REL.finditer(answer):
-        rel = _RELATIVE.search(m.group(4))
+        inside = m.group(4).strip()
+        label = _BARE_WEEKDAY.match(inside)
+        if label and (len(inside) == label.end() or inside[label.end()] in "，,、；; "):
+            pairs.append((m.group(1), m.group(2), m.group(3), label.group(0), m.group(0), True))
+            continue
+        rel = _RELATIVE.search(inside)
         if rel:
-            pairs.append((m.group(1), m.group(2), m.group(3), rel.group(0), m.group(0)))
+            pairs.append((m.group(1), m.group(2), m.group(3), rel.group(0), m.group(0), False))
     for m in _REL_THEN_DATE.finditer(answer):
         if not _BASE_WORDS.search(m.group(2)):
-            pairs.append((m.group(3), m.group(4), m.group(5), m.group(1), m.group(0)))
-    for year, month, day, expression, written in pairs:
+            pairs.append((m.group(3), m.group(4), m.group(5), m.group(1), m.group(0), False))
+    return pairs
+
+
+def review_dates(answer: str, sources: list[str], today: date | None = None) -> DateReview:
+    """核对回答里的“日期 + 相对说法”。区分明确错误和无法确定：缺少年份、基准不确定的不判为错误。"""
+    today = today or local_today()
+    review = DateReview()
+    for year, month, day, expression, written, is_label in _pairs(answer):
         try:
-            ok = _matches(year, int(month), int(day), expression, _bases(expression, sources, today))
+            if is_label:  # 星期标注：直接看这一天是星期几（没写年份按今年）
+                actual = date(int(year or today.year), int(month), int(day))
+                ok, certain = "一二三四五六日".index(_BARE_WEEKDAY.fullmatch(expression).group(1).replace("天", "日")) == actual.weekday(), True
+            else:
+                bases, certain = _bases(expression, sources, today)
+                ok = _matches(year, int(month), int(day), expression, bases)
         except ValueError:
             continue
-        if not ok:
-            problem = f"“{expression}”写成了 {written.strip()}"
-            if problem not in problems:
-                problems.append(problem)
-    return problems
+        review.checked += 1
+        if ok:
+            continue
+        if not certain:
+            review.uncertain += 1
+            continue
+        problem = f"“{expression}”写成了 {written.strip()}"
+        if problem not in review.problems:
+            review.problems.append(problem)
+    return review
+
+
+def date_problems(answer: str, sources: list[str], today: date | None = None) -> list[str]:
+    """回答中明确换算错误的“日期 + 相对说法”，如 ['“下周三”写成了 10-22（下周三）']。"""
+    return review_dates(answer, sources, today).problems

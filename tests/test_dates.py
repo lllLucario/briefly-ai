@@ -3,7 +3,7 @@ from datetime import date
 
 import pytest
 
-from briefly.tools.builtin import parse_base_date, relative_date, resolve_date
+from briefly.tools.builtin import parse_base_date, relative_date, resolve
 
 MEETING = date(2026, 10, 14)  # 星期三
 
@@ -41,16 +41,28 @@ def test_base_date_formats(text):
 
 
 def test_tool_reports_base_and_keeps_unknown_expressions_verbatim():
-    out = resolve_date.invoke({"expression": "下周一", "base_date": "10月14日"})
+    today = date(2026, 10, 22)  # 请求级“今天”由调用方传入（Agent 里来自本次请求的时间）
+    out = resolve("下周一", "10月14日", today)
     assert "2026-10-19 星期一" in out and "基准日期 2026-10-14 星期三" in out
-    assert "保留原话" in resolve_date.invoke({"expression": "等忙完这阵", "base_date": "10月14日"})
-    assert "无法识别基准日期" in resolve_date.invoke({"expression": "下周一", "base_date": "上次开会那天"})
+    assert "保留原话" in resolve("等忙完这阵", "10月14日", today)
+    assert "无法识别基准日期" in resolve("下周一", "上次开会那天", today)
     # 不带“本/下”的周几早于基准日期：提示可能是下周，不擅自改成下周
-    assert "原意可能是下周" in resolve_date.invoke({"expression": "周一", "base_date": "2026-10-14"})
-    assert "（今天）" in resolve_date.invoke({"expression": "明天"})
+    assert "原意可能是下周" in resolve("周一", "2026-10-14", today)
+    assert "2026-10-23" in resolve("明天", "", today) and "（今天）" in resolve("明天", "", today)
     # 2026-10-22 实测：材料只写“10月14日”，模型自行补成 2025 年，算出错误星期
-    assert "不是今年" in resolve_date.invoke({"expression": "下周一", "base_date": f"{date.today().year - 1}-10-14"})
-    assert "不是今年" not in resolve_date.invoke({"expression": "下周一", "base_date": "10月14日"})
+    assert "不是今年" in resolve("下周一", "2025-10-14", today)
+    assert "不是今年" not in resolve("下周一", "10月14日", today)
+
+
+def test_tools_use_the_request_time_from_context():
+    from datetime import datetime, timezone
+
+    from briefly.context import Context
+    from briefly.tools.builtin import get_current_date, resolve_date
+
+    runtime = type("Runtime", (), {"context": Context(now=datetime(2026, 12, 31, 23, 30, tzinfo=timezone.utc))})()
+    assert get_current_date.func(runtime) == "2026-12-31 星期四"
+    assert "2027-01-01 星期五" in resolve_date.func("明天", runtime)  # 跨年
 
 
 def test_agent_has_date_tools():

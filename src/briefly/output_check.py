@@ -140,12 +140,12 @@ class InternalTermCheck(AgentMiddleware):
         terms = find_internal_terms(answer.text, self._sources(request))
         missing = missing_conflict_values(answer.text, conflicts)
         fidelity = self._fidelity(answer.text,request)
-        dates = self._dates(answer.text, request)
+        dates = self._dates(answer.text, request, record=True)
         limit = self.length_limit(request)
         too_long = limit is not None and reply_chars(answer.text) > limit
         if not terms and not missing and not too_long and not fidelity and not dates:
             return response
-        log.warning("回答检查未通过（内部信息 %s，缺少的冲突说法 %s，超出字数上限 %s，事实/编号问题 %s 项，日期换算 %s），重试一次", terms, missing, limit if too_long else None,len(fidelity), dates)
+        log.warning("回答检查未通过（内部信息 %s，缺少的冲突说法 %s，超出字数上限 %s，事实/编号问题 %s 项，日期换算错误 %s 处），重试一次", terms, missing, limit if too_long else None,len(fidelity), len(dates))
         hints = []
         if terms:
             hints.append(RETRY_HINT.format(terms="、".join(terms)))
@@ -168,8 +168,10 @@ class InternalTermCheck(AgentMiddleware):
         left_length = limit is not None and reply_chars(second.text) > limit
         left_fidelity = self._fidelity(second.text,request)
         left_dates = self._dates(second.text, request)
+        if dates:
+            log.info("日期纠正：重写后%s", "已无明确错误" if not left_dates else f"仍有 {len(left_dates)} 处错误")
         if left or left_conflicts or left_length or left_fidelity or left_dates:
-            log.warning("重试后回答仍未通过检查（内部信息 %s，缺少的冲突说法 %s，超出字数上限 %s，事实/编号问题 %s 项，日期换算 %s），需要人工排查", left, left_conflicts, limit if left_length else None,len(left_fidelity), left_dates)
+            log.warning("重试后回答仍未通过检查（内部信息 %s，缺少的冲突说法 %s，超出字数上限 %s，事实/编号问题 %s 项，日期换算错误 %s 处），需要人工排查", left, left_conflicts, limit if left_length else None,len(left_fidelity), len(left_dates))
             second.response_metadata = {**second.response_metadata, "internal_terms": left, "missing_conflicts": left_conflicts}
             if left_length:
                 second.response_metadata.update({"length_limit": limit, "actual_chars": reply_chars(second.text)})
@@ -179,10 +181,17 @@ class InternalTermCheck(AgentMiddleware):
                 second.response_metadata["date_issues"] = left_dates
         return retry
 
-    def _dates(self, text, request) -> list[str]:
-        from .date_check import date_problems
+    def _dates(self, text, request, record: bool = False) -> list[str]:
+        """明确的日期换算错误；record 时记录核对指标（只记数量，不记回答内容）。"""
+        from .date_check import review_dates
 
-        return date_problems(text, self._sources(request))
+        runtime = getattr(request, "runtime", None)
+        now = getattr(getattr(runtime, "context", None), "now", None)  # 本次请求的时间；没有时用配置时区的今天
+        review = review_dates(text, self._sources(request), now.date() if now else None)
+        if record and review.checked:
+            log.info("日期核对：可核对 %d 处，明确错误 %d 处，基准不确定（按宽松规则放行）%d 处",
+                     review.checked, len(review.problems), review.uncertain)
+        return review.problems
 
     def _fidelity(self, text, request) -> list[str]:
         from .fidelity import current_instruction, fact_problems, outline_problems

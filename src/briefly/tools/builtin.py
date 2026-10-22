@@ -2,7 +2,11 @@ import calendar
 import re
 from datetime import date, timedelta
 
+from langchain.tools import ToolRuntime
 from langchain_core.tools import tool
+
+from ..clock import local_today
+from ..context import Context
 
 _WEEKDAYS = "一二三四五六日"
 _CN_NUM = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
@@ -69,22 +73,32 @@ def relative_date(expression: str, base: date) -> date | None:
     return None
 
 
+def _request_today(runtime) -> date:
+    """本次请求开始时的日期（请求级时间，见 clock）；没有请求上下文时（命令行、直接调用）用配置时区的今天。"""
+    now = getattr(getattr(runtime, "context", None), "now", None)
+    return now.date() if now else local_today()
+
+
 @tool
-def get_current_date() -> str:
+def get_current_date(runtime: ToolRuntime[Context]) -> str:
     """获取今天的日期和星期。要把“下周五”等相对时间换算成具体日期，请用 resolve_date，由程序计算。"""
-    today = date.today()
+    today = _request_today(runtime)
     return f"{today.isoformat()} {_weekday_name(today)}"
 
 
 @tool
-def resolve_date(expression: str, base_date: str = "") -> str:
+def resolve_date(expression: str, runtime: ToolRuntime[Context], base_date: str = "") -> str:
     """把相对时间（明天、后天、下周一、本周五、上周三、3天后、两周后、月底、下个月5号等）换算成具体日期。由程序计算，不要心算星期。
 
     base_date：换算的基准日期，照抄材料原文。材料里的相对时间以材料中的日期为基准（如会议日期“10月14日”）；
     原文没写年份就不要补年份（程序按今年计算），不要自己推测年份。材料没有日期、或用户说的是相对今天的时间时留空，按今天计算。
     一周从周一开始。
     """
-    today = date.today()
+    return resolve(expression, base_date, _request_today(runtime))
+
+
+def resolve(expression: str, base_date: str, today: date) -> str:
+    """resolve_date 的计算本体：today 为本次请求的今天。"""
     base = parse_base_date(base_date, today) if base_date.strip() else today
     if base is None:
         return f"无法识别基准日期“{base_date}”，请写成 2026-10-14 或 10月14日 的形式；无法确定时在回答中保留原话。"

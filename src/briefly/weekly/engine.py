@@ -11,6 +11,8 @@ from datetime import date, timedelta
 
 from langchain_core.language_models import BaseChatModel
 from sqlalchemy import select
+
+from ..clock import local_today
 from sqlalchemy.orm import sessionmaker
 
 from ..conflicts import (
@@ -42,7 +44,7 @@ _LIST_ORDINAL = re.compile(r"(?m)^(\s*)\d+[.、)）]\s*")
 
 def current_week(today: date | None = None) -> tuple[date, date]:
     """本周一到本周日。由代码计算，不让模型算日期。"""
-    today = today or date.today()
+    today = today or local_today()
     monday = today - timedelta(days=today.weekday())
     return monday, monday + timedelta(days=6)
 

@@ -7,7 +7,6 @@
 之后生成的候选记录会标注“扫描中断过，部分变化被合并”。
 """
 from datetime import date, datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
@@ -17,11 +16,7 @@ from .models import ACTIVE, DAILY, DONE, FAILED, INTERRUPTED, RUNNING, SCAN_LOCK
 from .scanner import ScanBusy
 
 
-def tzinfo():
-    """配置的时区；留空用系统时区。"""
-    if config.TRACKING_TIMEZONE:
-        return ZoneInfo(config.TRACKING_TIMEZONE)
-    return datetime.now().astimezone().tzinfo
+from ..clock import tzinfo  # noqa: E402  配置的时区；留空用系统时区（定义在 clock，请求时间与定时任务共用）
 
 
 def daily_time() -> tuple[int, int]:

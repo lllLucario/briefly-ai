@@ -40,6 +40,7 @@ from .tokens import TokenCounter
 from .tool_budget import ToolBudgetMiddleware, turn_key
 from .feishu import configured as feishu_configured
 from .feishu.client import default_client
+from .clock import RequestTime, request_time
 from .tools import DEFAULT_TOOLS
 from .tools.context import context_tools
 from .tools.feishu import feishu_tools
@@ -76,7 +77,10 @@ def build_system_prompt(skill: str | None = None) -> str:
 @dynamic_prompt
 def _system_prompt(request: ModelRequest) -> str:
     context = request.runtime.context
-    return build_system_prompt(context.skill if context else None)
+    prompt = build_system_prompt(context.skill if context else None)
+    if context and context.now:  # 只在每次调用的系统提示里，不进会话历史
+        prompt += "\n\n" + RequestTime(context.now).prompt()
+    return prompt
 
 
 @before_model(can_jump_to=["end"])
@@ -180,6 +184,7 @@ class Agent:
         if skill and skill not in SKILLS:
             raise ValueError(f"未知技能: {skill}，可选: {', '.join(SKILLS)}")
         run_id = uuid.uuid4().hex[:12]
+        started = request_time()  # 本轮内所有模型调用、工具和检查共用这一时间
         try:
             text, stored = self._preflight(text)
         except ValueError as e:
@@ -200,6 +205,7 @@ class Agent:
                 run_id=run_id,
                 compacted=compacted,
                 reply_limit=reply_char_limit([*self.history_of(thread_id), message]),
+                now=started.now,
             ),
         )
         return result["messages"][-1].text
