@@ -98,6 +98,29 @@ def next_friday_named() -> Check:
     return Check("“下周五”换算成正确日期", check)
 
 
+def date_named(label: str, days_from_today) -> Check:
+    """回答里写出按运行当天（配置时区）算出的日期；days_from_today(today) 返回期望日期。"""
+
+    def check(out, *_):
+        from briefly.clock import local_today
+
+        d = days_from_today(local_today())
+        forms = (f"{d.month}月{d.day}日", f"{d.month:02d}-{d.day:02d}", f"{d.month}-{d.day}", f"{d.month}/{d.day}", d.isoformat())
+        return any(f in _flat(out) for f in forms)
+
+    return Check(label, check)
+
+
+def weekday_named() -> Check:
+    def check(out, *_):
+        from briefly.clock import local_today
+
+        name = "一二三四五六日"[local_today().weekday()]
+        return any(f"{p}{name}" in _flat(out) for p in ("星期", "周", "礼拜"))
+
+    return Check("说对今天星期几", check)
+
+
 def max_chars(n: int) -> Check:
     return Check(f"不超过 {n} 字", lambda out, *_: len(_flat(out)) <= n)
 
@@ -657,6 +680,13 @@ CASES: list[Case] = [
             POLISH, lacks("【会议信息】", "【行动项】"), has_all("李强", "赵琳"), no_new_numbers(fixture("meeting.txt")),
         ])],
     ),
+    # ---- 时间上下文（当前时间由程序注入）
+    Case("T1", "时间上下文", "今天星期几", turns=[Turn("今天星期几？", checks=[weekday_named(), max_chars(80)])]),
+    Case("T2", "时间上下文", "三天后是几号", turns=[Turn("三天后是几号？", checks=[
+        date_named("三天后日期正确", lambda t: t + __import__("datetime").timedelta(days=3)), max_chars(80)])]),
+    Case("T3", "时间上下文", "下周三是几号", turns=[Turn("下周三是几号？", checks=[
+        date_named("下周三日期正确", lambda t: t - __import__("datetime").timedelta(days=t.weekday()) + __import__("datetime").timedelta(days=9)),
+        max_chars(80)])]),
     # ---- 上下文记忆（多轮）
     Case(
         "C1", "上下文记忆", "隔多轮记住用户自述的信息",
