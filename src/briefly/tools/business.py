@@ -39,7 +39,8 @@ def business_tools(store):
             raise ValueError("offset不能小于0，page从1开始")
         now = getattr(getattr(runtime, "context", None), "now", None)
         today = now.date() if now else local_today()
-        basis = f"查询基准日期：{today.isoformat()}（按本次请求时区）；到期情况由程序计算。\n"
+        sunday = today + timedelta(days=6 - today.weekday())
+        basis = f"查询基准日期：{today.isoformat()}（按本次请求时区）；本周日：{sunday.isoformat()}；到期情况由程序计算。\n"
         with Session(store.engine) as s:
             if todo_id is not None:
                 t = s.get(Todo, todo_id)

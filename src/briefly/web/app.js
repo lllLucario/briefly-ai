@@ -1050,6 +1050,7 @@ $("#composer").addEventListener("submit", async (e) => {
     if (state.viewRevision !== view) return;
     if (err.threadId) {
       state.threadId = err.threadId;
+      if (!requestThread) $("#session-title").textContent = text.trim().slice(0, 30);
       setSessionButtons();
       loadSessions();
     }

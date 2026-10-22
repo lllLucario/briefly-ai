@@ -18,11 +18,13 @@ _RELATIVE = re.compile(
     r"|大后天|后天|明天|今天|昨天|前天"
     r"|(?:本|这个|下个|下)?月(?:底|末)"
     r"|(?:本月|这个月|下个月|下月)\d{1,2}[号日]"
-    r"|(?:\d+|[一二两三四五六七八九十]{1,2})(?:天|周|个星期)(?:后|之后|以后|内|之内|以内)"
+    r"|(?:\d+|[一二两三四五六七八九十]{1,2})(?:天|周|个星期)(?:后|之后|以后|前|之前|以前|内|之内|以内)"
 )
 # 日期后面括号里写相对说法，或相对说法（可带“前”）后面括号里写日期
 _DATE_THEN_REL = re.compile(rf"(?<!\d){_DATE}\s*[（(]([^）)\n]{{0,40}})[）)]")
 _REL_THEN_DATE = re.compile(rf"({_RELATIVE.pattern})(?:之前|以前|前)?\s*[（(]([^）)\n]{{0,12}}?)(?<!\d){_DATE}")
+_REL_RANGE = re.compile(rf"({_RELATIVE.pattern})\s*(?:至|到|[—~～])\s*({_RELATIVE.pattern})\s*[（(]\s*{_DATE}\s*(?:至|到|[—~～])\s*{_DATE}\s*[）)]")
+_DATE_RANGE = re.compile(rf"{_DATE}\s*(?:至|到|[—~～])\s*{_DATE}\s*[（(]\s*({_RELATIVE.pattern})\s*(?:至|到|[—~～])\s*({_RELATIVE.pattern})\s*[）)]")
 # 括号里先说明基准（“会议日期10月14日”“按今天10-22”），这个日期不是换算结果
 _BASE_WORDS = re.compile(r"会议|按|基准|今天|日期|记录")
 
@@ -86,7 +88,18 @@ def _matches(year: str | None, month: int, day: int, expression: str, bases: lis
 def _pairs(answer: str) -> list[tuple]:
     """(年, 月, 日, 相对说法, 原文片段, 是否星期标注)。“10月14日（周二）”这种日期后紧跟的星期是标注，不是换算。"""
     pairs = []
+    ranges = list(_REL_RANGE.finditer(answer))
+    for m in ranges:
+        pairs.append((m.group(3), m.group(4), m.group(5), m.group(1), m.group(0), False))
+        pairs.append((m.group(6), m.group(7), m.group(8), m.group(2), m.group(0), False))
+    mirrored = list(_DATE_RANGE.finditer(answer))
+    for m in mirrored:
+        pairs.append((m.group(1), m.group(2), m.group(3), m.group(7), m.group(0), False))
+        pairs.append((m.group(4), m.group(5), m.group(6), m.group(8), m.group(0), False))
+    ranges += mirrored
     for m in _DATE_THEN_REL.finditer(answer):
+        if any(r.start() <= m.start() < r.end() for r in ranges):
+            continue
         inside = m.group(4).strip()
         label = _BARE_WEEKDAY.match(inside)
         if label and (len(inside) == label.end() or inside[label.end()] in "，,、；; "):
@@ -96,8 +109,14 @@ def _pairs(answer: str) -> list[tuple]:
         if rel:
             pairs.append((m.group(1), m.group(2), m.group(3), rel.group(0), m.group(0), False))
     for m in _REL_THEN_DATE.finditer(answer):
+        if any(r.start() <= m.start() < r.end() for r in ranges):
+            continue
         if not _BASE_WORDS.search(m.group(2)):
-            pairs.append((m.group(3), m.group(4), m.group(5), m.group(1), m.group(0), False))
+            end = re.match(rf"\s*(?:至|到|[—~～])\s*{_DATE}", answer[m.end():])
+            if end:
+                pairs.append((*end.groups(), m.group(1), answer[m.start():m.end() + end.end()], False))
+            else:
+                pairs.append((m.group(3), m.group(4), m.group(5), m.group(1), m.group(0), False))
     return pairs
 
 

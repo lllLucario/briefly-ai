@@ -14,6 +14,28 @@ TODAY = date(2026, 10, 22)  # 星期四
 MEETING = "10月14日下午3点 产品周会\n李强：下周三前能提测。\n王敏：那上线就定10月20日。\n李强：我下周一给工作量评估。"
 
 
+def test_days_ago_is_checked_by_same_date_calculation():
+    assert date_problems("三天前（10-19）", ["三天前提交"], TODAY) == []
+    assert date_problems("三天前（10-20）", ["三天前提交"], TODAY)
+
+
+@pytest.mark.parametrize("answer", ["今天至本周日（2026-10-22 至 2026-10-25）", "今天到本周日（10-22 至 10-25）", "本周日（10-22 至10-25）", "昨天到今天（10-21到10-22）", "2026-10-22至2026-10-25（今天至本周日）", "10-21至10-22（昨天至今天）"])
+def test_date_range_checks_endpoints_instead_of_pairing_last_expression_with_first_date(answer):
+    assert date_problems(answer, [], TODAY) == []
+
+
+@pytest.mark.parametrize("answer,wrong", [
+    ("今天至本周日（2026-10-23 至2026-10-25）", "今天"),
+    ("今天至本周日（2026-10-22 至2026-10-24）", "本周日"),
+    ("本周日（10-22至10-24）", "本周日"),
+    ("本周日（10-22）", "本周日"),
+    ("2026-10-23至2026-10-25（今天至本周日）", "今天"),
+    ("10-22至10-24（今天至本周日）", "本周日"),
+])
+def test_date_range_still_rejects_wrong_start_or_end(answer, wrong):
+    assert any(f"“{wrong}”" in p for p in date_problems(answer, [], TODAY))
+
+
 @pytest.mark.parametrize("answer", [
     "| 提测 | 李强 | 10-21（下周三） |",
     "| 评估 | 李强 | 下周一（2026-10-19） |",  # “下周一”前面最近的日期是上线日 10 月 20 日，但会议日期也是基准

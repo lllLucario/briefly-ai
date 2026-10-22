@@ -52,6 +52,15 @@ def test_superseded_needs_change_words_found_in_original():
     assert "以 #2 为准" in describe(conflicts, items)
 
 
+def test_change_evidence_containing_both_values_does_not_support_old_target():
+    items = [item(A, "10 月 20 日", "1-1"), item(B_CHANGED, "10 月 25 日", "2-1")]
+    conflicts = detect_conflicts(items)
+    classify(judge({"index": 1, "resolution": "superseded", "current": 1,
+                    "evidence": "由原定 10 月 20 日推迟到 10 月 25 日", "explanation": "选错旧值"}), conflicts, items)
+    assert conflicts[0].resolution == UNRESOLVED and not conflicts[0].current
+    assert "看不出哪个为准" in describe(conflicts, items)
+
+
 @pytest.mark.parametrize("current,value,evidence,expected", [
     (1, "10月25日", "推迟到 10 月 25 日", UNRESOLVED),
     (2, "10月25日", "推迟到 10 月 25 日", SUPERSEDED),

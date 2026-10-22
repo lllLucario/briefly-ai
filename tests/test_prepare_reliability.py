@@ -109,6 +109,27 @@ finally:
         assert result.returncode == 0, result.stderr
 
 
+def test_prepare_heartbeat_renews_without_business_progress(env, monkeypatch):
+    from contextlib import contextmanager
+    monkeypatch.setattr(config, "TRACKING_LOCK_SECONDS", 6)
+    w, _ = env
+    lease = PrepareLease(w.engine, w.week().id)
+    renewed = Event()
+    original = lease.session
+    @contextmanager
+    def observe():
+        with original() as s:
+            yield s
+        renewed.set()
+    lease.session = observe
+    with lease:
+        with Session(w.engine) as s:
+            before = s.get(ScanLock, lease.name).expires_at
+        assert renewed.wait(5)
+        with Session(w.engine) as s:
+            assert s.get(ScanLock, lease.name).expires_at > before
+
+
 def test_week_boundaries_convert_configured_midnight_to_storage_timezone(monkeypatch):
     monkeypatch.setattr(config, "TRACKING_TIMEZONE", "Australia/Sydney")
     monkeypatch.setattr(clock, "system_naive", lambda moment: moment.astimezone(timezone.utc).replace(tzinfo=None))

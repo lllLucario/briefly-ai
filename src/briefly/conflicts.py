@@ -359,6 +359,18 @@ def _member_quotes(c: FactConflict, items: list[WorkItem], brief_items: list[Wor
     return [pool[f] for f in c.fact_ids if f in pool]
 
 
+def _change_target_supported(evidence: str, members: list[WorkItem], current: WorkItem, attribute: str) -> bool:
+    """核对变更词之后的唯一取值，防止整句同时含旧值时把方向选反。歧义保留给用户。"""
+    targets = []
+    for match in re.finditer("|".join(re.escape(w) for w in CHANGE_WORDS), evidence):
+        clause = re.split(r"[，,。；;\n（(]|而非|而不是|不再", evidence[match.end():], maxsplit=1)[0]
+        hits = [member for member in members if value_in(clause, member.value)]
+        if hits and all(compare_values(attribute, m.value, hits[0].value) == "same" for m in hits):
+            targets.extend(hits)
+    return (any(m.fact_id == current.fact_id for m in targets)
+            and all(compare_values(attribute, m.value, current.value) == "same" for m in targets))
+
+
 def classify(model: BaseChatModel, conflicts: list[FactConflict], items: list[WorkItem], brief_items: list[WorkItem] | None = None) -> int:
     """调用一次模型给冲突归类（并确认主体候选），由代码核对依据。返回调用次数（没有冲突时为 0）。
 
@@ -399,7 +411,8 @@ def classify(model: BaseChatModel, conflicts: list[FactConflict], items: list[Wo
         if j.resolution == NOT_SAME and c.needs_identity:
             c.resolution = NOT_SAME
         elif (j.resolution == SUPERSEDED and grounded and any(w in j.evidence for w in CHANGE_WORDS)
-              and 1 <= j.current <= len(members) and value_in(j.evidence, members[j.current - 1].value)):
+              and 1 <= j.current <= len(members) and value_in(j.evidence, members[j.current - 1].value)
+              and _change_target_supported(j.evidence, members, members[j.current - 1], c.attribute)):
             c.resolution, c.current, c.evidence = SUPERSEDED, members[j.current - 1].fact_id, j.evidence.strip()
         elif j.resolution == CONTEXT and grounded:
             c.resolution, c.evidence = CONTEXT, j.evidence.strip()

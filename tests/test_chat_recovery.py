@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, HumanMessage
 
-from briefly.agent import Agent
+from briefly.agent import Agent, sqlite_checkpointer
 from briefly.api import create_app, visible_messages
 from briefly.db import create_db_engine
 from briefly.materials import MaterialStore
@@ -78,6 +78,28 @@ def test_failure_after_successful_tool_result_does_not_reexecute_it(store):
     assert sum(len(m.tool_calls) for m in agent.history if isinstance(m, AIMessage)) == 1
 
 
+def test_failed_turn_stays_closed_after_reopening_sqlite_checkpoint(store, tmp_path):
+    path = tmp_path / "chat.db"
+    saver = sqlite_checkpointer(path)
+    def fail(_):
+        raise RuntimeError("模拟断线")
+    try:
+        agent = Agent(FunctionModel(respond=fail, calls=[]), store=store, checkpointer=saver, thread_id="failed-thread")
+        with pytest.raises(RuntimeError):
+            agent.chat("原始输入")
+    finally:
+        saver.conn.close()
+    reopened = sqlite_checkpointer(path)
+    try:
+        agent = Agent(FunctionModel(respond=lambda _: AIMessage("新回答"), calls=[]), store=store, checkpointer=reopened, thread_id="failed-thread")
+        assert visible_messages(agent.history)[-1].system_reply
+        assert agent.graph.get_state({"configurable": {"thread_id": "failed-thread"}}).next == ()
+        assert agent.chat("重试") == "新回答"
+        assert len(visible_messages(agent.history)) == 4
+    finally:
+        reopened.conn.close()
+
+
 def test_numbers_only_warn_without_model_retry(store):
     model = FunctionModel(respond=lambda _: AIMessage("预算为99万元，完成率88%。"), calls=[])
     agent = Agent(model, tools=[], store=store)
@@ -91,3 +113,10 @@ def test_number_formats_known_dates_and_ordinals_do_not_warn():
     now = datetime(2026, 10, 22, tzinfo=timezone.utc)
     assert number_issues("1. 金额12000元\n2. 时间2026-10-23，今天2026-10-22。", ["金额1.2万元，时间2026年10月23日。"], now) == []
     assert number_issues("金额99万元", ["预算5万元"], now) == ["99"]
+    assert number_issues("执行顺序：1. 开发 2. 测试 3. 上线 4. 回归 5. 复盘", [], now) == []
+    assert number_issues("1. 金额1.20万元", ["金额1.2万元"], now) == []
+    assert number_issues("金额12000万元", ["金额1.2万元"], now) == ["12000"]
+    assert number_issues("数量5个", ["原始数量25个，预算12.5万元"], now) == ["5"]
+    assert number_issues("下周三（10-28）", ["下周三提交"], now) == []
+    assert number_issues("交付日期10-28", ["下周三提交"], now) == ["10-28"]
+    assert number_issues("2天后整理35条", ["两天后整理三十五条"], now) == []

@@ -117,6 +117,9 @@ def test_todo_due_result_checks_allow_exclusion_notes_but_reject_wrong_rows():
     detail = "|任务|状态|到期情况|\n|---|---|---|\n|本日提交|未开始|今天到期|\n另需注意：接口回归已逾期2天。"
     assert all(c.fn(detail, []) for c in cases["REL5"].turns[0].checks)
     assert not all(c.fn(detail.replace("|未开始|", "|已完成|"), []) for c in cases["REL5"].turns[0].checks)
+    overdue = "|任务|状态|逾期天数|\n|---|---|---|\n|接口回归|进行中|2 天|"
+    assert all(c.fn(overdue, []) for c in cases["REL3"].turns[0].checks)
+    assert not all(c.fn(overdue.replace("|2 天|", "|3 天|"), []) for c in cases["REL3"].turns[0].checks)
 
 
 def test_undecided_proposal_checks_preserve_assigned_task_and_separate_reminder():

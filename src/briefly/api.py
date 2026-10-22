@@ -171,7 +171,7 @@ class MailOut(BaseModel):
     to: str
     cc: str
     subject: str
-    status: str  # sent / failed
+    status: str  # sent / failed / unknown（发送阶段断线，结果待核对）
     error: str
     created_at: datetime
 

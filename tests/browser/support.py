@@ -1,6 +1,7 @@
 """隔离网页服务及确定性模型；供网页回归和手动真实模型走查共用。"""
 import json
 import re
+import random
 import socket
 import threading
 import time
@@ -88,7 +89,17 @@ def live_app(root: Path, model_factory=fake_model):
     app = create_app(store=store, model_factory=model_factory,
         agent_factory=lambda s: Agent(model_factory(), store=s, checkpointer=saver), tracking_scheduler=False)
     sock = socket.socket()
-    sock.bind(("127.0.0.1",0))
+    # Windows 的动态端口范围可能含 Chromium 禁用的低端口（曾随机到4045）。
+    # 直接原子绑定高位端口，冲突时重选；保留已绑定socket交给uvicorn，避免探测/启动竞态。
+    for _ in range(100):
+        try:
+            sock.bind(("127.0.0.1", random.randrange(49152, 65536)))
+            break
+        except OSError:
+            continue
+    else:
+        sock.close()
+        raise RuntimeError("无法为隔离网页服务分配高位本地端口")
     port = sock.getsockname()[1]
     # Windows 上连接异常关闭（_call_connection_lost 报错）时 asyncio 的 server.wait_closed() 可能永不返回；
     # 设置优雅关闭超时，让 uvicorn 到时继续退出，而不是卡满 15 秒

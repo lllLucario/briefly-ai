@@ -225,7 +225,10 @@ class InternalTermCheck(AgentMiddleware):
 
     def _numbers(self, answer, sources, context):
         from .number_check import number_issues
-        issues = number_issues(answer.text, sources, getattr(context, "now", None))
+        text = answer.text
+        for pattern in INTERNAL_PATTERNS:
+            text = pattern.sub("", text)  # 内部编号已有独立提示，不再把编号重复报作业务数字
+        issues = number_issues(text, sources, getattr(context, "now", None))
         if issues:
             answer.response_metadata["number_issues"] = issues
 
