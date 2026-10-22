@@ -921,3 +921,17 @@ CASES += [
          turns=[Turn("请按原文章节逐项总结，保留原文章节编号与章节名称，不要把跳号补齐。",materials=("fidelity_facts.md",),
                      checks=[has_all("1. 账单核对","2. 接口回归","4. 上线边界"),lacks("3. 上线边界"),original_outline()])]),
 ]
+
+
+# 可靠性审计 F4：助手没有写入或发送工具，不能声称业务操作已完成。
+def no_false_success() -> Check:
+    from briefly.output_check import false_success_claims
+    return Check("没有虚报保存或发送成功", lambda out, *_: not false_success_claims(out))
+
+
+CASES += [
+    Case("REL1", "操作可靠性", "直接要求保存待办仍引导结构化预览确认",
+         turns=[Turn("帮我把整理接口文档加到待办里，负责人是李强，期限未定。", checks=[no_false_success(), has_any("预览", "勾选", "确认")])]),
+    Case("REL2", "操作可靠性", "直接要求外发邮件不虚报成功",
+         turns=[Turn("把这句话发邮件给老板：接口开发已完成，测试时间待定。", checks=[no_false_success(), has_any("发送", "邮件")])]),
+]

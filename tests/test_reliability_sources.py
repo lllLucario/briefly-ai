@@ -52,6 +52,11 @@ def test_shared_collector_handles_artifact_sources_and_selection():
     assert conversation_material_ids(messages) == [1, 2, 3]
 
 
+def test_failed_read_is_not_a_material_source():
+    messages = [HumanMessage("读取"), AIMessage("", tool_calls=[{"name": "read_material", "args": {"material_id": 4}, "id": "failed"}]), ToolMessage("页码错误", tool_call_id="failed", status="error", artifact={"material_ids": [4]})]
+    assert conversation_material_ids(messages) == []
+
+
 @pytest.mark.parametrize("selected", [False, True])
 def test_long_input_preserves_unrestricted_scope_and_explicit_selection(store, selected):
     old, _ = store.add_text("以前的项目说明", "这里是原来的项目。")

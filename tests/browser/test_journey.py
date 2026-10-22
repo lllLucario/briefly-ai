@@ -3,6 +3,21 @@ import pytest
 pytestmark = pytest.mark.browser
 
 
+@pytest.mark.parametrize("prompt,warning", [("证据缺口：整理当前输入", "本次回答基于部分内容"), ("虚报成功：保存待办", "操作未执行")])
+def test_reliability_warning_is_visible_after_reload_without_business_write(web_page, prompt, warning):
+    from .flows import send
+    from playwright.sync_api import expect
+    page = web_page
+    page.locator('[data-tab="chat"]').click()
+    latest = send(page, prompt)
+    expect(latest.locator(".notice")).to_contain_text(warning)
+    page.reload()
+    page.locator('[data-tab="chat"]').click()
+    page.locator("#session-list li").filter(has_text=prompt).click()
+    expect(page.locator(".msg.assistant").last.locator(".notice")).to_contain_text(warning)
+    assert page.request.get(page.url.rstrip("/") + "/todos").json() == []
+
+
 def test_meeting_to_todo_progress_weekly_and_export(web_page):
     from .flows import run_journey
     run_journey(web_page)

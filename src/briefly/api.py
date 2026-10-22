@@ -211,6 +211,10 @@ def visible_messages(messages: list[AnyMessage]) -> list[MessageOut]:
                 tools += [c["name"] for c in m.tool_calls]
             elif m.text:
                 warnings = []
+                if m.response_metadata.get("false_success_claims"):
+                    warnings.append("回答声称的保存、发送或修改操作未执行，请在对应页面确认实际结果。")
+                if m.response_metadata.get("evidence_gaps"):
+                    warnings.append("本次回答基于部分内容：" + "；".join(m.response_metadata["evidence_gaps"]) + "。")
                 if m.response_metadata.get("internal_terms"):
                     warnings.append("回答中仍含有未能清除的处理信息，请核对原文；可以重试原任务或补充要求。")
                 if m.response_metadata.get("missing_conflicts"):

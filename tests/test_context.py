@@ -178,6 +178,8 @@ def test_history_and_materials_fit_alone_but_not_together(store, monkeypatch):
     row = agent.context_store.usage(thread_id=agent.thread_id)[0]
     assert row.budgeted_tokens <= row.context_limit == base + 1500
     assert row.material_tokens > 800 and row.omitted_turns > 0
+    from briefly.api import visible_messages
+    assert any("历史未纳入上下文" in w for w in visible_messages(agent.history)[-1].warnings)
 
 
 def test_api_overflow_rebuilds_smaller_context_and_retries_once(engine, monkeypatch):

@@ -121,6 +121,29 @@ def find_internal_terms(text: str, sources: list[str] | None = None) -> list[str
     return found
 
 
+_PERSON = r"(?:我(?:已经|已)|(?:已经|已)(?:为你|帮你|替你))(?:成功)?(?:为你|帮你|替你)?(?:成功)?"
+_WRITE = r"(?:保存|创建|添加|新建|发送|发出|提交|修改|更新)"
+_OBJECT = r"(?:待办|任务|周报|邮件|状态)"
+_SUCCESS = re.compile(
+    _PERSON + _WRITE + r"[^。！？，；\n]{0,30}?" + _OBJECT
+    + "|" + _PERSON + r"(?:将|把)[^。！？，；\n]{0,30}?" + _OBJECT + r"(?:全部|都|成功)?" + _WRITE
+)
+
+
+def false_success_claims(text: str) -> list[str]:
+    """仅拦第一人称已完成业务操作；引用、第三人称原文及操作指引不算。"""
+    text = re.sub(r"```.*?```|`[^`\n]*`|“[^”]*”|「[^」]*」|『[^』]*』|\"[^\"\n]*\"", "", text, flags=re.S)
+    text = re.sub(r"(?m)^\s*>.*$", "", text)
+    return list(dict.fromkeys(m.group(0) for m in _SUCCESS.finditer(text)))
+
+
+def annotate_evidence(answer, messages):
+    from .evidence_gaps import turn_evidence_gaps
+    gaps = turn_evidence_gaps(messages, answer.response_metadata.get("context_omitted_turns", 0))
+    if gaps:
+        answer.response_metadata["evidence_gaps"] = gaps
+
+
 class InternalTermCheck(AgentMiddleware):
     """最终回答（不再调用工具的那次）的检查，有问题时带着提示重试一次；仍有则保留回答并记日志，供人工排查。
 
@@ -129,7 +152,7 @@ class InternalTermCheck(AgentMiddleware):
     也核对明确字数上限、完整提炼事实的事项对应关系及明确要求保留的章节编号。
     事实检查仅覆盖工具已核实的重要字段，不是通用语义裁判；所有问题合并成最多一次重试。
 
-    sources(request) 返回判断依据的原文（本轮用户输入、可访问材料的正文）。放在 ContextBuilder 外层：重试也经过预算检查。
+    sources(request) 返回用户原话、会话涉及材料与本轮工具结果。放在 ContextBuilder 外层：重试也经过预算检查。
     """
 
     def __init__(self, sources, length_limit=None) -> None:
@@ -142,6 +165,8 @@ class InternalTermCheck(AgentMiddleware):
         answer = _final_answer(response)
         if answer is None:
             return response
+        annotate_evidence(answer, request.messages)
+        claims = false_success_claims(answer.text)
         sources = self._sources(request)  # 一次最终回答只取一次，重试沿用同一依据
         conflicts = turn_conflicts(request.messages)
         terms = find_internal_terms(answer.text, sources)
@@ -150,10 +175,12 @@ class InternalTermCheck(AgentMiddleware):
         dates = self._dates(answer.text, request, sources, record=True)
         limit = self.length_limit(request)
         too_long = limit is not None and reply_chars(answer.text) > limit
-        if not terms and not missing and not too_long and not fidelity and not dates:
+        if not terms and not missing and not too_long and not fidelity and not dates and not claims:
             return response
-        log.warning("回答检查未通过（内部信息 %s，缺少的冲突说法 %s，超出字数上限 %s，事实/编号问题 %s 项，日期换算错误 %s 处），重试一次", terms, missing, limit if too_long else None,len(fidelity), len(dates))
+        log.warning("回答检查未通过（内部信息 %s，缺少的冲突说法 %s，超出字数上限 %s，事实/编号问题 %s 项，日期换算错误 %s 处，虚报操作成功 %s 处），重试一次", terms, missing, limit if too_long else None,len(fidelity), len(dates), len(claims))
         hints = []
+        if claims:
+            hints.append("【系统检查】你声称已经保存、发送或修改业务数据，但你只有只读工具，没有执行这些操作的能力。请重写：待办需在结构化预览中由用户勾选确认保存，正式周报需在周报页审核生成；邮件等外发需由用户在对应页面明确操作。不要声称操作已完成，也不要把检查说明写进回答。只输出完整回答。")
         if terms:
             hints.append(RETRY_HINT.format(terms="、".join(terms)))
         if missing:
@@ -170,6 +197,10 @@ class InternalTermCheck(AgentMiddleware):
         if second is None:
             # 重试可能因预算被拒绝，或需要继续读取工具；不能悄悄退回已知有问题的原回答。
             return retry
+        annotate_evidence(second, request.messages)
+        left_claims = false_success_claims(second.text)
+        if left_claims:
+            second.response_metadata["false_success_claims"] = left_claims
         left = find_internal_terms(second.text, sources)
         left_conflicts = missing_conflict_values(second.text, conflicts)
         left_length = limit is not None and reply_chars(second.text) > limit
@@ -177,8 +208,8 @@ class InternalTermCheck(AgentMiddleware):
         left_dates = self._dates(second.text, request, sources)
         if dates:
             log.info("日期纠正：重写后%s", "已无明确错误" if not left_dates else f"仍有 {len(left_dates)} 处错误")
-        if left or left_conflicts or left_length or left_fidelity or left_dates:
-            log.warning("重试后回答仍未通过检查（内部信息 %s，缺少的冲突说法 %s，超出字数上限 %s，事实/编号问题 %s 项，日期换算错误 %s 处），需要人工排查", left, left_conflicts, limit if left_length else None,len(left_fidelity), len(left_dates))
+        if left or left_conflicts or left_length or left_fidelity or left_dates or left_claims:
+            log.warning("重试后回答仍未通过检查（内部信息 %s，缺少的冲突说法 %s，超出字数上限 %s，事实/编号问题 %s 项，日期换算错误 %s 处，虚报操作成功 %s 处），需要人工排查", left, left_conflicts, limit if left_length else None,len(left_fidelity), len(left_dates), len(left_claims))
             second.response_metadata = {**second.response_metadata, "internal_terms": left, "missing_conflicts": left_conflicts}
             if left_length:
                 second.response_metadata.update({"length_limit": limit, "actual_chars": reply_chars(second.text)})

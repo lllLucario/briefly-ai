@@ -59,6 +59,34 @@ def test_legacy_active_report_receives_grace_period(env):
     assert w.report(rid).status == FAILED
 
 
+def test_separate_process_cannot_interrupt_or_claim_active_report(env):
+    import subprocess
+    import sys
+    (w, _), rid = env
+    w.start_generation(rid)
+    code = """
+import sys
+from briefly.db import create_db_engine
+from briefly.materials import MaterialStore
+from briefly.weekly.service import WeeklyService
+engine = create_db_engine(sys.argv[1])
+try:
+    weekly = WeeklyService(MaterialStore(engine))
+    assert weekly.report(int(sys.argv[2])).status == 'pending'
+    try:
+        weekly.start_generation(int(sys.argv[2]))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('active report was claimed twice')
+finally:
+    engine.dispose()
+"""
+    result = subprocess.run([sys.executable, "-c", code, str(w.engine.url), str(rid)], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert w.report(rid).status == PENDING_GEN
+
+
 def test_concurrent_start_has_one_winner_and_one_audit_event(env):
     services, rid = env
     barrier = Barrier(2)

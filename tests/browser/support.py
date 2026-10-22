@@ -9,7 +9,7 @@ from pathlib import Path
 
 import httpx
 import uvicorn
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from briefly import config
 from briefly.agent import Agent, sqlite_checkpointer
@@ -51,6 +51,12 @@ def fake_model():
                 sections[section].append(f"- {point}〔#{number}〕")
             return AIMessage("【周报标题】本周周报\n" + "\n".join(f"【{k}】\n" + ("\n".join(v) or "无") for k,v in sections.items()))
         latest = next(str(m.content) for m in reversed(messages) if isinstance(m, HumanMessage) and not m.additional_kwargs.get("internal"))
+        if "证据缺口" in latest:
+            if isinstance(messages[-1], ToolMessage):
+                return AIMessage("【一句话总结】仅依据当前输入整理。")
+            return AIMessage("", tool_calls=[{"name": "read_material", "args": {"material_id": 99999}, "id": "missing-source"}])
+        if "虚报成功" in latest:
+            return AIMessage("已为你保存待办任务。")
         if "模拟失败" in latest:
             raise RuntimeError("模拟服务暂不可用")
         if "异常提醒" in latest:

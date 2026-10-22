@@ -170,7 +170,10 @@ class ToolBudgetMiddleware(AgentMiddleware):
         else:
             notice = f"【工具结果过长：约 {size} tokens，超出本次可用的 {grant}，下面只是开头部分；请缩小范围重新调用】"
         head = head_within(content, max(grant - self.counter.count_text(notice) - 50, 0), self.counter)
+        preview_chars = len(head)
         if head.count("【材料开始】") > head.count("【材料结束】"):
             head += "\n……（预览到此为止）\n【材料结束】"
         log.info("工具 %s 结果 %s tokens 超出份额 %s，已存为 %s", call.get("name"), size, grant, result_id)
-        return result.model_copy(update={"content": f"{notice}\n{head}"})
+        artifact = dict(result.artifact) if isinstance(result.artifact, dict) else {}
+        artifact["truncation"] = {"result_id": result_id or call["id"], "preview_chars": preview_chars, "total_chars": len(content)}
+        return result.model_copy(update={"content": f"{notice}\n{head}", "artifact": artifact})

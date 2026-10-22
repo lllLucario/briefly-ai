@@ -80,8 +80,8 @@ def context_tools(store: ContextStore) -> list[BaseTool]:
         tail = f"继续请用相同keywords、page={page+1}，也可按轮次读取全文" if page<pages else "已读完"
         return f"【原始对话搜索】\n{body}\n（第 {page}/{pages} 页，{tail}）"
 
-    @tool
-    def read_tool_result(result_id: str, runtime: ToolRuntime[Context], page: int = 1) -> str:
+    @tool(response_format="content_and_artifact")
+    def read_tool_result(result_id: str, runtime: ToolRuntime[Context], page: int = 1) -> tuple[str, dict]:
         """读回之前被省略或只给了开头的工具结果。result_id 是提示里给出的编号（r_ 开头，或工具调用编号）；
         内容较长时分页返回，page 从 1 开始。"""
         content = None
@@ -96,8 +96,9 @@ def context_tools(store: ContextStore) -> list[BaseTool]:
             content = _text(hit.content) if hit else None
         if content is None:
             raise ValueError(f"找不到工具结果 {result_id}")
-        body, pages = _page(content, page, _page_chars())
+        chars = _page_chars()
+        body, pages = _page(content, page, chars)
         tail = f"\n（第 {page}/{pages} 页，继续请用 page={page + 1}）" if page < pages else f"\n（第 {page}/{pages} 页，已读完）"
-        return f"【工具结果 {result_id}】\n{body}{tail}"
+        return f"【工具结果 {result_id}】\n{body}{tail}", {"result_read": {"result_id": result_id, "start": (page - 1) * chars, "end": min(page * chars, len(content)), "total_chars": len(content)}}
 
     return [recall_conversation, read_tool_result]

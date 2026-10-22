@@ -280,6 +280,8 @@ class ContextBuilder(AgentMiddleware):
             latency = int((time.monotonic() - started) * 1000)
             result = response.result if isinstance(response, ModelResponse) else [response]
             ai = next((m for m in reversed(result) if isinstance(m, AIMessage)), None)
+            if ai is not None:
+                ai.response_metadata["context_omitted_turns"] = built.parts["omitted_turns"]
             usage = (getattr(ai, "usage_metadata", None) or {}) if ai else {}
             self.counter.calibrate(built.estimated, usage.get("input_tokens"))
             self._record(

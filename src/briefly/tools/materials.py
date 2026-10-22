@@ -222,6 +222,7 @@ def material_tools(
         if extraction.dropped:
             notes.append(f"{len(extraction.dropped)} 条提取结果在原文中找不到依据，已丢弃")
         artifact = {
+            "material_ids": list(titles),
             "processed": extraction.processed,
             "total": extraction.total,
             "cached": extraction.cached,
@@ -268,8 +269,9 @@ def material_tools(
             notes.append(f"汇总引用了不存在的要点编号 {digest.invalid_refs}，相关内容请谨慎使用")
         if not digest.coverage_checked:
             notes.append("汇总没有标注要点编号，未能核对是否漏写")
+        coverage = "程序已读完全部内容并核对原文" if not extraction.failed else f"已处理 {extraction.processed}/{extraction.total} 部分，部分内容处理失败"
         header = (
-            f"【材料提炼结果：程序已读完全部内容并核对原文。〔〕内是程序标注的出处（要点来自哪份材料的哪一章），"
+            f"【材料提炼结果：{coverage}。〔〕内是程序标注的出处（要点来自哪份材料的哪一章），"
             f"不是原文内容，不要评论或转述它（{RETRIEVAL_INFO}：{'；'.join(notes)}）】"
         )
         artifact["uncovered"] = [asdict(i) for i in digest.uncovered]
