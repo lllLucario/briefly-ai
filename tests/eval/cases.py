@@ -759,22 +759,22 @@ CASES: list[Case] = [
     # ---- 长材料（本地文件，不在仓库里）
     Case(
         "L1", "长材料", "按需读取：只问其中一节",
-        turns=[Turn("群聊场景有哪些实现方案？各自推荐吗？", materials=("@files/1-3.pdf",), checks=[
+        turns=[Turn("群聊场景有哪些实现方案？各自推荐吗？", materials=("@files/reference/materials/1-3.pdf",), checks=[
             has_all("doubao-1-5-pro-32k-character-0228"), has_any("不推荐"), no_internal_terms(),
         ])],
-        requires=("files/1-3.pdf",),
+        requires=("files/reference/materials/1-3.pdf",),
     ),
     Case(
         "L3", "长材料", "完整提炼后按章节回答：不评论程序标注的出处",
-        turns=[Turn("这篇讲了什么？列出主要章节和最重要的几条内容", materials=("@files/1-3.pdf",), checks=[
+        turns=[Turn("这篇讲了什么？列出主要章节和最重要的几条内容", materials=("@files/reference/materials/1-3.pdf",), checks=[
             lacks("出处标注", "出处标记", "标注不一致", "出处不一致"), no_internal_terms(),
         ])],
-        requires=("files/1-3.pdf",),
+        requires=("files/reference/materials/1-3.pdf",),
     ),
     Case(
         "L2", "长材料", "完整总结：整份文档",
-        turns=[Turn("总结这份文档的主要内容", materials=("@files/1-3.pdf",), checks=[SUMMARIZE, lacks("15299", "13 块", "13块"), no_internal_terms()])],
-        requires=("files/1-3.pdf",),
+        turns=[Turn("总结这份文档的主要内容", materials=("@files/reference/materials/1-3.pdf",), checks=[SUMMARIZE, lacks("15299", "13 块", "13块"), no_internal_terms()])],
+        requires=("files/reference/materials/1-3.pdf",),
     ),
 ]
 

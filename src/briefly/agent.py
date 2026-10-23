@@ -3,7 +3,7 @@
 基于 LangChain create_agent：工具调用循环由框架负责，会话记忆存在 LangGraph checkpointer 中，
 以 thread_id 区分会话。本模块只补充项目自己的规则：动态提示词、上下文管理、工具轮数上限、工具报错回传。
 
-上下文管理（详见 files/plan-context.md）：
+上下文管理（详见 files/plans/plan-context.md）：
 - 输入预检（chat）：用户一次输入过长时，正文存为材料，消息里只留开头结尾原文和引用。
 - 会话压缩（chat 前，compaction.py）：未压缩的历史超过阈值时，把较早的对话整理进会话记忆。
 - Context Builder（每次调用模型前，context_builder.py）：系统提示词 + 记忆 + 任务状态 + 最近几轮 + 当前轮，统一预算检查。
