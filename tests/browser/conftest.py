@@ -15,7 +15,7 @@ def web_page(tmp_path):
         channel = os.getenv("BRIEFLY_BROWSER_CHANNEL") or None
         browser = playwright.chromium.launch(channel=channel)
         context = browser.new_context(viewport={"width":1440,"height":1000}, timezone_id="Australia/Sydney")
-        # 单元回归不依赖CDN和外部网络；页面须能退回纯文本展示。
+        # 网页回归仅允许同源请求；Markdown 渲染库也必须由本地服务提供。
         context.route("**/*", lambda route: route.continue_() if route.request.url.startswith(url+"/") else route.abort())
         page = context.new_page()
         page.set_default_timeout(10000)

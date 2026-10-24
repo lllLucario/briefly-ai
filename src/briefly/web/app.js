@@ -60,7 +60,7 @@ document.addEventListener("toggle", (e) => {
   }
 }, true);
 
-// Markdown 渲染；CDN 不可用时退回纯文本
+// Markdown 渲染；本地渲染库不可用时退回纯文本
 // 材料正文的排版预览：Markdown、Word（导入时已转为 Markdown）、飞书文档。不加载外部图片；渲染库不可用时退回纯文本
 const RICH_TYPES = new Set(["md", "docx", "feishu"]);
 function renderMaterialMarkdown(text) {

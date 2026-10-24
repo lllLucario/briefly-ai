@@ -259,12 +259,6 @@ def test_material_detail_opens_as_modal_and_returns_to_list(web_page):
     expect(page.locator("#picked")).to_contain_text("材料1")
 
 
-MARKED_STUB = r"""window.marked = {parse: (t) => t.split("\n").map((l) => l.startsWith("## ") ? `<h2>${l.slice(3)}</h2>`
-  : l.startsWith("![") ? `<img src="https://example.invalid/x.png">` : `<p>${l}</p>`).join("")};"""
-PURIFY_STUB = """window.DOMPurify = {sanitize: (h, o) => { const d = document.createElement("div"); d.innerHTML = h;
-  (o?.FORBID_TAGS || []).forEach((t) => d.querySelectorAll(t).forEach((e) => e.remove())); return d.innerHTML; }};"""
-
-
 def test_markdown_and_word_preview_render_with_raw_toggle(web_page):
     page = web_page
     md = page.request.post(base(page) + "/materials/upload", multipart={"file": {
@@ -272,17 +266,9 @@ def test_markdown_and_word_preview_render_with_raw_toggle(web_page):
     txt = page.request.post(base(page) + "/materials/upload", multipart={"file": {
         "name": "记录（虚构）.txt", "mimeType": "text/plain", "buffer": "## 不是标题的纯文本".encode()}}).json()["material"]["id"]
 
-    # 渲染库不可用（单元回归不连外网）：仍显示原文，不报错
+    # 即使没有外网，本地渲染库也能显示标题；支持切换查看原文。
     open_library(page)
-    page.locator(f'tr[data-id="{md}"]').click()
     body = page.locator("#material-body")
-    expect(body).to_contain_text("## 二、计划")
-    page.locator("#material-close").click()
-
-    page.route("**/marked@*/marked.min.js", lambda r: r.fulfill(body=MARKED_STUB, content_type="application/javascript"))
-    page.route("**/dompurify@*/dist/purify.min.js", lambda r: r.fulfill(body=PURIFY_STUB, content_type="application/javascript"))
-    page.reload()
-    open_library(page)
     expect(page.locator(f'tr[data-id="{md}"] .lib-preview')).to_have_text("二、计划 正文第一段 ![图](x.png)")
     page.locator(f'tr[data-id="{md}"]').click()
     expect(body.locator("h2")).to_have_text("二、计划")

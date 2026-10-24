@@ -2,6 +2,8 @@ import os
 
 from dotenv import load_dotenv
 
+# 配置在进程启动时读取；修改 .env 后需重启。模型密钥等可选能力的
+# 必填项由使用方在运行时校验，避免阻止材料管理等不需要模型的功能。
 load_dotenv()
 
 # OpenAI 兼容接口：换服务商只需改这三项

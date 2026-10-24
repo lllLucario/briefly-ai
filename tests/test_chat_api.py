@@ -131,6 +131,45 @@ def test_skills_and_web_page(chat_client):
     assert "cache-control" not in client.get("/skills").headers
 
 
+@pytest.mark.parametrize("field", ["API_KEY", "MODEL"])
+def test_missing_model_config_keeps_non_model_features_available(monkeypatch, tmp_path, field):
+    from briefly import config
+
+    monkeypatch.setattr(config, "API_KEY", "fake-key")
+    monkeypatch.setattr(config, "MODEL", "fake-model")
+    monkeypatch.setattr(config, field, "")
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "chat.db"))
+    engine = create_db_engine("sqlite://")
+    try:
+        with TestClient(create_app(MaterialStore(engine))) as client:
+            assert client.get("/").status_code == 200
+            assert client.get("/materials").status_code == 200
+            assert client.post("/materials", json={"content": "无需模型即可保存"}).status_code == 201
+            response = client.post("/chat", json={"text": "你好"})
+            assert response.status_code == 503
+            assert "BRIEFLY_" + field in response.json()["detail"]
+            assert "重启" in response.json()["detail"]
+            assert "fake-key" not in response.text
+            assert client.get("/chat/sessions").json() == []
+            assert client.app.state.agent is None
+            assert not (tmp_path / "chat.db").exists()
+    finally:
+        engine.dispose()
+
+
+def test_local_vendor_scripts_are_served(chat_client):
+    client, _ = chat_client
+    page = client.get("/").text
+    assert "cdn.jsdelivr.net" not in page
+    for name in ("marked.min.js", "purify.min.js"):
+        path = f"/web/vendor/{name}"
+        assert f'src="{path}"' in page
+        response = client.get(path)
+        assert response.status_code == 200
+        assert "javascript" in response.headers["content-type"]
+        assert len(response.content) > 10000
+
+
 def test_unresolved_output_checks_reach_history_without_exposing_internal_details():
     engine, model, client = make_client(text_msg("【一句话总结】见第 2 块。"), text_msg("【一句话总结】仍见第 2 块。"))
     try:

@@ -9,6 +9,7 @@ from .feishu import FeishuError, looks_like_feishu
 from .feishu.client import default_client
 from .feishu.service import import_link
 from .materials import MaterialStore
+from .llm import ModelConfigurationError, create_chat_model
 from .skills import SKILLS
 
 REPL_HELP = (
@@ -115,7 +116,12 @@ def main() -> None:
     ap.add_argument("-t", "--thread", help="会话编号，用于恢复之前的对话")
     args = ap.parse_args()
 
+    try:
+        model = create_chat_model()
+    except ModelConfigurationError as exc:
+        sys.exit(str(exc))
     agent = Agent(
+        model,
         checkpointer=sqlite_checkpointer(config.DB_PATH),
         thread_id=args.thread,
         store=MaterialStore(create_db_engine()),

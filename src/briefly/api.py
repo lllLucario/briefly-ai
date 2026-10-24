@@ -25,7 +25,7 @@ from .agent import Agent, new_thread_id, sqlite_checkpointer
 from .context_builder import SYSTEM_REPLY
 from .db import create_db_engine
 from .feishu import FeishuClient, client_from_config
-from .llm import create_chat_model
+from .llm import ModelConfigurationError, create_chat_model
 from . import material_library as library
 from .materials import TRACKED, Material, MaterialNotFound, MaterialStore
 from .sessions import ChatSession, SessionStore
@@ -183,7 +183,8 @@ class MailStatus(BaseModel):
 
 
 def default_agent(store: MaterialStore) -> Agent:
-    return Agent(checkpointer=sqlite_checkpointer(config.DB_PATH), store=store)
+    model = create_chat_model()  # 先校验配置，失败时不创建会话数据库连接。
+    return Agent(model, checkpointer=sqlite_checkpointer(config.DB_PATH), store=store)
 
 
 def visible_messages(messages: list[AnyMessage]) -> list[MessageOut]:
@@ -289,6 +290,10 @@ def create_app(
                 app.state.agent = agent_factory(app.state.store)
             return app.state.agent
 
+    @app.exception_handler(ModelConfigurationError)
+    def model_configuration_error(request: Request, exc: ModelConfigurationError):
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
     @app.exception_handler(MaterialNotFound)
     def not_found(request: Request, exc: MaterialNotFound):
         return JSONResponse(status_code=404, content={"detail": str(exc)})
@@ -322,7 +327,7 @@ def create_app(
         with thread_locks[thread_id]:
             try:
                 reply = agent.chat(body.text, body.skill, material_ids=body.material_ids or None, thread_id=thread_id)
-            except (ValueError, MaterialNotFound):
+            except (ValueError, MaterialNotFound, ModelConfigurationError):
                 raise
             except Exception as e:  # 模型接口出错（网络、密钥、限流等）
                 log.exception("对话失败")
