@@ -3,7 +3,7 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Engine, ForeignKey, Integer, String, Text, func, or_, select, update
+from sqlalchemy import JSON, DateTime, Engine, ForeignKey, Index, Integer, String, Text, func, or_, select, update
 from sqlalchemy.orm import Mapped, defer, mapped_column, relationship, sessionmaker
 
 from . import config
@@ -57,6 +57,7 @@ class MaterialSection(Base):
 
 class MaterialChunk(Base):
     __tablename__ = "material_chunks"
+    __table_args__ = (Index("ix_material_chunks_material_index", "material_id", "index"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     material_id: Mapped[int] = mapped_column(ForeignKey("materials.id", ondelete="CASCADE"), index=True)
@@ -176,9 +177,12 @@ class MaterialStore:
         with self._session() as s:
             return list(s.scalars(query))
 
-    def get(self, material_id: int) -> Material:
+    def get(self, material_id: int, *, content: bool = True) -> Material:
+        query = select(Material).where(Material.id == material_id)
+        if not content:
+            query = query.options(defer(Material.content, raiseload=True))
         with self._session() as s:
-            material = s.get(Material, material_id)
+            material = s.scalar(query)
         if material is None:
             raise MaterialNotFound(f"材料 {material_id} 不存在")
         return material
@@ -220,19 +224,113 @@ class MaterialStore:
             s.delete(material)
             s.commit()
 
-    def chunks(self, material_id: int) -> list[MaterialChunk]:
-        self.get(material_id)  # 不存在时报错
+    def chunks(
+        self, material_id: int, *, first: int | None = None, last: int | None = None, content: bool = True
+    ) -> list[MaterialChunk]:
+        """按需读块；范围含首尾，content=False 时只读位置等元数据。"""
+        self._require_exists(material_id)
         query = select(MaterialChunk).where(MaterialChunk.material_id == material_id).order_by(MaterialChunk.index)
+        if first is not None:
+            query = query.where(MaterialChunk.index >= first)
+        if last is not None:
+            query = query.where(MaterialChunk.index <= last)
+        if not content:
+            query = query.options(defer(MaterialChunk.content, raiseload=True))
         with self._session() as s:
             return list(s.scalars(query))
 
+    def read_chunk(self, material_id: int, index: int) -> tuple[str, int, MaterialChunk | None]:
+        """一次查询取得标题、块总数和指定块；缺少目标块时仍返回总数供错误提示。"""
+        count = select(func.count()).select_from(MaterialChunk).where(
+            MaterialChunk.material_id == material_id
+        ).correlate(None).scalar_subquery()
+        query = select(Material.title, count, MaterialChunk).outerjoin(
+            MaterialChunk,
+            (MaterialChunk.material_id == Material.id) & (MaterialChunk.index == index),
+        ).where(Material.id == material_id)
+        with self._session() as s:
+            row = s.execute(query).one_or_none()
+        if row is None:
+            raise MaterialNotFound(f"材料 {material_id} 不存在")
+        return row[0], row[1], row[2]
+
     def sections(self, material_id: int) -> list[MaterialSection]:
-        self.get(material_id)
+        self._require_exists(material_id)
         query = (
             select(MaterialSection).where(MaterialSection.material_id == material_id).order_by(MaterialSection.index)
         )
         with self._session() as s:
             return list(s.scalars(query))
+
+    def _require_exists(self, material_id: int) -> None:
+        # 存在性检查仅查主键，不为验证存在再加载一份材料元数据。
+        with self._session() as s:
+            found = s.scalar(select(Material.id).where(Material.id == material_id))
+        if found is None:
+            raise MaterialNotFound(f"材料 {material_id} 不存在")
+
+    def chunk_range(self, material_id: int, start: int, end: int) -> tuple[int, int]:
+        """与正文 [start, end) 重叠的块号范围；只查询块位置。"""
+        query = select(func.min(MaterialChunk.index), func.max(MaterialChunk.index)).where(
+            MaterialChunk.material_id == material_id, MaterialChunk.start < end, MaterialChunk.end > start
+        )
+        with self._session() as s:
+            first, last = s.execute(query).one()
+        return (first, last) if first is not None else (0, 0)
+
+    def chunk_prefix(self, material_id: int, first: int, last: int, max_chars: int) -> list[MaterialChunk]:
+        """按已有预算规则选择连续前缀：至少返回首块，只加载选中块的正文。"""
+        query = select(MaterialChunk.index, MaterialChunk.char_count).where(
+            MaterialChunk.material_id == material_id, MaterialChunk.index.between(first, last)
+        ).order_by(MaterialChunk.index)
+        size, stop = 0, None
+        with self._session() as s:
+            # 不把长章节的全部元数据积攒成列表；多数情况读取少数行即停止。
+            for index, count in s.execute(query).yield_per(32):
+                if stop is not None and size + count > max_chars:
+                    break
+                stop, size = index, size + count
+        return self.chunks(material_id, first=first, last=stop) if stop is not None else []
+
+    def section_text(self, material_id: int, start: int, end: int, max_chars: int) -> tuple[str | None, int]:
+        """按原有 Python strip 规则测章节长度；仅在预算内时读取完整章节。
+
+        长章节只分段检查首尾空白，不将整个章节载入 Python。返回 (正文或 None, 去空白后的字数)。
+        """
+        with self._session() as s:
+            if self.engine.dialect.name == "sqlite":
+                # SQLite TEXT substr 在 NUL 处停止；非常规文本回退 Python 切片一次。
+                has_nul = s.scalar(select(func.instr(Material.content, "\x00") > 0).where(Material.id == material_id))
+                if has_nul:
+                    content = s.scalar(select(Material.content).where(Material.id == material_id))[start:end].strip()
+                    return (content if len(content) <= max_chars else None), len(content)
+
+            def read(a: int, b: int) -> str:
+                span = func.substr(Material.content, a + 1, b - a)
+                return s.scalar(select(span).where(Material.id == material_id))
+
+            if end - start <= max_chars:
+                content = read(start, end).strip()
+                return content, len(content)
+            # strip 的 Unicode 空白规则与数据库 trim 并不相同，分段检查保持原输出。
+            while start < end:
+                prefix = read(start, min(start + 4096, end))
+                if not prefix:
+                    raise ValueError("章节位置与材料正文不一致，请重新导入材料")
+                stripped = prefix.lstrip()
+                start += len(prefix) - len(stripped)
+                if stripped:
+                    break
+            while start < end:
+                suffix = read(max(start, end - 4096), end)
+                if not suffix:
+                    raise ValueError("章节位置与材料正文不一致，请重新导入材料")
+                stripped = suffix.rstrip()
+                end -= len(suffix) - len(stripped)
+                if stripped:
+                    break
+            length = end - start
+            return (read(start, end) if length <= max_chars else None), length
 
     def chunk_counts(self, material_ids: list[int] | None = None) -> dict[int, int]:
         return self._counts(MaterialChunk, material_ids)

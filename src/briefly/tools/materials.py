@@ -14,7 +14,7 @@ from ..conflicts import ATTRIBUTES, UNRESOLVED, classify, conflict_problems, det
 from ..context import Context
 from ..context_store import ContextStore
 from ..llm import create_chat_model
-from ..materials import MaterialChunk, MaterialStore, wrap_material
+from ..materials import MaterialStore, wrap_material
 from ..skills import read_prompt
 from ..summarize import Source, extract_items, synthesize
 from ..tool_budget import output_limit
@@ -63,12 +63,6 @@ def _section_chars() -> int:
     return min(config.SECTION_READ_CHARS, max(int((output_limit() - 300) * 1.5), 500))
 
 
-def _chunk_range(chunks: list[MaterialChunk], start: int, end: int) -> tuple[int, int]:
-    """与 [start, end) 有重叠的块号范围。"""
-    hit = [c.index for c in chunks if c.start < end and c.end > start]
-    return (hit[0], hit[-1]) if hit else (0, 0)
-
-
 def _blocks(first: int, last: int) -> str:
     return f"第 {first} 块" if first == last else f"第 {first}–{last} 块"
 
@@ -81,7 +75,7 @@ def material_tools(
     def list_materials(runtime: ToolRuntime[Context]) -> str:
         """列出当前可用的材料：编号、标题、类型、有没有章节大纲、导入日期。不知道有哪些材料或材料编号时调用。"""
         scope = _scope(runtime)
-        materials = store.list_materials(scope)
+        materials = store.list_materials(scope, content=False)
         if not materials:
             return "当前没有可用的材料。"
         sections = store.section_counts(scope)
@@ -96,8 +90,7 @@ def material_tools(
         """查看某份材料的章节大纲：每章的编号和标题，较长的章节会注明需要分次读取。
         材料较长、需要了解结构或只读其中某几章时先调用，再用 read_material 的 section 参数按章节读取。"""
         _check_in_scope(material_id, _scope(runtime))
-        material = store.get(material_id)
-        chunks = store.chunks(material_id)
+        material = store.get(material_id, content=False)
         sections = store.sections(material_id)
         name = f"材料 {material_id}《{material.title}》"
         notes = material.parse_report.get("warnings", [])
@@ -122,38 +115,33 @@ def material_tools(
         if chunk is not None and section is not None:
             raise ValueError("chunk 和 section 只能填一个")
         _check_in_scope(material_id, _scope(runtime))
-        material = store.get(material_id)
-        chunks = store.chunks(material_id)
-        name = f"材料 {material_id}《{material.title}》"
 
         if section is None:
             chunk = chunk or 1
-            if not 1 <= chunk <= len(chunks):
-                raise ValueError(f"块号超出范围，材料 {material_id} 共 {len(chunks)} 块")
-            current = chunks[chunk - 1]
+            title, count, current = store.read_chunk(material_id, chunk)
+            if not 1 <= chunk <= count or current is None:
+                raise ValueError(f"块号超出范围，材料 {material_id} 共 {count} 块")
+            name = f"材料 {material_id}《{title}》"
             where = f"（{current.section}）" if current.section else ""
-            return wrap_material(f"【{name}第 {chunk}/{len(chunks)} 块{where}】", current.content)
+            return wrap_material(f"【{name}第 {chunk}/{count} 块{where}】", current.content)
 
+        material = store.get(material_id, content=False)
+        name = f"材料 {material_id}《{material.title}》"
         sections = store.sections(material_id)
         target = next((s for s in sections if s.index == section), None)
         if target is None:
             raise ValueError(f"章节编号超出范围，材料 {material_id} 共 {len(sections)} 个章节，请先调用 get_outline")
-        first, last = _chunk_range(chunks, target.start, target.end)
-        text = material.content[target.start : target.end].strip()
+        first, last = store.chunk_range(material_id, target.start, target.end)
         max_chars = _section_chars()
-        if len(text) <= max_chars:
+        text, length = store.section_text(material_id, target.start, target.end, max_chars)
+        if text is not None:
             return wrap_material(f"【{name}章节 {section}：{target.path}（{_blocks(first, last)}）】", text)
 
         # 章节太长：按块返回开头的一部分，并说明从哪里接着读
-        taken, size = [], 0
-        for c in chunks[first - 1 : last]:
-            if taken and size + c.char_count > max_chars:
-                break
-            taken.append(c)
-            size += c.char_count
+        taken = store.chunk_prefix(material_id, first, last, max_chars)
         end = taken[-1].index
         header = (
-            f"【{name}章节 {section}：{target.path}，共 {len(text)} 字（{_blocks(first, last)}），"
+            f"【{name}章节 {section}：{target.path}，共 {length} 字（{_blocks(first, last)}），"
             f"较长，本次返回{_blocks(first, end)}】"
         )
         body = wrap_material(header, "\n".join(c.content for c in taken))
@@ -202,7 +190,7 @@ def material_tools(
                 _check_in_scope(material_id, scope)
             scope = material_ids
         sources, labels, outlines, titles = [], {}, {}, {}
-        for m in store.list_materials(scope):
+        for m in store.list_materials(scope, content=False):
             titles[m.id] = m.title
             outlines[m.id] = store.sections(m.id)
             for c in store.chunks(m.id):

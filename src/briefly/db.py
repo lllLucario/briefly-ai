@@ -35,6 +35,10 @@ def create_db_engine(url: str | None = None) -> Engine:
     if engine.dialect.name == "sqlite":
         event.listen(engine, "connect", _enable_foreign_keys)
     Base.metadata.create_all(engine)
+    # create_all 不会给已存在的表补建新索引；旧库启动时幂等补建，不改块号或正文。
+    for index in materials.MaterialChunk.__table__.indexes:
+        if index.name == "ix_material_chunks_material_index":
+            index.create(engine, checkfirst=True)
     if engine.dialect.name == "sqlite":
         orphans = foreign_key_problems(engine)
         if orphans:  # 打开约束之前写进去的失效引用：只报告，不自动删（由人判断怎么处理）
