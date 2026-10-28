@@ -122,6 +122,17 @@ class KnowledgeService:
             self._kb(s, kb_id)
             return list(s.scalars(select(KnowledgeDocument).where(KnowledgeDocument.kb_id == kb_id, KnowledgeDocument.deleted_at.is_(None)).order_by(KnowledgeDocument.created_at, KnowledgeDocument.id)))
 
+    def document_states(self, kb_id):
+        with self._session() as s:
+            self._kb(s, kb_id)
+            rows = s.execute(select(KnowledgeDocument, KnowledgePublication, IndexGeneration)
+                .outerjoin(KnowledgePublication, KnowledgePublication.document_id == KnowledgeDocument.id)
+                .outerjoin(IndexGeneration, IndexGeneration.id == KnowledgePublication.generation_id)
+                .where(KnowledgeDocument.kb_id == kb_id, KnowledgeDocument.deleted_at.is_(None))
+                .order_by(KnowledgeDocument.created_at, KnowledgeDocument.id)).all()
+            return [(doc, publication.version_id if publication else None,
+                     generation.status if generation else "not_indexed") for doc, publication, generation in rows]
+
     @staticmethod
     def _append(s, doc, material_id, business_version, *, number=None, slices=None, chunk_config=None):
         KnowledgeService._business_version(business_version)

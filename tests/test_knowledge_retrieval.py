@@ -69,6 +69,24 @@ def test_removed_during_query_fails_snapshot_check(indexed):
         retrieval.search(kb.id, "审批")
 
 
+def test_document_context_adds_same_version_intro_within_scope(indexed):
+    from briefly.knowledge.slicing import token_slices
+    store, svc, lifecycle, retrieval = setup(indexed)
+    kb = svc.create("库")
+    text = "# 制度\n仅适用于正式员工国内出差，不适用于实习生。\n\n" + "".join(
+        f"## 住宿条款{i}\n住宿需预订前审批，按实际发票报销。\n" for i in range(20))
+    material, _ = store.add_text("制度", text, markdown=True)
+    config, slices = token_slices(material.content, "制度", True, Encoder(), tokens=64)
+    doc, version, _ = svc.stage_slices(kb.id, material.id, "fixture", config, slices)
+    lifecycle.build(kb.id, doc.id, version.id, Encoder(), expected_revision=1)
+    base = retrieval.search(kb.id, "住宿")
+    contextual = retrieval.search(kb.id, "住宿", include_document_context=True)
+    assert len(base["evidence"]) <= 5 and len(contextual["evidence"]) <= 7
+    assert any(e["start"] == 0 for e in contextual["evidence"])
+    assert all(e["document_id"] == doc.id and e["version_id"] == version.id for e in contextual["evidence"])
+    assert contextual["parameters"]["version"] == 2
+
+
 @pytest.mark.parametrize("question", ["两字", "编号E403 2026", '" OR * : 日本語', "🙂 ???"])
 def test_queries_are_data_and_do_not_escape_scope(indexed, question):
     store, svc, lifecycle, retrieval = setup(indexed)

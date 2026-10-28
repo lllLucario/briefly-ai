@@ -1,4 +1,5 @@
 """知识库元数据、原文引用及显式引用问答；不提供伪造索引就绪的入口。"""
+from typing import Annotated
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -36,6 +37,12 @@ class SearchIn(BaseModel):
     document_ids: list[str] | None = Field(default=None, max_length=1000)
 
 
+class AnswerIn(SearchIn):
+    allow_external: bool = False
+    allow_partial: bool = False
+    private_values: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(default_factory=list, max_length=50)
+
+
 def document_out(doc):
     return dict(id=doc.id, kb_id=doc.kb_id, title=doc.title, source_key=doc.source_key,
                 revision=doc.revision, created_at=doc.created_at)
@@ -57,6 +64,18 @@ def register(app: FastAPI,model_factory):
     from .retrieval import RetrievalService
     retrieval = RetrievalService(app.state.knowledge_imports)
     app.state.knowledge_retrieval = retrieval
+    from .qa import KnowledgeQA
+    qa = KnowledgeQA(retrieval, model_factory)
+
+    @app.post("/knowledge-bases/{kb_id}/answer", tags=["知识库"])
+    def answer(kb_id: str, body: AnswerIn):
+        try:
+            return qa.answer(kb_id, body.question, document_ids=body.document_ids,
+                allow_external=body.allow_external, allow_partial=body.allow_partial, private_values=body.private_values)
+        except (KnowledgeConflict, KnowledgeNotFound, ValueError):
+            raise
+        except Exception as exc:
+            raise HTTPException(502, "知识问答生成失败，请稍后重试") from exc
 
     @app.post("/knowledge-bases/{kb_id}/search", tags=["知识库"])
     def search(kb_id: str, body: SearchIn):
@@ -99,7 +118,8 @@ def register(app: FastAPI,model_factory):
 
     @app.get("/knowledge-bases/{kb_id}/documents", tags=["知识库"])
     def documents(kb_id: str):
-        return [document_out(d) for d in service.documents(kb_id)]
+        return [dict(**document_out(d), active_version_id=version_id, index_status=index_status)
+                for d, version_id, index_status in service.document_states(kb_id)]
 
     @app.post("/knowledge-bases/{kb_id}/documents", tags=["知识库"])
     def attach(kb_id: str, body: AttachIn, response: Response):

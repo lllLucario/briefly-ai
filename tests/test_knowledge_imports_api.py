@@ -47,6 +47,9 @@ def test_batch_partial_failure_preview_confirm_and_replay(client):
     assert client.post("/knowledge-scope", json={"kb_ids": [kb]}).json()["status"] == "ready"
     search = client.post(f"/knowledge-bases/{kb}/search", json={"question": "审批"})
     assert search.status_code == 200 and search.json()["evidence"][0]["reference"].startswith("kbref:")
+    answer = client.post(f"/knowledge-bases/{kb}/answer", json={"question": "审批"})
+    assert answer.status_code == 200 and answer.json()["status"] == "external_confirmation_required"
+    assert answer.json()["model_called"] is False
     other = client.post("/knowledge-bases", json={"name": "隔离库"}).json()["id"]
     assert client.get(f"/knowledge-bases/{other}/imports/{valid['id']}/chunks").status_code == 404
     assert client.post(f"{base}/{valid['id']}/retry", json={}).status_code == 409

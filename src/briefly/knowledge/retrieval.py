@@ -14,7 +14,7 @@ class RetrievalService:
     def __init__(self, imports):
         self.imports = imports
 
-    def search(self, kb_id, question, *, document_ids=None):
+    def search(self, kb_id, question, *, document_ids=None, include_document_context=False):
         if not question.strip() or len(question) > 4000:
             raise ValueError("问题须为1～4000字")
         started = perf_counter()
@@ -30,6 +30,8 @@ class RetrievalService:
             metadata["unavailable"] = [v for v in metadata["unavailable"] if v["document_id"] in selected]
         result = dict(request_id=uuid4().hex, parameters=PARAMETERS.copy(), evidence=[],
                       unavailable=metadata["unavailable"], diagnostics={})
+        if include_document_context:
+            result["parameters"].update(version=2, document_context="最多2份已命中文档的首片段")
         if not metadata["versions"]:
             result["status"] = "not_ready" if metadata["unavailable"] else "empty_scope" if document_ids == [] else "empty_library"
             return result
@@ -70,6 +72,28 @@ class RetrievalService:
                 retrieval=dict(rrf_score=score, routes=routes[(generation, number)])))
             if len(result["evidence"]) >= PARAMETERS["top_k"]:
                 break
+        context_added = 0
+        if include_document_context:
+            selected = {(e["generation_id"], e["chunk"]) for e in result["evidence"]}
+            docs = list(dict.fromkeys(e["document_id"] for e in result["evidence"]))[:2]
+            for doc_id in docs:
+                item = next(v for v in versions if v["document_id"] == doc_id)
+                with svc._session() as s:
+                    version = s.get(KnowledgeVersion, item["version_id"])
+                    first = version.chunk_manifest[0]["index"]
+                if (item["generation_id"], first) in selected:
+                    continue
+                source = svc.chunk(kb_id, doc_id, item["version_id"], first)
+                if source["status"] != "current" or source["content"] is None:
+                    raise KnowledgeConflict("文档上下文在检索期间已变化，请重新检索")
+                tokens = encoder.token_length(source["source"]["title"] + "\n" + source["content"])
+                if budget + tokens > PARAMETERS["context_tokens"]:
+                    omitted += 1
+                    continue
+                budget += tokens
+                context_added += 1
+                result["evidence"].append(dict(**source, generation_id=item["generation_id"],
+                    retrieval=dict(rrf_score=None, routes=[dict(route="document_context", rule="first_source_chunk")])) )
         # 发布、删除或来源变化不能悄悄混进同一请求的索引快照。
         latest = svc.scope([kb_id])
         current = {(v["document_id"], v["generation_id"]) for v in latest["versions"]}
@@ -79,5 +103,6 @@ class RetrievalService:
         result["diagnostics"] = dict(semantic_candidates=len(dense), lexical_candidates=len(lexical),
             deduplicated_candidates=len(scores), selected=len(result["evidence"]),
             context_tokens=budget, omitted_for_budget=omitted, seconds=round(perf_counter() - started, 4),
+            document_context_added=context_added,
             answerability="not_assessed")
         return result

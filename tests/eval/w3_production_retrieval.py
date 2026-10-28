@@ -28,6 +28,7 @@ def main():
     parser.add_argument("--model-dir", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("-n", type=int, default=3)
+    parser.add_argument("--document-context", action="store_true")
     args = parser.parse_args()
     root = Path(args.output).resolve()
     root.mkdir(parents=True, exist_ok=False)
@@ -55,7 +56,7 @@ def main():
                 event = dict(case=case["id"], repeat=repeat, answerability=case["answerability"],
                              groups=len(case["evidence_groups"]))
                 try:
-                    response = retrieval.search(kb.id, case["question"], document_ids=[mapping.get(key, key) for key in case["scope"]])
+                    response = retrieval.search(kb.id, case["question"], document_ids=[mapping.get(key, key) for key in case["scope"]], include_document_context=args.document_context)
                     hits = response["evidence"]
                     found = 0
                     for group in case["evidence_groups"]:
@@ -79,7 +80,7 @@ def main():
         summary = dict(events=len(events), answerable=len(answerable),
             fully_covered=sum(e.get("found") == e["groups"] for e in answerable),
             unanswerable=len(negatives), negatives_with_candidates=sum(e.get("candidates", 0) > 0 for e in negatives),
-            external_generation_calls=0, parameters=PARAMETERS, model=encoder.identity,
+            external_generation_calls=0, parameters={**PARAMETERS, "document_context": args.document_context}, model=encoder.identity,
             scope_note="单个隔离评测库按文档显式范围，不模拟业务版本替换；不等于答案准确率")
     finally:
         engine.dispose()
