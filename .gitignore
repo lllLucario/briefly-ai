@@ -12,6 +12,8 @@ data/*.db*
 
 # 个人资料与报告文件夹
 files/
+resources/
+.claude/
 
 # 项目说明（仅本地使用）
 AGENTS.md

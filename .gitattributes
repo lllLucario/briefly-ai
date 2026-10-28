@@ -1,0 +1,13 @@
+# Keep code and text diffs stable across Windows and Linux.
+* text=auto eol=lf
+# Parser build metadata checks these source bytes as well as the JAR.
+src/briefly/java/* -text whitespace=cr-at-eol
+*.jar binary
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.doc binary
+*.docx binary
+*.xlsx binary
+*.zip binary
