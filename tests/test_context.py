@@ -656,7 +656,10 @@ def test_large_docx_and_pdf_go_through_materials(store):
 
     model = FunctionModel(respond=answering())
     agent = Agent(model, tools=[], store=store)
-    agent.chat("总结", material_ids=[docx.id, pdf.id])
+    assert "需核对原件" in agent.chat("总结", material_ids=[docx.id, pdf.id])
+    assert model.calls == []  # 文字行PDF的关系限制不能绕过旧聊天入口。
+    agent.reset()
+    agent.chat("总结", material_ids=[docx.id])
     sent = model.calls[0][-1].content
     assert "【已选材料】" in sent and "第599段" not in sent
 

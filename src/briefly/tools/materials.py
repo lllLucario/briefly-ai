@@ -147,10 +147,10 @@ def material_tools(
         body = wrap_material(header, "\n".join(c.content for c in taken))
         return f"{body}\n本章节还未读完，请继续用 read_material(material_id={material_id}, chunk={end + 1}) 读到第 {last} 块。"
 
-    @tool
+    @tool(response_format="content_and_artifact")
     def search_materials(
         keywords: str, runtime: ToolRuntime[Context], material_ids: list[int] | None = None, limit: int = 10
-    ) -> str:
+    ) -> tuple[str, dict]:
         """在材料中按关键词检索，返回最相关的片段及所在材料编号、块号和章节。keywords 用空格分隔多个词，命中任意一个即算。
         material_ids 可限定在某几份材料中检索，不填则检索全部可用材料；limit 是最多返回几条（不超过 10）。
         需要定位某个主题在哪份材料、哪一块时调用，再用 read_material 读取完整的块。"""
@@ -161,8 +161,8 @@ def material_tools(
             scope = material_ids
         hits = store.search(keywords, scope)[: max(1, limit)]
         if not hits:
-            return f"没有找到包含“{keywords}”的内容。"
-        parts, size, budget = [], 0, int((output_limit() - 200) * 1.5)
+            return f"没有找到包含“{keywords}”的内容。", {}
+        parts, selected_ids, size, budget = [], [], 0, int((output_limit() - 200) * 1.5)
         for n, h in enumerate(hits):
             part = wrap_material(
                 f"【材料 {h.material_id}《{h.title}》第 {h.chunk} 块{f'（{h.section}）' if h.section else ''}，"
@@ -173,8 +173,13 @@ def material_tools(
                 parts.append(f"（另有 {len(hits) - n} 条结果因篇幅省略，请换更具体的关键词）")
                 break
             parts.append(part)
+            selected_ids.append(h.material_id)
             size += len(part)
-        return "\n\n".join(parts)
+        # artifact只记录真正输出的来源，不能把可访问全库当成已读依据。
+        from ..knowledge.evidence import material_quality_notice
+        selected_ids = list(dict.fromkeys(selected_ids))
+        return "\n\n".join(parts), {"material_ids": selected_ids,
+            "quality_notice": material_quality_notice(store, selected_ids)}
 
     @tool(response_format="content_and_artifact")
     def summarize_materials(
@@ -189,6 +194,11 @@ def material_tools(
             for material_id in material_ids:
                 _check_in_scope(material_id, scope)
             scope = material_ids
+        from ..knowledge.evidence import material_quality_notice
+        selected = [m.id for m in store.list_materials(scope, content=False)]
+        notice = material_quality_notice(store, selected)
+        if notice:
+            return notice, {"material_ids": selected, "quality_blocked": True, "quality_notice": notice}
         sources, labels, outlines, titles = [], {}, {}, {}
         for m in store.list_materials(scope, content=False):
             titles[m.id] = m.title

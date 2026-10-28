@@ -148,6 +148,7 @@ class Agent:
                 _system_prompt,
                 InternalTermCheck(self._check_sources, self._reply_limit),  # 在 Context Builder 外层：重试也经过预算检查
                 self.builder,
+                self._quality_middleware(),
                 _limit_tool_rounds,
                 self.tool_budget,  # 包在报错回传外层，报错文字也计入预算
                 ToolErrorMiddleware(on_error=_tool_error),
@@ -156,6 +157,31 @@ class Agent:
             checkpointer=checkpointer or InMemorySaver(),
         )
         self.thread_id = thread_id or new_thread_id()
+
+    def _quality_middleware(self):
+        @before_model(can_jump_to=["end"])
+        def source_quality_guard(state, runtime):
+            if self.store is None:
+                return None
+            notice = self._quality_notice(state["messages"], [])
+            if notice:
+                reply = system_reply(notice)
+                reply.response_metadata["quality_notice"] = notice
+                return {"jump_to": "end", "messages": [reply]}
+            return None
+        return source_quality_guard
+
+    def _quality_notice(self, messages, material_ids):
+        from .knowledge.evidence import material_quality_notice
+        snapshots = []
+        for message in messages:
+            notice = message.additional_kwargs.get("quality_notice") or message.response_metadata.get("quality_notice")
+            if isinstance(message, ToolMessage) and isinstance(message.artifact, dict):
+                notice = notice or message.artifact.get("quality_notice")
+            if notice:
+                snapshots.append(notice)
+        current = material_quality_notice(self.store, [*material_ids, *conversation_material_ids(messages)])
+        return current or (snapshots[0] if snapshots else None)
 
     def reset(self) -> None:
         """开始新会话；旧会话仍保存在 checkpointer 中。"""
@@ -186,6 +212,15 @@ class Agent:
             raise ValueError(f"未知技能: {skill}，可选: {', '.join(SKILLS)}")
         run_id = uuid.uuid4().hex[:12]
         started = request_time()  # 本轮内所有模型调用、工具和检查共用这一时间
+        # 在附加全文和压缩历史之前挡住受限来源，避免压缩模型成为旁路。
+        if self.store is not None:
+            notice = self._quality_notice(self.history_of(thread_id), material_ids or [])
+            if notice:
+                message = HumanMessage(text, id=uuid.uuid4().hex, additional_kwargs=dict(
+                    display=display, material_ids=material_ids or [], skill=skill, quality_notice=notice))
+                self.graph.update_state({"configurable": {"thread_id": thread_id}},
+                    {"messages": [message, system_reply(notice)]}, as_node="model")
+                return notice
         try:
             text, stored = self._preflight(text)
         except ValueError as e:

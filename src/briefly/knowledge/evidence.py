@@ -34,6 +34,20 @@ NOTES={
 }
 
 
+def material_quality_notice(store, material_ids):
+    """旧入口共用质量能力边界；只查已选/实际读过的来源，不扩大至全库。"""
+    blocked = set()
+    for material_id in dict.fromkeys(material_ids):
+        try:
+            material = store.get(material_id, content=False)
+        except ValueError:
+            continue
+        blocked.update(constraints(material.parse_report, 0, material.char_count))
+    if not blocked:
+        return None
+    return "本次关联材料存在尚未确认的结构，需核对原件后再继续。\n" + "\n".join(NOTES[key] for key in sorted(blocked))
+
+
 def restricted_answer(evidence):
     """程序分支，不依赖模型遵守提示或理解用户问题的同义表达。"""
     blocked=sorted({k for e in evidence for k in e.get("constraints",{})})
