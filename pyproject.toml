@@ -39,7 +39,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-briefly = ["prompts/*.md", "web/*", "web/vendor/*"]
+briefly = ["prompts/*.md", "web/*", "web/vendor/*", "java/*.java", "java/*.jar", "java/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

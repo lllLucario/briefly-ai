@@ -62,7 +62,7 @@ document.addEventListener("toggle", (e) => {
 
 // Markdown 渲染；本地渲染库不可用时退回纯文本
 // 材料正文的排版预览：Markdown、Word（导入时已转为 Markdown）、飞书文档。不加载外部图片；渲染库不可用时退回纯文本
-const RICH_TYPES = new Set(["md", "docx", "feishu"]);
+const RICH_TYPES = new Set(["md", "doc", "docx", "feishu"]);
 function renderMaterialMarkdown(text) {
   if (window.marked && window.DOMPurify) {
     return DOMPurify.sanitize(marked.parse(text, { breaks: true }), { FORBID_TAGS: ["img", "style", "form", "input"], FORBID_ATTR: ["style"] });

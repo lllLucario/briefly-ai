@@ -117,6 +117,17 @@ class MaterialStore:
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
         with self._session() as s:
             existing = s.scalar(select(Material).where(Material.content_hash == digest))
+            if existing and report:
+                # Identical text from a newly parsed file must not lose stricter provenance
+                # merely because an earlier paste/upload won content deduplication.
+                from .knowledge.evidence import constraints,NOTES
+                limits=constraints(report,0,len(content))
+                if limits:
+                    previous=dict(existing.parse_report or {})
+                    previous['inherited_quality_constraints']={**previous.get('inherited_quality_constraints',{}),**limits}
+                    previous['warnings']=list(dict.fromkeys([*previous.get('warnings',[]),*(NOTES[k] for k in limits)]))
+                    existing.parse_report=previous
+                    s.commit()
             if existing and existing.source == TRACKED and source != TRACKED:
                 # 用户添加的内容恰好与某个追踪版本相同：转为用户材料（追踪版本仍引用同一条），算作新建
                 existing.source, existing.title = source, (title.strip() or existing.title)[:200]

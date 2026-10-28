@@ -424,7 +424,7 @@ def create_app(
 
     @app.post("/materials/upload", tags=[docs.MATERIALS], response_model=CreatedMaterial, status_code=201, summary="上传文件创建材料")
     def upload(
-        file: Annotated[UploadFile, File(description="txt/md/docx/pdf/xlsx/csv")], store: Store, response: Response
+        file: Annotated[UploadFile, File(description="txt/md/doc/docx/pdf/xlsx/csv")], store: Store, response: Response
     ):
         if not file.filename:
             raise HTTPException(status_code=400, detail="缺少文件名")
@@ -505,6 +505,7 @@ def create_app(
     from .tracking.api import register as register_tracking
     from .tracking.service import TrackingService
     from .weekly.api import register as register_weekly
+    from .knowledge.api import register as register_knowledge
 
     register_feishu(app, feishu_factory, feishu_tokens)  # 飞书：用户授权、云空间、导入链接、周报写入飞书文档
     # 追踪与周报共用一个追踪服务；飞书文档连接了账号时先用用户身份读取
@@ -513,6 +514,7 @@ def create_app(
     register_tracking(app)  # 追踪：追踪源、文件、版本与差异、检查更新、材料的追踪开关
     register_weekly(app)  # 周报：一周一份，审核清单 → 生成；定时、设置、提醒
     register_todos(app)  # 待办：父子结构、材料关联、活动；进展进入周报的审核清单
+    register_knowledge(app,model_factory)  # 元数据/引用；显式引用问答复用Agent，不自动建索引
     from .handoffs import register as register_handoffs
     register_handoffs(app, get_agent, thread_locks, model_factory)
 

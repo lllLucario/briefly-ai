@@ -29,6 +29,13 @@ CHUNK_SIZE = int(os.getenv("BRIEFLY_CHUNK_SIZE", "1500"))
 CHUNK_OVERLAP = int(os.getenv("BRIEFLY_CHUNK_OVERLAP", "150"))
 # 上传文件大小上限（MB）
 MAX_UPLOAD_MB = int(os.getenv("BRIEFLY_MAX_UPLOAD_MB", "10"))
+# 旧版Word本地转换；不配置时查PATH及常见LibreOffice安装位置。
+LIBREOFFICE_PATH = os.getenv("BRIEFLY_LIBREOFFICE", "")
+DOC_CONVERSION_TIMEOUT_S = max(1, int(os.getenv("BRIEFLY_DOC_CONVERSION_TIMEOUT_S", "90")))
+# auto：本地Java/Tika可用时直接读doc；convert保留兼容路线，direct强制直接解析。
+DOC_PARSER = os.getenv("BRIEFLY_DOC_PARSER", "auto").lower()
+JAVA_PATH = os.getenv("BRIEFLY_JAVA", "")
+TIKA_APP_JAR = os.getenv("BRIEFLY_TIKA_APP_JAR", "")
 # 选中材料合计不超过该 token 数（约 6000 个汉字）时，全文直接放进消息；超过则由模型用工具读取
 INLINE_MATERIAL_TOKENS = int(os.getenv("BRIEFLY_INLINE_MATERIAL_TOKENS", "3500"))
 

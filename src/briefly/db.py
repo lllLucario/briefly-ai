@@ -21,6 +21,7 @@ def create_db_engine(url: str | None = None) -> Engine:
     from .todos import models as _todos  # noqa: F401
     from .tracking import models as _tracking  # noqa: F401
     from .weekly import models as _weekly  # noqa: F401
+    from .knowledge import models as _knowledge  # noqa: F401  只新增表，不改旧材料/块
 
     url = url or config.DATABASE_URL
     kwargs: dict = {}

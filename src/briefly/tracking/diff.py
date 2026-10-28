@@ -402,7 +402,7 @@ class Differ:
         if snap.material_id is not None:
             try:
                 m = self.svc.store.get(snap.material_id)
-                return m.content, m.file_type in ("md", "docx", "pdf", "xlsx", "csv") or m.parse_report.get("structure") == "markdown"
+                return m.content, m.file_type in ("md", "doc", "docx", "pdf", "xlsx", "csv") or m.parse_report.get("structure") == "markdown"
             except MaterialNotFound:
                 pass
         if snap.parse_error or not self.svc.blobs.has(snap.sha256):
@@ -464,8 +464,8 @@ class Differ:
             result.flags.append("parse_failed")
             result.notes.append("有版本解析失败，无法比较内容；原始文件已保存")
             return result
-        result.hunks, result.flags = diff_text(old_text, new_text, kind, markdown or kind in ("md", "docx", "pdf"))
-        if not result.hunks and old is not None and kind == "docx" and "layout_noise" not in result.flags:
+        result.hunks, result.flags = diff_text(old_text, new_text, kind, markdown or kind in ("md", "doc", "docx", "pdf"))
+        if not result.hunks and old is not None and kind in ("doc", "docx") and "layout_noise" not in result.flags:
             result.flags.append("format_only")  # 字节变了、正文没变：格式、属性或修订标记等变化
             result.notes.append("文件有变化但正文文字没有变化，可能只改了格式")
         if kind == "pdf":

@@ -165,7 +165,7 @@ def register(app: FastAPI) -> None:
         return {"created": created, "materials": [material_out(m) for m in svc().materials(todo_id)]}
 
     @app.post("/todos/{todo_id}/materials/upload", tags=[docs.TODOS], status_code=201, summary="上传本地文件：登记到材料库并关联")
-    def upload(todo_id: int, file: Annotated[UploadFile, File(description="txt/md/docx/pdf/xlsx/csv")]):
+    def upload(todo_id: int, file: Annotated[UploadFile, File(description="txt/md/doc/docx/pdf/xlsx/csv")]):
         if not file.filename:
             raise HTTPException(status_code=400, detail="缺少文件名")
         material, created, _ = svc().upload(todo_id, file.filename, file.file.read())

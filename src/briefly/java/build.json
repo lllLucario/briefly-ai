@@ -1,0 +1,14 @@
+{
+  "target_java": 17,
+  "sources": {
+    "LegacyDocBase.java": "604fb3c7e3e1a25a70379de768b058e6c417eefd86e818fefbad3ae5749fcd87",
+    "LegacyDocParagraphs.java": "5611f5e7764db0bc42ff0a8e1049a07d21bcfcbef530bd743f3c0331918d606e",
+    "LegacyDocParser.java": "597f82a54eca3e88a4874372ecb2c85f902880570009ea0b26d99053ca21e88c",
+    "LegacyDocStructured.java": "86090addd24acf8bce517bccb299e59e9105b262af8e1705be2ae0fec89aed11",
+    "LegacyDocTextboxes.java": "5cb5cef52cfdc51fa73c2aa0aeda3cc1650664bdcd25ed100c023c620b051226",
+    "NativeTableAccess.java": "abfa2ba2ea1276cd8800725cb370c6ac160ef7424a002035a5930ccc8fa507bb"
+  },
+  "jar_sha256": "9736df0b1274a3eb0e77376770e8c10ce4354a43e40838dae7056c59ced96057",
+  "compiler_sha256": "05cc22a24e7982970f63a405fc6c820bc80b806f27f3c5a6236fc475f8f7152b",
+  "tika_sha256": "f29d4e0d2cff1fc32396f6ac5ce436dfc7b19f9303d3b899e1f56fde85711c96"
+}

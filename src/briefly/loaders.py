@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 
-SUPPORTED_TYPES = ("txt", "md", "docx", "pdf", "xlsx", "csv")
+SUPPORTED_TYPES = ("txt", "md", "doc", "docx", "pdf", "xlsx", "csv")
 
 
 @dataclass
@@ -45,6 +45,27 @@ def load_document(filename: str, data: bytes) -> LoadedDocument:
 
 
 def _load(kind: str, data: bytes) -> LoadedDocument:
+    if kind == "doc":
+        from . import config
+        from .direct_word import DirectWordUnsupported, direct_available, parse_doc
+        from .legacy_word import convert_doc
+        if config.DOC_PARSER not in {"auto", "direct", "convert"}:
+            raise ValueError("BRIEFLY_DOC_PARSER须为auto、direct或convert")
+        reason = None
+        if config.DOC_PARSER == "direct" or (config.DOC_PARSER == "auto" and direct_available()):
+            try:
+                text, report = parse_doc(data)
+                return LoadedDocument(text, markdown=True, report=report)
+            except DirectWordUnsupported:
+                if config.DOC_PARSER == "direct":
+                    raise
+                reason = "直接解析暂不支持此结构，已使用本地转换路径；请核对原文件"
+        elif config.DOC_PARSER == "auto":
+            reason = "本地直接解析依赖未就绪，已使用LibreOffice转换路径"
+        doc = _load_docx(convert_doc(data))
+        doc.report = {**doc.report, "original_format": "doc", "conversion": "libreoffice-to-docx",
+                      "warnings": [*doc.report.get("warnings", []), *([reason] if reason else []), "旧版 .doc 经本地转换后解析，复杂排版及修订内容请核对原文件"]}
+        return doc
     if kind == "md":
         return LoadedDocument(decode_text(data), markdown=True)
     if kind == "txt":
