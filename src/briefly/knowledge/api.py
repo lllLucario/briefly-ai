@@ -3,7 +3,7 @@ from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from .service import KnowledgeConflict, KnowledgeNotFound, KnowledgeService
+from .service import KnowledgeConflict, KnowledgeNotFound, KnowledgeService, index_fingerprint
 
 
 class BaseIn(BaseModel):
@@ -119,6 +119,7 @@ def register(app: FastAPI,model_factory):
     @app.get("/knowledge-bases/{kb_id}/documents/{doc_id}/versions/{version_id}/indexes", tags=["知识库"])
     def indexes(kb_id: str, doc_id: str, version_id: str):
         return [dict(id=g.id, version_id=g.version_id, embedding_identity=g.embedding_identity,
+                     index_fingerprint=index_fingerprint(g.embedding_identity),
                      dimension=g.dimension, chunk_fingerprint=g.chunk_fingerprint,
                      status=g.status, error_code=g.error_code, created_at=g.created_at)
                 for g in service.generations(kb_id, doc_id, version_id)]

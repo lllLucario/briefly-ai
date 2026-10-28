@@ -24,6 +24,40 @@ def fingerprint(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
+def embedding_identity(identity):
+    """只接受可复现的本地适配器身份；不补猜模型版本或截断预算。"""
+    if not isinstance(identity, dict):
+        raise ValueError("Embedding身份须为完整对象")
+    for key in ("model", "revision", "pooling"):
+        if not isinstance(identity.get(key), str) or not identity[key].strip():
+            raise ValueError("Embedding身份缺少模型、版本或池化方式")
+    for key, maximum in (("dimension", 4096), ("max_tokens", 1048576)):
+        if type(identity.get(key)) is not int or not 1 <= identity[key] <= maximum:
+            raise ValueError("Embedding维度或输入预算无效")
+    if not isinstance(identity.get("query_prefix"), str) or type(identity.get("normalize")) is not bool:
+        raise ValueError("Embedding身份缺少查询前缀或归一化配置")
+    artifacts = identity.get("artifact_sha256")
+    if not isinstance(artifacts, dict) or not artifacts or any(
+        not isinstance(name, str) or not name.strip() or not isinstance(digest, str)
+        or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)
+        for name, digest in artifacts.items()
+    ):
+        raise ValueError("Embedding身份缺少有效制品指纹")
+    if "index_contract" in identity:
+        raise ValueError("索引来源契约由服务生成，不能传入")
+    # 断开调用者持有的嵌套对象；拒绝非JSON配置。
+    return json.loads(json.dumps(identity, allow_nan=False))
+
+
+def source_contract(version):
+    return dict(format=1, version_id=version.id, content_hash=version.content_hash,
+                chunk_fingerprint=version.chunk_fingerprint, chunk_config=version.chunk_config)
+
+
+def index_fingerprint(identity):
+    return fingerprint(identity)
+
+
 class KnowledgeService:
     def __init__(self, engine):
         self._session = sessionmaker(engine, expire_on_commit=False)
@@ -181,19 +215,50 @@ class KnowledgeService:
 
     def plan_index(self, kb_id, doc_id, version_id, identity):
         """供后续入库任务使用；HTTP不提供伪造就绪/发布状态的入口。"""
-        dimension = identity.get("dimension")
-        if type(dimension) is not int or not 1 <= dimension <= 4096 or not identity.get("model"):
-            raise ValueError("Embedding身份须含模型和有效维度")
+        identity = embedding_identity(identity)
         with self._session.begin() as s:
             _, version = self._version(s, kb_id, doc_id, version_id)
             material, reason = self._material(s, version)
             if material is None:
                 raise KnowledgeConflict("源材料已删除或变化，不能规划索引")
-            generation = IndexGeneration(version_id=version.id, embedding_identity=identity, dimension=dimension,
+            self._verify_chunks(s, version)
+            identity["index_contract"] = dict(source=source_contract(version), embedding_fingerprint=fingerprint(identity))
+            generation = IndexGeneration(version_id=version.id, embedding_identity=identity, dimension=identity["dimension"],
                                          chunk_fingerprint=version.chunk_fingerprint)
             s.add(generation)
             s.flush()
             return generation
+
+    @staticmethod
+    def _verify_chunks(s, version):
+        chunks = list(s.scalars(select(MaterialChunk).where(
+            MaterialChunk.material_id == version.material_id).order_by(MaterialChunk.index)))
+        actual = [(c.index, c.start, c.end, hashlib.sha256(c.content.encode()).hexdigest()) for c in chunks]
+        expected = [(c["index"], c["start"], c["end"], c["sha256"]) for c in version.chunk_manifest]
+        if actual != expected or fingerprint(version.chunk_manifest) != version.chunk_fingerprint:
+            raise KnowledgeConflict("源切片已变化，不能使用原版本建立或读取索引")
+
+    @staticmethod
+    def _compatible(generation, version):
+        identity = dict(generation.embedding_identity)
+        contract = identity.pop("index_contract", None)
+        try:
+            embedding_identity(identity)
+        except (ValueError, TypeError):
+            return False
+        return (contract == dict(source=source_contract(version), embedding_fingerprint=fingerprint(identity))
+                and generation.dimension == identity["dimension"]
+                and generation.chunk_fingerprint == version.chunk_fingerprint)
+
+    def recover_interrupted_indexes(self, generation_ids):
+        """维护入口：确认这些构建任务已停止后调用；不在每个服务实例启动时全表改状态。"""
+        if not generation_ids:
+            return 0
+        with self._session.begin() as s:
+            result = s.execute(update(IndexGeneration).where(
+                IndexGeneration.id.in_(set(generation_ids)), IndexGeneration.status == "building"
+            ).values(status="failed", error_code="build_interrupted"))
+            return result.rowcount
 
     def scope(self, kb_ids):
         """显式知识库范围；空列表永不退回全库。未就绪项与可查范围分别返回。"""
@@ -212,11 +277,18 @@ class KnowledgeService:
                 version = s.get(KnowledgeVersion, publication.version_id)
                 generation = s.get(IndexGeneration, publication.generation_id)
                 material, reason = self._material(s, version)
-                if reason or generation.status != "ready" or generation.chunk_fingerprint != version.chunk_fingerprint or generation.embedding_identity.get("dimension") != generation.dimension:
+                if not reason:
+                    try:
+                        self._verify_chunks(s, version)
+                    except KnowledgeConflict:
+                        reason = "source_changed"
+                if reason or generation.status != "ready" or not self._compatible(generation, version):
                     unavailable.append(dict(document_id=doc.id, reason=reason or "index_not_ready"))
                     continue
                 ready.append(dict(kb_id=doc.kb_id, document_id=doc.id, version_id=version.id,
-                                  generation_id=generation.id, material_id=material.id))
+                                  generation_id=generation.id, material_id=material.id,
+                                  embedding_fingerprint=generation.embedding_identity["index_contract"]["embedding_fingerprint"],
+                                  index_fingerprint=index_fingerprint(generation.embedding_identity)))
             status = "partial" if ready and unavailable else "not_ready" if unavailable else "ready" if ready else "empty_library"
             return dict(status=status, material_ids=sorted({v["material_id"] for v in ready}), versions=ready, unavailable=unavailable)
 

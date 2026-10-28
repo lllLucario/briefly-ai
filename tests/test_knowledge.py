@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from briefly.db import Base, create_db_engine, foreign_key_problems
 from briefly.knowledge.models import IndexGeneration, KnowledgeDocument, KnowledgePublication, KnowledgeVersion
-from briefly.knowledge.service import KnowledgeConflict, KnowledgeNotFound, KnowledgeService
+from briefly.knowledge.service import KnowledgeConflict, KnowledgeNotFound, KnowledgeService, source_contract, fingerprint
 from briefly.materials import MaterialChunk, MaterialSection, MaterialStore
 
 
@@ -19,10 +19,16 @@ def resources():
     engine.dispose()
 
 
+def fake_identity(**overrides):
+    return {**dict(model="fake", revision="fixture-v1", dimension=2, max_tokens=512,
+                artifact_sha256={"model.onnx": "a" * 64, "tokenizer.json": "b" * 64},
+                pooling="CLS", query_prefix="", normalize=True), **overrides}
+
+
 def publish_fake(engine, version):
     """模拟后续构建器的元数据，完全不加载Embedding/索引，不表示真实索引已验收。"""
     with Session(engine) as s, s.begin():
-        generation = IndexGeneration(version_id=version.id, embedding_identity={"model":"fake","dimension":2},
+        generation = IndexGeneration(version_id=version.id, embedding_identity={**fake_identity(), "index_contract": dict(source=source_contract(version), embedding_fingerprint=fingerprint(fake_identity()))},
                                      dimension=2, chunk_fingerprint=version.chunk_fingerprint, status="ready")
         s.add(generation)
         s.flush()
@@ -79,7 +85,7 @@ def test_stage_version_preserves_publication_and_old_reference(resources):
     doc,new,created=svc.append_version(kb.id,doc.id,second.id,expected_revision=1,business_version="v2")
     assert created and doc.revision == 2 and new.number == 2
     assert svc.scope([kb.id])["material_ids"] == [first.id]
-    generation=svc.plan_index(kb.id,doc.id,new.id,{"model":"fake","dimension":2})
+    generation=svc.plan_index(kb.id,doc.id,new.id,fake_identity())
     assert generation.status == "planned"
     assert svc.scope([kb.id])["material_ids"] == [first.id]
     publish_fake(engine,new)
@@ -167,7 +173,7 @@ def test_publication_composite_foreign_keys(resources):
     kb=svc.create("库")
     da,va,_=svc.attach(kb.id,a.id)
     db,vb,_=svc.attach(kb.id,b.id)
-    generation=svc.plan_index(kb.id,db.id,vb.id,{"model":"fake","dimension":2})
+    generation=svc.plan_index(kb.id,db.id,vb.id,fake_identity())
     with pytest.raises(IntegrityError),Session(engine) as s,s.begin():
         s.add(KnowledgePublication(document_id=da.id,version_id=va.id,generation_id=generation.id))
         s.flush()
@@ -276,7 +282,7 @@ def test_business_label_dedup_and_invalid_generation_identity(resources):
     for identity in ({"model":"fake","dimension":0},{"dimension":2},{"model":"fake","dimension":True}):
         with pytest.raises(ValueError):
             svc.plan_index(kb.id,doc.id,ver.id,identity)
-    planned=svc.plan_index(kb.id,doc.id,ver.id,{"model":"fake","dimension":2})
+    planned=svc.plan_index(kb.id,doc.id,ver.id,fake_identity())
     assert svc.generations(kb.id,doc.id,ver.id)[0].id==planned.id
 
 
@@ -292,3 +298,100 @@ def test_reimport_identical_content_creates_new_version_without_resurrecting_old
     assert created and new.id != old.id and new.number==2
     assert svc.chunk(kb.id,doc.id,new.id,1)["content"]=="同样的制度原文"
     assert svc.resolve_reference(kb.id,ref)["status"]=="source_deleted"
+
+
+@pytest.mark.parametrize("change", [
+    {"model": "other"}, {"revision": "v2"}, {"dimension": 3}, {"max_tokens": 256},
+    {"query_prefix": "检索："}, {"pooling": "mean"}, {"normalize": False},
+    {"artifact_sha256": {"model.onnx": "c" * 64}},
+])
+def test_index_identity_binds_every_embedding_setting(resources, change):
+    from briefly.knowledge.service import index_fingerprint
+    engine, store, svc = resources
+    mat, _ = store.add_text("制度", "旧材料保留原块号。")
+    kb = svc.create("库")
+    doc, version, _ = svc.attach(kb.id, mat.id)
+    first = svc.plan_index(kb.id, doc.id, version.id, fake_identity())
+    second = svc.plan_index(kb.id, doc.id, version.id, fake_identity(**change))
+    assert first.status == second.status == "planned"
+    assert index_fingerprint(first.embedding_identity) != index_fingerprint(second.embedding_identity)
+    # 制品/预算改变不能继续使用旧代次的来源契约。
+    generation_id = publish_fake(engine, version)
+    with Session(engine) as s, s.begin():
+        generation = s.get(IndexGeneration, generation_id)
+        generation.embedding_identity = {**generation.embedding_identity, **change}
+    assert svc.scope([kb.id])["status"] == "not_ready"
+
+
+@pytest.mark.parametrize("change", [
+    {"revision": ""}, {"max_tokens": True}, {"max_tokens": 0}, {"normalize": 1},
+    {"pooling": None}, {"artifact_sha256": {}}, {"artifact_sha256": {"x": "bad"}},
+    {"query_prefix": None}, {"index_contract": {}},
+])
+def test_incomplete_embedding_identity_cannot_plan(resources, change):
+    _, store, svc = resources
+    mat, _ = store.add_text("资料", "正文")
+    kb = svc.create("库")
+    doc, version, _ = svc.attach(kb.id, mat.id)
+    with pytest.raises(ValueError):
+        svc.plan_index(kb.id, doc.id, version.id, fake_identity(**change))
+    assert svc.generations(kb.id, doc.id, version.id) == []
+
+
+def test_changed_source_and_chunk_config_invalidate_index(resources):
+    engine, store, svc = resources
+    mat, _ = store.add_text("资料", "不可原地重新切片")
+    kb = svc.create("库")
+    doc, version, _ = svc.attach(kb.id, mat.id)
+    generation_id = publish_fake(engine, version)
+    with Session(engine) as s, s.begin():
+        row = s.get(KnowledgeVersion, version.id)
+        row.chunk_config = {"strategy": "new-token-chunks", "version": 2, "parameters": {"tokens": 256}}
+    assert svc.scope([kb.id])["status"] == "not_ready"
+    with Session(engine) as s, s.begin():
+        s.get(KnowledgeVersion, version.id).chunk_config = version.chunk_config
+        s.get(IndexGeneration, generation_id).embedding_identity = {"model": "legacy", "dimension": 2}
+    assert svc.scope([kb.id])["status"] == "not_ready"  # 不为旧记录补猜身份
+    with Session(engine) as s, s.begin():
+        s.scalar(select(MaterialChunk).where(MaterialChunk.material_id == mat.id)).content = "已改写"
+    with pytest.raises(KnowledgeConflict):
+        svc.plan_index(kb.id, doc.id, version.id, fake_identity())
+    assert svc.scope([kb.id])["unavailable"][0]["reason"] == "source_changed"
+
+
+def test_restart_and_targeted_recovery_preserve_active_generation(tmp_path):
+    url = "sqlite:///" + (tmp_path / "recovery.db").as_posix()
+    engine = create_db_engine(url)
+    try:
+        store, svc = MaterialStore(engine), KnowledgeService(engine)
+        mat, _ = store.add_text("制度", "有效代次保留")
+        kb = svc.create("库")
+        doc, version, _ = svc.attach(kb.id, mat.id)
+        active = publish_fake(engine, version)
+        ref = svc.chunk(kb.id, doc.id, version.id, 1)["reference"]
+        interrupted = svc.plan_index(kb.id, doc.id, version.id, fake_identity(revision="v2"))
+        pending = svc.plan_index(kb.id, doc.id, version.id, fake_identity(max_tokens=256))
+        other_worker = svc.plan_index(kb.id, doc.id, version.id, fake_identity(pooling="mean"))
+        with Session(engine) as s, s.begin():
+            for generation_id in (interrupted.id, other_worker.id):
+                s.get(IndexGeneration, generation_id).status = "building"
+    finally:
+        engine.dispose()
+    for attempt in range(2):
+        engine = create_db_engine(url)
+        try:
+            svc = KnowledgeService(engine)
+            assert svc.scope([kb.id])["versions"][0]["generation_id"] == active
+            assert svc.recover_interrupted_indexes([interrupted.id, pending.id, active]) == (1 if attempt == 0 else 0)
+            rows = {g.id: g for g in svc.generations(kb.id, doc.id, version.id)}
+            assert rows[interrupted.id].status == "failed"
+            assert rows[interrupted.id].error_code == "build_interrupted"
+            assert rows[pending.id].status == "planned"
+            assert rows[other_worker.id].status == "building"
+            assert svc.resolve_reference(kb.id, ref)["status"] == "current"
+            # 同一原版本重建换代，引用身份不变。
+            if attempt == 0:
+                active = publish_fake(engine, version)
+            assert svc.chunk(kb.id, doc.id, version.id, 1)["reference"] == ref
+        finally:
+            engine.dispose()
