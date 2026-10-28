@@ -57,6 +57,9 @@ def fake_model():
                 sections[section].append(f"- {point}〔#{number}〕")
             return AIMessage("【周报标题】本周周报\n" + "\n".join(f"【{k}】\n" + ("\n".join(v) or "无") for k,v in sections.items()))
         latest = next(str(m.content) for m in reversed(messages) if isinstance(m, HumanMessage) and not m.additional_kwargs.get("internal"))
+        if "首行必须选择一个状态" in latest:
+            quote = re.search(r"【材料开始】\n(.*?)\n【材料结束】", latest, re.S)
+            return AIMessage("【可答性：可回答】" + (quote[1][:120] if quote else "资料未提及") + "〔依据1〕")
         if "证据缺口" in latest:
             if isinstance(messages[-1], ToolMessage):
                 return AIMessage("【一句话总结】仅依据当前输入整理。")
@@ -74,12 +77,12 @@ def fake_model():
 
 
 @contextmanager
-def live_app(root: Path, model_factory=fake_model):
+def live_app(root: Path, model_factory=fake_model, embeddings_factory=None):
     """只监听随机本地端口；不启用定时、真实飞书或邮件，退出关闭线程和数据库。"""
     root.mkdir(parents=True, exist_ok=True)
     overrides = dict(DB_PATH=str(root/"chat.db"), TRACKING_DIR=str(root/"tracking"),
                      FEISHU_APP_ID="", FEISHU_APP_SECRET="", FEISHU_USER_TOKEN_FILE=str(root/"no-token.json"),
-                     SMTP_USER="", SMTP_PASSWORD="")
+                     SMTP_USER="", SMTP_PASSWORD="", KNOWLEDGE_DIR=str(root/"knowledge"), EMBEDDING_DIR="")
     original = {k:getattr(config,k) for k in overrides}
     for k,v in overrides.items():
         setattr(config,k,v)
@@ -88,6 +91,16 @@ def live_app(root: Path, model_factory=fake_model):
     saver = sqlite_checkpointer(root/"chat.db")
     app = create_app(store=store, model_factory=model_factory,
         agent_factory=lambda s: Agent(model_factory(), store=s, checkpointer=saver), tracking_scheduler=False)
+    class BrowserEncoder:
+        identity = dict(model="browser-fixture", revision="v1", dimension=2, max_tokens=512,
+            artifact_sha256={"tokenizer.json":"a"*64, "model.onnx":"b"*64}, pooling="CLS", normalize=True, query_prefix="")
+        def token_length(self, text):
+            return len(text)
+        def embed_documents(self, texts):
+            return [[len(text), 1] for text in texts]
+        def embed_query(self, text):
+            return [len(text), 1]
+    app.state.knowledge_imports.encoder_factory = embeddings_factory or BrowserEncoder
     sock = socket.socket()
     # Windows 的动态端口范围可能含 Chromium 禁用的低端口（曾随机到4045）。
     # 直接原子绑定高位端口，冲突时重选；保留已绑定socket交给uvicorn，避免探测/启动竞态。

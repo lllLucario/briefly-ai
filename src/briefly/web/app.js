@@ -209,6 +209,7 @@ function materialTitle(id) {
 
 // ---------- 标签页 ----------
 async function activateTab(name, load = true) {
+    if (name !== "knowledge") window.pauseKnowledge?.();
     if (name !== "todos" && $("#todo-panel").open) $("#todo-panel").close();
     if ($("#material-panel").open) $("#material-panel").close(); // 从材料详情转去对话、周报、待办时先关闭
     const btn = document.querySelector(`.tabs button[data-tab="${name}"]`);
@@ -222,6 +223,7 @@ async function activateTab(name, load = true) {
       chat: ["办公助理", "从一段文字、一份文档，开始今天的工作。"],
       todos: ["待办与进展", "明确任务，关联材料，留下每一步进展。"],
       materials: ["你的材料库", "把工作素材放在一起，随时取用、持续关注。"],
+      knowledge: ["企业资料与依据", "明确范围，核对原文，让每一个回答有据可查。"],
       weekly: ["本周，值得记录", "收集、核对、生成。每一份周报，都有据可依。"],
     };
     $("#page-title").textContent = headings[name][0];
@@ -230,6 +232,7 @@ async function activateTab(name, load = true) {
     if (name === "materials") await Promise.all([loadMaterials(), loadTrackingSummary()]);
     if (name === "todos") await Promise.all([loadMaterials(), loadTodos()]);
     if (name === "weekly") await Promise.all([loadMaterials(), loadWeekly()]);
+    if (name === "knowledge") await window.loadKnowledge?.();
 }
 document.querySelectorAll(".tabs button").forEach((btn) => {
   btn.addEventListener("click", () => activateTab(btn.dataset.tab));

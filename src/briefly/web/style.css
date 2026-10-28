@@ -583,6 +583,7 @@ dialog h3 { font-size: 18px; font-weight: 600; }
   .tabs { order: 3; width: 100%; gap: 5px; }
   .tabs button { flex: 1; padding: 6px 8px; height: 36px; font-size: 12px; justify-content: center; }
   .tabs .icon { width: 16px; height: 16px; }
+  .tabs button { min-width: 0; }
   .workspace-heading { padding: 18px 18px 16px; }
   .workspace-heading h1 { font-size: 21px; }
   .workspace-heading .eyebrow { font-size: 9px; letter-spacing: 1px; }
@@ -1163,3 +1164,18 @@ button.note-toggle { width: 100%; min-height: 62px; display: flex; align-items: 
 .rich-preview blockquote { margin: .5em 0; padding: 2px 12px; border-left: 3px solid var(--line); color: var(--muted); }
 .rich-preview a { color: var(--accent); }
 .detail-todos > b { margin-right: 8px; }
+/* Knowledge workspace: scoped drafts, provenance and preview. */
+.knowledge-workspace{display:flex;flex-direction:column;gap:16px}
+.knowledge-workspace input[type=number]{max-width:130px}
+.knowledge-section{padding:20px 0;border-top:1px solid var(--line)}
+.knowledge-section h3{margin:0 0 12px}
+.knowledge-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 0;border-bottom:1px solid var(--line)}
+.knowledge-row label,.knowledge-row strong{flex:1;min-width:180px;overflow-wrap:anywhere}
+.knowledge-row p{flex-basis:100%;margin:0}
+.knowledge-consent{display:block;margin:16px 0 8px;line-height:1.6}
+#kb-result{margin-top:20px;overflow-wrap:anywhere}
+#kb-result button{margin:4px}
+#kb-preview,#kb-source{width:min(860px,92vw);max-height:85vh;overflow:auto}
+#kb-preview article{padding:12px 0;border-bottom:1px solid var(--line)}
+#kb-preview pre,#kb-source pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;line-height:1.7}
+@media(max-width:420px){.tabs{gap:2px}.tabs button{padding:6px 4px;gap:3px}.tabs .icon{display:none}}

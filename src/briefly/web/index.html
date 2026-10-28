@@ -39,6 +39,7 @@
       <button data-tab="todos" class="active" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>待办</button>
       <button data-tab="chat"><svg class="icon" aria-hidden="true"><use href="#i-chat"/></svg>助理</button>
       <button data-tab="materials"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>材料</button>
+      <button data-tab="knowledge"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>知识库</button>
       <button data-tab="weekly"><svg class="icon" aria-hidden="true"><use href="#i-report"/></svg>周报</button>
     </nav>
     <div class="workspace-label">个人工作台</div>
@@ -494,6 +495,43 @@
     <div class="row gap end"><button id="picker-done" class="primary"><svg class="icon action-icon" aria-hidden="true"><use href="#i-tick"/></svg>确定</button></div>
   </dialog>
 
+  <main id="tab-knowledge" class="tab">
+    <section class="panel grow knowledge-workspace">
+      <div class="row gap"><label class="stack">当前知识库<select id="kb-select"><option value="">选择知识库</option></select></label>
+        <label class="stack grow">新知识库名称<input id="kb-name" maxlength="200" placeholder="例如：办公制度"></label><button id="kb-create" class="primary">创建知识库</button></div>
+      <p id="kb-message" role="status" class="muted small"></p>
+      <div id="kb-content" class="hidden">
+        <section class="knowledge-section"><h3>资料入库</h3>
+          <p class="muted small">每批最多16份、合计50MB。解析后先核对切片，再确认建立索引。结构未确认的资料会保留复核提醒。</p>
+          <p id="kb-update-target" class="muted small"></p>
+          <div class="row gap wrap"><label class="stack">文件<input id="kb-files" type="file" multiple accept=".txt,.md,.doc,.docx,.pdf,.xlsx,.csv"></label>
+            <label class="stack">切片目标<input id="kb-tokens" type="number" min="32" max="512" value="256" aria-label="切片目标token数"></label>
+            <button id="kb-upload" class="primary">上传并预览</button><button id="kb-cancel-update" class="ghost hidden">取消更新</button></div>
+          <div id="kb-jobs" aria-live="polite"></div>
+        </section>
+        <section class="knowledge-section"><h3>文档与检索范围</h3>
+          <label><input id="kb-all" type="checkbox" checked> 检索当前库全部有效文档</label>
+          <div id="kb-documents"></div>
+        </section>
+        <section class="knowledge-section"><h3>依据问答</h3>
+          <label class="stack" for="kb-question">问题<textarea id="kb-question" rows="3" maxlength="4000" placeholder="例如：上海住宿上限及适用对象是什么？"></textarea></label>
+          <label class="knowledge-consent"><input id="kb-external" type="checkbox"> 允许将本次问题、标题和召回片段经规则处理后发送给已配置的外部生成服务</label>
+          <p class="muted small">规则处理常见邮箱、手机号、密钥和指定字段，不保证识别所有企业敏感信息。未勾选时只在本地核验依据。</p>
+          <details><summary>更多范围与外发设置</summary><label class="stack">额外隐藏的字段（每行一个，最多50项）<textarea id="kb-private" rows="2"></textarea></label>
+            <label><input id="kb-partial" type="checkbox"> 范围有未就绪文档时，允许仅依据可用部分回答</label></details>
+          <button id="kb-ask" class="primary">核验依据并回答</button>
+          <div id="kb-result" aria-live="polite"></div>
+        </section>
+      </div>
+    </section>
+  </main>
+  <dialog id="kb-preview"><h3>核对原文切片</h3><p id="kb-preview-info" class="muted small"></p><div id="kb-preview-body"></div>
+    <div class="row gap"><button id="kb-preview-prev" class="ghost">上一页</button><button id="kb-preview-next" class="ghost">下一页</button></div>
+    <p id="kb-preview-error" role="status"></p><label><input id="kb-preview-checked" type="checkbox"> 已核对预览和切片配置，确认建立索引</label>
+    <div class="row gap end"><button id="kb-preview-close" class="ghost">关闭</button><button id="kb-confirm" class="primary" disabled>确认入库</button></div>
+  </dialog>
+  <dialog id="kb-source"><h3 id="kb-source-title"></h3><p id="kb-source-info" class="muted small"></p><pre id="kb-source-text"></pre><div class="row end"><button id="kb-source-close" class="primary">关闭</button></div></dialog>
+
   <!-- 出处弹窗 -->
   <dialog id="source-dialog">
     <h3 id="source-title"></h3>
@@ -508,5 +546,6 @@
   <script src="/web/weekly.js"></script>
   <script src="/web/todos.js"></script>
   <script src="/web/handoffs.js"></script>
+  <script src="/web/knowledge.js"></script>
 </body>
 </html>
