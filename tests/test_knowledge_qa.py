@@ -21,6 +21,9 @@ def test_external_confirmation_and_empty_scope_never_create_model(indexed):
     result = qa.answer(kb.id, "如何审批？")
     assert result["status"] == "external_confirmation_required" and result["model_called"] is False
     assert qa.answer(kb.id, "总结全文")["status"] == "workflow_required"
+    assert qa.answer(kb.id, "总结这份文档")["status"] == "workflow_required"
+    assert qa.answer(kb.id, "帮我总结一下")["status"] == "workflow_required"
+    assert qa.answer(kb.id, "它什么时候？")["status"] == "clarification_required"
     assert qa.answer(kb.id, "如何审批？", document_ids=[])["status"] == "empty_scope"
 
 

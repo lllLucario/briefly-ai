@@ -38,6 +38,9 @@ def test_import_confirm_external_choice_and_original_reference(web_page):
     page = web_page
     open_knowledge(page)
     create(page, "办公制度")
+    page.locator("#kb-question").fill("它什么时候？")
+    page.locator("#kb-ask").click()
+    expect(page.locator("#kb-result")).to_contain_text("请补充问题")
     import_file(page)
     expect(page.locator("#kb-documents")).to_contain_text("已有有效索引")
     page.locator("#kb-question").fill("什么时候审批？")

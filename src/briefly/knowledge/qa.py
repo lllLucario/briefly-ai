@@ -41,7 +41,11 @@ class KnowledgeQA:
                allow_partial=False, private_values=()):
         with self.retrieval.imports.knowledge._session() as s:
             self.retrieval.imports.knowledge._kb(s, kb_id)
-        if re.search(r"全文总结|总结(?:整份|全部|全文)|生成周报|润色(?:整份|全文)", question):
+        if re.fullmatch(r"(?:它|这个|那个|刚才那个|上面那个)(?:呢|是什么|什么时候|要多久|怎么做|如何处理)[？?。!\s]*", question.strip()):
+            return dict(status="clarification_required", answer="请明确指代的对象和需要确认的信息；本次知识问答不携带之前的聊天历史。", evidence=[], model_called=False)
+        full_document = re.search(r"全文总结|(?:总结|概括|梳理|润色)(?:一下)?(?:整份|整个|全部|全文|所有|这份|该份|这篇|本文)|生成周报", question)
+        bare_summary = re.fullmatch(r"(?:帮我)?(?:总结|概括|梳理|润色)(?:一下|下)?[吧。？?!\s]*", question.strip())
+        if full_document or bare_summary:
             return dict(status="workflow_required", answer="这类请求需要遍历完整材料，请在助理中选择对应办公能力，不能用知识问答Top-K替代全文处理。",
                         evidence=[], model_called=False)
         result = self.retrieval.search(kb_id, question, document_ids=document_ids, include_document_context=True)

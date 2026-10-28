@@ -519,7 +519,7 @@ def create_app(
     register_tracking(app)  # 追踪：追踪源、文件、版本与差异、检查更新、材料的追踪开关
     register_weekly(app)  # 周报：一周一份，审核清单 → 生成；定时、设置、提醒
     register_todos(app)  # 待办：父子结构、材料关联、活动；进展进入周报的审核清单
-    register_knowledge(app,model_factory)  # 元数据/引用；显式引用问答复用Agent，不自动建索引
+    register_knowledge(app,model_factory)  # 知识库入库/索引、范围召回与引用问答
     from .handoffs import register as register_handoffs
     register_handoffs(app, get_agent, thread_locks, model_factory)
 

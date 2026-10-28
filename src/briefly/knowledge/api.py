@@ -1,4 +1,4 @@
-"""知识库元数据、原文引用及显式引用问答；不提供伪造索引就绪的入口。"""
+"""知识库入库、范围召回、原文引用与问答；不提供伪造索引就绪的入口。"""
 from typing import Annotated
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
