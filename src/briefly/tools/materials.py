@@ -14,7 +14,7 @@ from ..conflicts import ATTRIBUTES, UNRESOLVED, classify, conflict_problems, det
 from ..context import Context
 from ..context_store import ContextStore
 from ..llm import create_chat_model
-from ..materials import MaterialStore, wrap_material
+from ..materials import MaterialChunk, MaterialStore, wrap_material
 from ..skills import read_prompt
 from ..summarize import Source, extract_items, synthesize
 from ..tool_budget import output_limit
@@ -178,9 +178,13 @@ def material_tools(
             parts.append(part)
             selected_ids.append(h.material_id)
             from ..knowledge.evidence import material_reference_artifact
-            _, _, source_chunk = store.read_chunk(h.material_id, h.chunk)
-            if source_chunk:
-                references.extend(material_reference_artifact(store, h.material_id, source_chunk.start, source_chunk.end)["knowledge_references"])
+            from sqlalchemy import select
+            from sqlalchemy.orm import Session
+            with Session(store.engine) as session:
+                bounds = session.execute(select(MaterialChunk.start, MaterialChunk.end).where(
+                    MaterialChunk.material_id == h.material_id, MaterialChunk.index == h.chunk)).one_or_none()
+            if bounds:
+                references.extend(material_reference_artifact(store, h.material_id, bounds.start, bounds.end)["knowledge_references"])
             size += len(part)
         # artifact只记录真正输出的来源，不能把可访问全库当成已读依据。
         from ..knowledge.evidence import material_quality_notice

@@ -26,7 +26,11 @@ def store():
 
 def invoke(store, name, material_ids=None, **kwargs):
     tool = next(tool for tool in material_tools(store) if tool.name == name)
-    return tool.func(runtime=SimpleNamespace(context=Context(material_ids=material_ids)), **kwargs)
+    result = tool.func(runtime=SimpleNamespace(context=Context(material_ids=material_ids)), **kwargs)
+    if tool.response_format == "content_and_artifact":
+        assert isinstance(result, tuple) and len(result) == 2
+        return result[0]
+    return result
 
 
 @contextmanager
@@ -79,7 +83,8 @@ def test_single_chunk_loads_only_requested_body_and_preserves_reply(store, monke
     assert actual == wrap_material(f"【材料 {material.id}《长材料》第 {target.index}/{len(chunks)} 块{where}】", target.content)
     assert [(rid, body) for kind, rid, body in rows if kind is MaterialChunk] == [(target.id, True)]
     assert all(not body for kind, _, body in rows if kind is Material)
-    assert len(statements) == 1
+    # 稳定引用/质量快照允许读取元数据，但原文仍只查询目标块一次。
+    assert len([statement for statement in statements if "material_chunks" in statement.lower()]) == 1
 
 
 @pytest.mark.parametrize("chunk", [None, 0, -1, 9999])
