@@ -149,6 +149,12 @@ def register(app: FastAPI,model_factory):
     @app.delete("/knowledge-bases/{kb_id}/documents/{doc_id}", status_code=204, tags=["知识库"])
     def remove(kb_id: str, doc_id: str, expected_revision: int):
         service.remove_document(kb_id, doc_id, expected_revision=expected_revision)
+        try:
+            app.state.knowledge_imports.lifecycle.clean_removed()
+        except Exception:
+            # tombstone保留补偿标记；逻辑删除已生效，重启维护可安全重试派生清理。
+            import logging
+            logging.getLogger(__name__).warning("索引派生清理延后，已移除资料仍不可检索")
 
     @app.get("/knowledge-bases/{kb_id}/documents/{doc_id}/versions/{version_id}/indexes", tags=["知识库"])
     def indexes(kb_id: str, doc_id: str, version_id: str):

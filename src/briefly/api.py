@@ -257,6 +257,10 @@ def create_app(
     async def lifespan(app: FastAPI):
         scheduler = None
         app.state.knowledge_imports.recover_expired()
+        try:
+            app.state.knowledge_imports.lifecycle.clean_removed()
+        except Exception:
+            logging.getLogger(__name__).warning("索引派生清理延后，逻辑删除约束继续生效")
         if tracking_scheduler:
             from .feishu.messages import register_channel
             from .weekly.schedule import BackgroundScheduler
