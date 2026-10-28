@@ -1,5 +1,5 @@
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy.orm import Session
 
 from briefly.agent import Agent
@@ -80,3 +80,33 @@ def test_clearing_current_report_does_not_wash_conversation_quality_snapshot(sto
         s.get(Material, material.id).parse_report = {}
     assert "需核对原件" in agent.chat("现在继续回答")
     assert model.calls == []
+
+
+def test_legacy_chat_inherits_existing_knowledge_snapshot_before_first_read(store):
+    from briefly.knowledge.service import KnowledgeService
+    material = restricted(store)
+    svc = KnowledgeService(store.engine)
+    kb = svc.create("资料库")
+    svc.attach(kb.id, material.id)
+    with Session(store.engine) as s, s.begin():
+        s.get(Material, material.id).parse_report = {}
+    model = fake()
+    assert "需核对原件" in Agent(model, tools=[], store=store).chat("解释归属", material_ids=[material.id])
+    assert model.calls == []
+
+
+def test_legacy_read_artifact_keeps_only_associated_stable_knowledge_refs(store):
+    from briefly.knowledge.service import KnowledgeService
+    material, _ = store.add_text("已确认材料", "预订前申请审批。")
+    other, _ = store.add_text("无关材料", "别的事项。")
+    svc = KnowledgeService(store.engine)
+    kb = svc.create("库")
+    _, version, _ = svc.attach(kb.id, material.id)
+    svc.attach(kb.id, other.id)
+    model = fake(tool_msg("read_material", {"material_id": material.id}), text_msg("已阅读原文。"))
+    agent = Agent(model, tools=[], store=store)
+    agent.chat("读取材料")
+    message = next(m for m in agent.history if isinstance(m, ToolMessage) and m.name == "read_material")
+    references = message.artifact["knowledge_references"]
+    assert references and {r["version_id"] for r in references} == {version.id}
+    assert svc.resolve_reference(kb.id, references[0]["reference"])["content"] == material.content

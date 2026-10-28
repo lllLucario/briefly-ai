@@ -43,9 +43,40 @@ def material_quality_notice(store, material_ids):
         except ValueError:
             continue
         blocked.update(constraints(material.parse_report, 0, material.char_count))
+        # 旧材料工具也必须继承知识版本快照的更严限制，不能清空当前报告绕过。
+        from sqlalchemy import select
+        from sqlalchemy.orm import Session
+        from .models import KnowledgeVersion
+        with Session(store.engine) as session:
+            for version in session.scalars(select(KnowledgeVersion).where(KnowledgeVersion.material_id == material_id)):
+                blocked.update(constraints(version.source_snapshot.get("parse_quality", {}), 0, material.char_count))
+                for chunk in version.chunk_manifest:
+                    blocked.update(chunk.get("constraints", {}))
     if not blocked:
         return None
     return "本次关联材料存在尚未确认的结构，需核对原件后再继续。\n" + "\n".join(NOTES[key] for key in sorted(blocked))
+
+
+def material_reference_artifact(store, material_id, start, end):
+    """只从实际读取范围关联已存在的知识版本；未入库材料不伪造知识库身份。"""
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+    from .models import KnowledgeDocument, KnowledgeVersion
+    material = store.get(material_id, content=False)
+    references = []
+    with Session(store.engine) as session:
+        rows = session.execute(select(KnowledgeVersion, KnowledgeDocument)
+            .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeVersion.document_id)
+            .where(KnowledgeVersion.material_id == material_id,
+                   KnowledgeVersion.content_hash == material.content_hash)).all()
+        for version, document in rows:
+            for chunk in version.chunk_manifest:
+                if chunk["start"] < end and chunk["end"] > start:
+                    references.append(dict(kb_id=document.kb_id, document_id=document.id,
+                        version_id=version.id, reference=f"kbref:{version.id}:{chunk['index']}:{chunk['sha256']}"))
+    return dict(material_ids=[material_id], read_range=dict(start=start, end=end),
+        content_hash=material.content_hash, knowledge_references=references,
+        quality_notice=material_quality_notice(store, [material_id]))
 
 
 def restricted_answer(evidence):

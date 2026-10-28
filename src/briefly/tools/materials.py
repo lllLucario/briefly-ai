@@ -106,10 +106,10 @@ def material_tools(
         header = f"【{name}的章节大纲（编号用于 read_material 的 section 参数）】"  # 不写块号、字数：会被当成文档内容
         return "\n".join([wrap_material(header, "\n".join(lines)), *(f"解析提示：{n}" for n in notes)])
 
-    @tool
+    @tool(response_format="content_and_artifact")
     def read_material(
         material_id: int, runtime: ToolRuntime[Context], chunk: int | None = None, section: int | None = None
-    ) -> str:
+    ) -> tuple[str, dict]:
         """读取某份材料。chunk 是块号（从 1 开始，每块约 1500 字）；section 是 get_outline 里的章节编号。两者只填一个，都不填时读第 1 块。
         返回内容会注明共几块；需要完整内容时按顺序读完所有块。章节过长时只返回前几块，并注明从哪一块接着读。"""
         if chunk is not None and section is not None:
@@ -123,7 +123,8 @@ def material_tools(
                 raise ValueError(f"块号超出范围，材料 {material_id} 共 {count} 块")
             name = f"材料 {material_id}《{title}》"
             where = f"（{current.section}）" if current.section else ""
-            return wrap_material(f"【{name}第 {chunk}/{count} 块{where}】", current.content)
+            from ..knowledge.evidence import material_reference_artifact
+            return wrap_material(f"【{name}第 {chunk}/{count} 块{where}】", current.content), material_reference_artifact(store, material_id, current.start, current.end)
 
         material = store.get(material_id, content=False)
         name = f"材料 {material_id}《{material.title}》"
@@ -135,7 +136,8 @@ def material_tools(
         max_chars = _section_chars()
         text, length = store.section_text(material_id, target.start, target.end, max_chars)
         if text is not None:
-            return wrap_material(f"【{name}章节 {section}：{target.path}（{_blocks(first, last)}）】", text)
+            from ..knowledge.evidence import material_reference_artifact
+            return wrap_material(f"【{name}章节 {section}：{target.path}（{_blocks(first, last)}）】", text), material_reference_artifact(store, material_id, target.start, target.end)
 
         # 章节太长：按块返回开头的一部分，并说明从哪里接着读
         taken = store.chunk_prefix(material_id, first, last, max_chars)
@@ -145,7 +147,8 @@ def material_tools(
             f"较长，本次返回{_blocks(first, end)}】"
         )
         body = wrap_material(header, "\n".join(c.content for c in taken))
-        return f"{body}\n本章节还未读完，请继续用 read_material(material_id={material_id}, chunk={end + 1}) 读到第 {last} 块。"
+        from ..knowledge.evidence import material_reference_artifact
+        return f"{body}\n本章节还未读完，请继续用 read_material(material_id={material_id}, chunk={end + 1}) 读到第 {last} 块。", material_reference_artifact(store, material_id, taken[0].start, taken[-1].end)
 
     @tool(response_format="content_and_artifact")
     def search_materials(
@@ -162,7 +165,7 @@ def material_tools(
         hits = store.search(keywords, scope)[: max(1, limit)]
         if not hits:
             return f"没有找到包含“{keywords}”的内容。", {}
-        parts, selected_ids, size, budget = [], [], 0, int((output_limit() - 200) * 1.5)
+        parts, selected_ids, references, size, budget = [], [], [], 0, int((output_limit() - 200) * 1.5)
         for n, h in enumerate(hits):
             part = wrap_material(
                 f"【材料 {h.material_id}《{h.title}》第 {h.chunk} 块{f'（{h.section}）' if h.section else ''}，"
@@ -174,11 +177,16 @@ def material_tools(
                 break
             parts.append(part)
             selected_ids.append(h.material_id)
+            from ..knowledge.evidence import material_reference_artifact
+            _, _, source_chunk = store.read_chunk(h.material_id, h.chunk)
+            if source_chunk:
+                references.extend(material_reference_artifact(store, h.material_id, source_chunk.start, source_chunk.end)["knowledge_references"])
             size += len(part)
         # artifact只记录真正输出的来源，不能把可访问全库当成已读依据。
         from ..knowledge.evidence import material_quality_notice
         selected_ids = list(dict.fromkeys(selected_ids))
         return "\n\n".join(parts), {"material_ids": selected_ids,
+            "knowledge_references": references,
             "quality_notice": material_quality_notice(store, selected_ids)}
 
     @tool(response_format="content_and_artifact")
@@ -228,6 +236,9 @@ def material_tools(
             "dropped": extraction.dropped,
             "items": [asdict(i) for i in extraction.items],  # 机器可读的出处：source 为“材料号-块号”
         }
+        from ..knowledge.evidence import material_reference_artifact
+        artifact["knowledge_references"] = [reference for material_id in titles
+            for reference in material_reference_artifact(store, material_id, 0, store.get(material_id, content=False).char_count)["knowledge_references"]]
         # 出处按要点所在章节标：一块常跨两个章节，按块起点标会把后一章的要点标成前一章，
         # 模型读到“讲约束规则的要点标在角色设定下”会当成文档自己标错了（2026-10-15 实测）
         item_labels = [_item_label(i, labels, outlines, titles) for i in extraction.items]
