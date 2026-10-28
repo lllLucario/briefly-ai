@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 import pytest
+pytest.importorskip("sqlite_vec", reason="知识入库回归需安装.[rag]")
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 

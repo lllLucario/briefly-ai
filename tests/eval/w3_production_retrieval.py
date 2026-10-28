@@ -80,7 +80,7 @@ def main():
         summary = dict(events=len(events), answerable=len(answerable),
             fully_covered=sum(e.get("found") == e["groups"] for e in answerable),
             unanswerable=len(negatives), negatives_with_candidates=sum(e.get("candidates", 0) > 0 for e in negatives),
-            external_generation_calls=0, parameters={**PARAMETERS, "document_context": args.document_context}, model=encoder.identity,
+            external_generation_calls=0, parameters={**PARAMETERS, "version":2 if args.document_context else 1, "document_context": args.document_context}, model=encoder.identity,
             scope_note="单个隔离评测库按文档显式范围，不模拟业务版本替换；不等于答案准确率")
     finally:
         engine.dispose()

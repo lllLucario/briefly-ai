@@ -1,4 +1,5 @@
 import pytest
+pytest.importorskip("sqlite_vec", reason="知识索引接口回归需安装.[rag]")
 from fastapi.testclient import TestClient
 
 from briefly.api import create_app

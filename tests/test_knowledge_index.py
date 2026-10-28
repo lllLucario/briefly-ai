@@ -1,6 +1,7 @@
 import math
 
 import pytest
+pytest.importorskip("sqlite_vec", reason="本地索引回归需安装.[rag]")
 from sqlalchemy.orm import Session
 
 from briefly.db import create_db_engine

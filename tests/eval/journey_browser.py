@@ -49,6 +49,8 @@ class CallBudget(BaseCallbackHandler):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--real-model", action="store_true")
+    parser.add_argument("--knowledge", action="store_true", help="只走原创知识库三场景，不执行待办/周报保存")
+    parser.add_argument("--embedding-dir", type=Path, help="知识走查的已准备离线Embedding目录")
     parser.add_argument("-n", type=int, default=1)
     parser.add_argument("--max-calls", type=int, default=12, help="每轮逻辑模型调用上限")
     parser.add_argument("--channel", default=None, help="如msedge；默认使用已安装的Playwright Chromium")
@@ -56,6 +58,13 @@ def main():
     args = parser.parse_args()
     if args.n < 1 or args.max_calls < 1:
         parser.error("运行次数与调用上限必须为正数")
+    if args.knowledge and args.real_model and not args.embedding_dir:
+        parser.error("真实知识走查需指定离线Embedding目录")
+    embeddings_factory = None
+    if args.knowledge and args.embedding_dir:
+        from briefly.llm import create_local_embeddings
+        encoder = create_local_embeddings(str(args.embedding_dir))
+        embeddings_factory = lambda: encoder
     out = args.out/datetime.now(ZoneInfo("Australia/Sydney")).strftime("%Y%m%d-%H%M%S")
     out.mkdir(parents=True)
     results = []
@@ -72,7 +81,7 @@ def main():
                     return model
                 started = time.monotonic()
                 record = {"run":index,"real_model":args.real_model,"ok":False}
-                with live_app(out/f"run-{index}", factory) as url:
+                with live_app(out/f"run-{index}", factory, embeddings_factory=embeddings_factory) as url:
                     context = browser.new_context(viewport={"width":1440,"height":1000}, timezone_id="Australia/Sydney")
                     context.route("**/*", lambda route: route.continue_() if route.request.url.startswith(url+"/") else route.abort())
                     page = context.new_page()
@@ -81,7 +90,11 @@ def main():
                     page.on("pageerror", lambda error: errors.append(error.stack or str(error)))
                     try:
                         page.goto(url)
-                        record.update(run_journey(page, screenshot=out/f"run-{index}.png"))
+                        if args.knowledge:
+                            from browser.knowledge_flow import run_knowledge_journey
+                            record.update(run_knowledge_journey(page, screenshot=out/f"run-{index}.png"))
+                        else:
+                            record.update(run_journey(page, screenshot=out/f"run-{index}.png"))
                         assert not errors, errors
                         record["ok"] = True
                     except Exception as error:

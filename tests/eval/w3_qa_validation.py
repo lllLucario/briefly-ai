@@ -64,7 +64,8 @@ def main():
     finally:
         engine.dispose()
     summary = dict(events=len(events), states=dict(Counter(e["status"] for e in events)),
-                   model_invocations=sum(e.get("model_called", False) for e in events),
+                   qa_requests_with_generation=sum(e.get("model_called", False) for e in events),
+                   provider_call_count="本脚本未逐次统计共享检查链的重写调用",
                    note="状态/引用格式不是答案正确率；需人工核对主体、条件、版本和引用支持")
     (output / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False))
