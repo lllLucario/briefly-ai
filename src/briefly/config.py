@@ -31,6 +31,8 @@ CHUNK_OVERLAP = int(os.getenv("BRIEFLY_CHUNK_OVERLAP", "150"))
 MAX_UPLOAD_MB = int(os.getenv("BRIEFLY_MAX_UPLOAD_MB", "10"))
 # W3知识入库：覆盖排队、解析及DOC回退后Docling的整文件总预算。
 PARSE_TIMEOUT_S = max(1, int(os.getenv("BRIEFLY_PARSE_TIMEOUT_S", "120")))
+KNOWLEDGE_DIR = os.getenv("BRIEFLY_KNOWLEDGE_DIR", "data/knowledge")
+EMBEDDING_DIR = os.getenv("BRIEFLY_EMBEDDING_DIR", "")
 # 旧版Word本地转换；不配置时查PATH及常见LibreOffice安装位置。
 LIBREOFFICE_PATH = os.getenv("BRIEFLY_LIBREOFFICE", "")
 DOC_CONVERSION_TIMEOUT_S = max(1, int(os.getenv("BRIEFLY_DOC_CONVERSION_TIMEOUT_S", "90")))

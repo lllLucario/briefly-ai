@@ -256,6 +256,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         scheduler = None
+        app.state.knowledge_imports.recover_expired()
         if tracking_scheduler:
             from .feishu.messages import register_channel
             from .weekly.schedule import BackgroundScheduler

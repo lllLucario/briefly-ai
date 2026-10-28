@@ -38,6 +38,17 @@ def test_title_budget_offsets_and_no_punctuation_only_tail():
     assert "".join(c.content for c in chunks) == text
 
 
+def test_table_rows_are_kept_and_headers_enter_each_continuation():
+    text = "| 地点 | 上限 |\n| --- | --- |\n" + "".join(f"| 城市{i} | {i+500} |\n" for i in range(12))
+    _, chunks = token_slices(text, "制度", True, Encoder(), tokens=96)
+    assert len(chunks) > 1
+    assert "".join(c.content for c in chunks) == text
+    assert all(c.content.startswith("|") and c.content.endswith("\n") for c in chunks)
+    assert all("| 地点 | 上限 |" in c.embedding_text for c in chunks)
+    with pytest.raises(ValueError, match="表格单行"):
+        token_slices("| A | B |\n|---|---|\n| " + "x" * 200 + " | b |", "表", True, Encoder(), tokens=64)
+
+
 def test_new_slice_versions_keep_old_material_and_reference(tmp_path):
     engine = create_db_engine("sqlite:///" + (tmp_path / "slices.db").as_posix())
     try:

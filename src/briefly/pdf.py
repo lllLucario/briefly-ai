@@ -46,10 +46,14 @@ def load_pdf(data: bytes) -> LoadedDocument:
         "structure": structure,
         "removed_lines": len(removed),
         "removed": _summarize(removed),
+        # pypdf的文字行提取没有恢复原表格逻辑格；不能借纯文本声称关系完整。
+        "table_structure_status": "partial",
+        "table_extraction": "text-only-unverified",
         "warnings": [f"第 {_page_list(empty)} 页几乎没有文字（可能是图片、扫描页或封面），这些页的内容可能缺失"]
         if empty
         else [],
     }
+    report["warnings"].append("PDF当前按文字行提取，表格行列及单元格对应关系未验证；需核对原件")
     return LoadedDocument(text, markdown=structure is not None, report=report)
 
 

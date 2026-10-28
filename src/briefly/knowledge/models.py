@@ -92,3 +92,28 @@ class KnowledgePublication(Base):
     document_id: Mapped[str] = mapped_column(ForeignKey("knowledge_documents.id"), primary_key=True)
     version_id: Mapped[str] = mapped_column(String(32))
     generation_id: Mapped[str] = mapped_column(String(32))
+
+
+class KnowledgeImport(Base):
+    __tablename__ = "knowledge_imports"
+    __table_args__ = (UniqueConstraint("kb_id", "request_key"),
+        CheckConstraint("status IN ('queued','parsing','preview','indexing','ready','failed')"))
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    kb_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.id"), index=True)
+    request_key: Mapped[str] = mapped_column(String(200))
+    request_fingerprint: Mapped[str] = mapped_column(String(64))
+    filename: Mapped[str] = mapped_column(String(200))
+    source_key: Mapped[str] = mapped_column(String(200))
+    expected_revision: Mapped[int] = mapped_column(Integer)
+    business_version: Mapped[str | None] = mapped_column(String(100))
+    tokens: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16), default="queued")
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    error: Mapped[str | None] = mapped_column(Text)
+    material_id: Mapped[int | None] = mapped_column(ForeignKey("materials.id", ondelete="SET NULL"))
+    version_id: Mapped[str | None] = mapped_column(ForeignKey("knowledge_versions.id"))
+    generation_id: Mapped[str | None] = mapped_column(ForeignKey("knowledge_index_generations.id"))
+    preview: Mapped[dict | None] = mapped_column(JSON)
+    lease_token: Mapped[str | None] = mapped_column(String(32))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)

@@ -161,12 +161,14 @@ class KnowledgeService:
         return version, True
 
     def stage_slices(self, kb_id, material_id, source_key, chunk_config, slices, *,
-                     expected_revision=0, business_version=None):
+                     expected_revision=0, business_version=None, guard=None, on_version=None):
         """确认预览后的新知识版本；复用源材料，绝不原地重切旧材料。"""
         if not source_key.strip() or len(source_key) > 200:
             raise ValueError("来源标识须为1～200字")
         with self._session.begin() as s:
             self._kb(s, kb_id)
+            if guard:
+                guard(s)
             material = s.get(Material, material_id)
             if material is None:
                 raise KnowledgeNotFound("源材料不存在")
@@ -175,7 +177,7 @@ class KnowledgeService:
             if any(c.start < 0 or c.end <= c.start or c.end > len(material.content)
                    or c.content != material.content[c.start:c.end] for c in slices):
                 raise KnowledgeConflict("预览原文范围已变化")
-            if chunk_config.get("strategy") != "title-token-offsets" or chunk_config.get("version") != 1:
+            if chunk_config.get("strategy") != "title-token-offsets" or chunk_config.get("version") not in {1, 2}:
                 raise ValueError("未知切片配置")
             doc = s.scalar(select(KnowledgeDocument).where(
                 KnowledgeDocument.kb_id == kb_id, KnowledgeDocument.source_key == source_key))
@@ -200,6 +202,8 @@ class KnowledgeService:
                 number=expected_revision + 1, slices=slices, chunk_config=chunk_config)
             if not created:
                 doc.revision = expected_revision
+            if on_version:
+                on_version(s, version.id)
             return doc, version, created
 
     def attach(self, kb_id, material_id, *, source_key=None, business_version=None):

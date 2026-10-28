@@ -120,3 +120,12 @@ def test_scanned_pdf_is_rejected_with_clear_message():
 def test_mostly_text_pdf_warns_about_empty_pages():
     doc = load(make_pdf([[(16, 700, "Title"), *body(680)], [], [(16, 700, "End"), *body(680)], [(16, 700, "More"), *body(680)], [(16, 700, "Last"), *body(680)]]))
     assert doc.report["warnings"] and "第 2 页" in doc.report["warnings"][0]
+
+
+def test_repeated_body_is_not_erased_or_reported_as_scan():
+    text = "Identical contractual provision repeated on every page with original meaning."
+    doc = load(make_pdf([[(10, 700, text)]] * 3))
+    assert doc.text.count(text) == 3
+    assert doc.report["table_structure_status"] == "partial"
+    from briefly.knowledge.evidence import constraints
+    assert constraints(doc.report, 0, len(doc.text))["cell_attribution"] == "unverified"

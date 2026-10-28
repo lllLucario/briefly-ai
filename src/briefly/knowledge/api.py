@@ -47,6 +47,8 @@ def version_out(version):
 def register(app: FastAPI,model_factory):
     service = KnowledgeService(app.state.store.engine)
     app.state.knowledge = service
+    from .imports_api import register as register_imports
+    register_imports(app)
 
     @app.post("/knowledge-bases/{kb_id}/answer-from-references", tags=["知识库"])
     def answer_from_references(kb_id: str,body: EvidenceAnswerIn):
@@ -81,7 +83,7 @@ def register(app: FastAPI,model_factory):
 
     @app.post("/knowledge-scope", tags=["知识库"])
     def scope(body: ScopeIn):
-        return service.scope(body.kb_ids)
+        return app.state.knowledge_imports.lifecycle.validate_scope(body.kb_ids)
 
     @app.get("/knowledge-bases/{kb_id}/documents", tags=["知识库"])
     def documents(kb_id: str):

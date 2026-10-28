@@ -15,16 +15,30 @@ class Slice:
     embedding_text: str
 
 
+def _tables(text):
+    lines, pos, groups, group = text.splitlines(keepends=True), 0, [], []
+    for line in [*lines, ""]:
+        if line.lstrip().startswith("|"):
+            group.append((pos, pos + len(line), line))
+        else:
+            if len(group) >= 2 and re.fullmatch(r"[\s|:-]+", group[1][2]):
+                groups.append((group[0][0], group[-1][1], group[1][1], "".join(x[2] for x in group[:2]), group))
+            group = []
+        pos += len(line)
+    return groups
+
+
 def token_slices(text, title, markdown, encoder, *, tokens=256):
     if type(tokens) is not int or not 32 <= tokens <= encoder.identity["max_tokens"]:
         raise ValueError("切片预算须至少32token且不超过Embedding输入上限")
     sections = parse_sections(text, markdown)
-    config = dict(strategy="title-token-offsets", version=1,
+    config = dict(strategy="title-token-offsets", version=2,
                   parameters=dict(tokens=tokens, overlap=0, include_title=True,
                                   tokenizer_sha256=encoder.identity["artifact_sha256"]["tokenizer.json"]))
     # 章节作为边界，但不额外复制原文标题；层级路径只进入编码前缀。
     boundaries = sorted({0, len(text), *(s.start for s in sections)})
     result = []
+    tables = _tables(text)
     for start, stop in zip(boundaries, boundaries[1:]):
         section = next((s.path for s in reversed(sections) if s.start <= start < s.end), "")
         prefix = title + ("\n" + section if section else "") + "\n"
@@ -32,11 +46,13 @@ def token_slices(text, title, markdown, encoder, *, tokens=256):
             raise ValueError("标题或章节过长，切片预算不足；请修改显示标题或增大预算")
         pos = start
         while pos < stop:
+            table = next((t for t in tables if t[0] <= pos < t[1]), None)
+            current_prefix = prefix + (table[3] if table and pos >= table[2] else "")
             low, high = pos + 1, stop
             best = pos
             while low <= high:
                 middle = (low + high) // 2
-                if encoder.token_length(prefix + text[pos:middle]) <= tokens:
+                if encoder.token_length(current_prefix + text[pos:middle]) <= tokens:
                     best, low = middle, middle + 1
                 else:
                     high = middle - 1
@@ -51,8 +67,15 @@ def token_slices(text, title, markdown, encoder, *, tokens=256):
                 # 最后几个字符只有标点时，向前让出一些正文，避免产生孤立标点块。
                 if not any(c.isalnum() for c in text[best:stop]) and best - pos > 8:
                     best -= 8
+                for _, _, _, _, rows in tables:
+                    row = next((r for r in rows if r[0] < best < r[1]), None)
+                    if row:
+                        if row[0] <= pos:
+                            raise ValueError("表格单行或表头超过切片预算，请增大预算或人工拆分；未截断行列关系")
+                        best = row[0]
+                        break
             content = text[pos:best]
-            encoded = prefix + content
+            encoded = current_prefix + content
             if encoder.token_length(encoded) > tokens:
                 raise ValueError("切片超过分词预算，未静默截断")
             if content.strip():

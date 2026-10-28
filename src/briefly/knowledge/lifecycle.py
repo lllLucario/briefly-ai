@@ -1,6 +1,4 @@
 """真实索引构建与发布；先完成派生库事务，再以源版本/文档修订号条件激活。"""
-import hashlib
-
 from sqlalchemy import select, update
 
 from ..materials import MaterialChunk
@@ -80,13 +78,13 @@ class IndexLifecycle:
                 pass
             raise
 
-    def validate_scope(self, kb_ids, encoder):
+    def validate_scope(self, kb_ids, encoder=None):
         scope = self.knowledge.scope(kb_ids)
         from .service import fingerprint
-        expected = fingerprint(encoder.identity)
+        expected = fingerprint(encoder.identity) if encoder is not None else None
         with self.knowledge._session() as s:
             for item in scope["versions"]:
-                if item["embedding_fingerprint"] != expected:
+                if expected is not None and item["embedding_fingerprint"] != expected:
                     raise KnowledgeConflict("知识库索引使用其他Embedding配置，请选择对应模型或重建")
                 from .models import KnowledgeVersion
                 version = s.get(KnowledgeVersion, item["version_id"])

@@ -32,6 +32,11 @@ class LocalIndex:
     def __init__(self, path):
         self.path = Path(path)
 
+    @staticmethod
+    def signature(generation):
+        return fingerprint(dict(identity=generation.embedding_identity, storage_schema=1,
+            lexical="cjk-bigrams-ascii-v1", metric="cosine-normalized-f32"))
+
     @contextmanager
     def connect(self):
         import sqlite_vec
@@ -73,7 +78,7 @@ class LocalIndex:
                 rowid = db.execute("INSERT INTO chunks(generation,number,content,embedding) VALUES (?,?,?,?)",
                                    (generation.id, number, text, blob)).lastrowid
                 db.execute("INSERT INTO lexical(rowid,tokens) VALUES (?,?)", (rowid, " ".join(terms(text))))
-            db.execute("INSERT INTO generations VALUES (?,?,?)", (generation.id, index_fingerprint(generation.embedding_identity), manifest))
+            db.execute("INSERT INTO generations VALUES (?,?,?)", (generation.id, self.signature(generation), manifest))
 
     def verify(self, generation, rows):
         with self.connect() as db:
@@ -81,7 +86,7 @@ class LocalIndex:
             expected = fingerprint([(n, hashlib.sha256(t.encode()).hexdigest()) for n, t in rows])
             actual = db.execute("SELECT number,content,length(embedding) FROM chunks WHERE generation=? ORDER BY number", (generation.id,)).fetchall()
             actual_hash = fingerprint([(n, hashlib.sha256(t.encode()).hexdigest()) for n, t, _ in actual])
-            if meta != (index_fingerprint(generation.embedding_identity), expected) or actual_hash != expected or any(size != generation.dimension * 4 for _, _, size in actual):
+            if meta != (self.signature(generation), expected) or actual_hash != expected or any(size != generation.dimension * 4 for _, _, size in actual):
                 raise KnowledgeConflict("索引制品缺失或与版本契约不匹配，需要重建")
 
     def delete(self, generation_ids):

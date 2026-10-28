@@ -89,15 +89,23 @@ def clean_pages(pages: list[list[Line]]) -> tuple[list[list[Line]], list[tuple[s
     result = []
     for page, idx in zip(cleaned, edges):
         kept = []
+        repeated = []
+        page_removed = []
         for i, line in enumerate(page):
             key = _repeat_key(line.text)
             edge = i in idx
             if n >= MIN_REPEAT_PAGES and ((edge and edge_count[key] >= edge_min) or any_count[key] >= any_min):
-                removed.append(("重复出现（页眉页脚或水印）", line.text))
+                repeated.append(line)
+                page_removed.append(("重复出现（页眉页脚或水印）", line.text))
             elif edge and _PAGE_NUMBER.match(line.text):
                 removed.append(("页码", line.text))
             else:
                 kept.append(line)
+        # 整页重复可能是合同条款/重复附录，而非水印。不能删空后再冒充扫描件。
+        if not kept and sum(len(line.text.replace(" ", "")) for line in repeated) >= SCANNED_PAGE_CHARS:
+            kept = [line for line in repeated if not _PAGE_NUMBER.match(line.text)]
+            page_removed = [("页码", line.text) for line in repeated if _PAGE_NUMBER.match(line.text)]
+        removed.extend(page_removed)
         result.append(kept)
     return result, removed
 
