@@ -31,6 +31,11 @@ class EvidenceAnswerIn(BaseModel):
     references: list[str] = Field(min_length=1,max_length=12)
 
 
+class SearchIn(BaseModel):
+    question: str = Field(min_length=1, max_length=4000)
+    document_ids: list[str] | None = Field(default=None, max_length=1000)
+
+
 def document_out(doc):
     return dict(id=doc.id, kb_id=doc.kb_id, title=doc.title, source_key=doc.source_key,
                 revision=doc.revision, created_at=doc.created_at)
@@ -49,6 +54,13 @@ def register(app: FastAPI,model_factory):
     app.state.knowledge = service
     from .imports_api import register as register_imports
     register_imports(app)
+    from .retrieval import RetrievalService
+    retrieval = RetrievalService(app.state.knowledge_imports)
+    app.state.knowledge_retrieval = retrieval
+
+    @app.post("/knowledge-bases/{kb_id}/search", tags=["知识库"])
+    def search(kb_id: str, body: SearchIn):
+        return retrieval.search(kb_id, body.question, document_ids=body.document_ids)
 
     @app.post("/knowledge-bases/{kb_id}/answer-from-references", tags=["知识库"])
     def answer_from_references(kb_id: str,body: EvidenceAnswerIn):

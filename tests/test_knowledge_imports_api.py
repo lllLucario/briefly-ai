@@ -45,6 +45,8 @@ def test_batch_partial_failure_preview_confirm_and_replay(client):
     rows = client.get(base).json()
     assert next(x for x in rows if x["id"] == valid["id"])["status"] == "ready"
     assert client.post("/knowledge-scope", json={"kb_ids": [kb]}).json()["status"] == "ready"
+    search = client.post(f"/knowledge-bases/{kb}/search", json={"question": "审批"})
+    assert search.status_code == 200 and search.json()["evidence"][0]["reference"].startswith("kbref:")
     other = client.post("/knowledge-bases", json={"name": "隔离库"}).json()["id"]
     assert client.get(f"/knowledge-bases/{other}/imports/{valid['id']}/chunks").status_code == 404
     assert client.post(f"{base}/{valid['id']}/retry", json={}).status_code == 409
