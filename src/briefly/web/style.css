@@ -1166,6 +1166,10 @@ button.note-toggle { width: 100%; min-height: 62px; display: flex; align-items: 
 .detail-todos > b { margin-right: 8px; }
 /* Knowledge workspace: scoped drafts, provenance and preview. */
 .knowledge-workspace{display:flex;flex-direction:column;gap:16px}
+.knowledge-workspace .stack{min-width:0;max-width:100%}
+.knowledge-workspace input[type=file],.knowledge-workspace select{max-width:100%}
+.knowledge-workspace input[type=file]{width:100%}
+#kb-select{width:clamp(160px,25vw,320px)}
 .knowledge-workspace input[type=number]{max-width:130px}
 .knowledge-section{padding:20px 0;border-top:1px solid var(--line)}
 .knowledge-section h3{margin:0 0 12px}
