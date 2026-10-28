@@ -8,7 +8,7 @@ from sqlalchemy.orm import defer, sessionmaker
 
 from ..clock import now_local, system_naive
 from ..materials import Material, MaterialChunk
-from .models import IndexGeneration, KnowledgeBase, KnowledgeDocument, KnowledgePublication, KnowledgeVersion
+from .models import IndexGeneration, KnowledgeBase, KnowledgeChunk, KnowledgeDocument, KnowledgePublication, KnowledgeVersion
 from .evidence import constraints, quality_snapshot, restricted_answer
 
 
@@ -56,6 +56,12 @@ def source_contract(version):
 
 def index_fingerprint(identity):
     return fingerprint(identity)
+
+
+def chunk_fingerprint(config, manifest):
+    if config["strategy"] == "preserved-material-chunks":
+        return fingerprint(manifest)
+    return fingerprint(dict(config=config, manifest=manifest))
 
 
 class KnowledgeService:
@@ -117,18 +123,20 @@ class KnowledgeService:
             return list(s.scalars(select(KnowledgeDocument).where(KnowledgeDocument.kb_id == kb_id, KnowledgeDocument.deleted_at.is_(None)).order_by(KnowledgeDocument.created_at, KnowledgeDocument.id)))
 
     @staticmethod
-    def _append(s, doc, material_id, business_version, *, number=None):
+    def _append(s, doc, material_id, business_version, *, number=None, slices=None, chunk_config=None):
         KnowledgeService._business_version(business_version)
         material = s.get(Material, material_id, options=[defer(Material.content, raiseload=True)])
         if material is None:
             raise KnowledgeNotFound("源材料不存在")
-        chunks = list(s.scalars(select(MaterialChunk).where(MaterialChunk.material_id == material_id).order_by(MaterialChunk.index)))
+        chunks = slices if slices is not None else list(s.scalars(select(MaterialChunk).where(MaterialChunk.material_id == material_id).order_by(MaterialChunk.index)))
         if not chunks:
             raise KnowledgeConflict("源材料没有可引用切片")
+        chunk_config = chunk_config or dict(strategy="preserved-material-chunks", version=1, parameters=None)
         manifest = [dict(index=c.index, section=c.section, start=c.start, end=c.end,
                          constraints=constraints(material.parse_report,c.start,c.end),
+                         **(dict(storage="version", embedding_sha256=hashlib.sha256(c.embedding_text.encode()).hexdigest()) if slices is not None else {}),
                          sha256=hashlib.sha256(c.content.encode()).hexdigest()) for c in chunks]
-        digest = fingerprint(manifest)
+        digest = chunk_fingerprint(chunk_config, manifest)
         old = s.scalar(select(KnowledgeVersion).where(KnowledgeVersion.document_id == doc.id,
             KnowledgeVersion.content_hash == material.content_hash, KnowledgeVersion.chunk_fingerprint == digest,
             KnowledgeVersion.material_id == material.id))
@@ -141,12 +149,58 @@ class KnowledgeService:
             business_version=business_version, material_id=material.id, content_hash=material.content_hash,
             source_snapshot=dict(title=material.title, source=material.source, file_type=material.file_type,
                                  feishu=material.parse_report.get("feishu"),parse_quality=quality_snapshot(material.parse_report)),
-            chunk_config=dict(strategy="preserved-material-chunks", version=1, parameters=None),
+            chunk_config=chunk_config,
             chunk_manifest=manifest, chunk_fingerprint=digest)
         doc.revision = number
         s.add(version)
         s.flush()
+        if slices is not None:
+            s.add_all(KnowledgeChunk(version_id=version.id, index=c.index, section=c.section,
+                start=c.start, end=c.end, content=c.content, embedding_text=c.embedding_text) for c in slices)
+            s.flush()
         return version, True
+
+    def stage_slices(self, kb_id, material_id, source_key, chunk_config, slices, *,
+                     expected_revision=0, business_version=None):
+        """确认预览后的新知识版本；复用源材料，绝不原地重切旧材料。"""
+        if not source_key.strip() or len(source_key) > 200:
+            raise ValueError("来源标识须为1～200字")
+        with self._session.begin() as s:
+            self._kb(s, kb_id)
+            material = s.get(Material, material_id)
+            if material is None:
+                raise KnowledgeNotFound("源材料不存在")
+            if not slices or [c.index for c in slices] != list(range(1, len(slices) + 1)):
+                raise ValueError("切片序号无效")
+            if any(c.start < 0 or c.end <= c.start or c.end > len(material.content)
+                   or c.content != material.content[c.start:c.end] for c in slices):
+                raise KnowledgeConflict("预览原文范围已变化")
+            if chunk_config.get("strategy") != "title-token-offsets" or chunk_config.get("version") != 1:
+                raise ValueError("未知切片配置")
+            doc = s.scalar(select(KnowledgeDocument).where(
+                KnowledgeDocument.kb_id == kb_id, KnowledgeDocument.source_key == source_key))
+            if doc is None:
+                if expected_revision != 0:
+                    raise KnowledgeConflict("文档修订号不匹配")
+                doc = KnowledgeDocument(kb_id=kb_id, source_key=source_key, title=material.title)
+                s.add(doc)
+                try:
+                    s.flush()
+                except IntegrityError as exc:
+                    raise KnowledgeConflict("来源被并发创建，请刷新") from exc
+            else:
+                result = s.execute(update(KnowledgeDocument).where(
+                    KnowledgeDocument.id == doc.id, KnowledgeDocument.revision == expected_revision,
+                    KnowledgeDocument.deleted_at.is_(None)).values(revision=expected_revision + 1),
+                    execution_options={"synchronize_session": False})
+                if result.rowcount != 1:
+                    raise KnowledgeConflict("文档已变化，请刷新后重新确认")
+                s.refresh(doc)
+            version, created = self._append(s, doc, material_id, business_version,
+                number=expected_revision + 1, slices=slices, chunk_config=chunk_config)
+            if not created:
+                doc.revision = expected_revision
+            return doc, version, created
 
     def attach(self, kb_id, material_id, *, source_key=None, business_version=None):
         """显式纳入既有材料；同一材料可多库关联，技术版本与业务标签分开。"""
@@ -231,11 +285,16 @@ class KnowledgeService:
 
     @staticmethod
     def _verify_chunks(s, version):
-        chunks = list(s.scalars(select(MaterialChunk).where(
-            MaterialChunk.material_id == version.material_id).order_by(MaterialChunk.index)))
+        if version.chunk_config.get("strategy") not in {"preserved-material-chunks", "title-token-offsets"}:
+            raise KnowledgeConflict("未知版本切片配置，不能读取索引")
+        native = version.chunk_config["strategy"] != "preserved-material-chunks"
+        query = select(KnowledgeChunk).where(KnowledgeChunk.version_id == version.id).order_by(KnowledgeChunk.index) if native else select(MaterialChunk).where(
+            MaterialChunk.material_id == version.material_id).order_by(MaterialChunk.index)
+        chunks = list(s.scalars(query))
         actual = [(c.index, c.start, c.end, hashlib.sha256(c.content.encode()).hexdigest()) for c in chunks]
         expected = [(c["index"], c["start"], c["end"], c["sha256"]) for c in version.chunk_manifest]
-        if actual != expected or fingerprint(version.chunk_manifest) != version.chunk_fingerprint:
+        encoded_ok = not native or [hashlib.sha256(c.embedding_text.encode()).hexdigest() for c in chunks] == [c.get("embedding_sha256") for c in version.chunk_manifest]
+        if actual != expected or not encoded_ok or chunk_fingerprint(version.chunk_config, version.chunk_manifest) != version.chunk_fingerprint:
             raise KnowledgeConflict("源切片已变化，不能使用原版本建立或读取索引")
 
     @staticmethod
@@ -299,7 +358,10 @@ class KnowledgeService:
             if original is None or (expected_digest is not None and expected_digest != original["sha256"]):
                 raise KnowledgeNotFound("引用切片不存在或指纹不匹配")
             material, reason = self._material(s, version)
-            chunk = s.scalar(select(MaterialChunk).where(MaterialChunk.material_id == material.id, MaterialChunk.index == index)) if material else None
+            if original.get("storage") == "version":
+                chunk = s.get(KnowledgeChunk, (version.id, index)) if material else None
+            else:
+                chunk = s.scalar(select(MaterialChunk).where(MaterialChunk.material_id == material.id, MaterialChunk.index == index)) if material else None
             if not reason and (chunk is None or hashlib.sha256(chunk.content.encode()).hexdigest() != original["sha256"] or chunk.start != original["start"] or chunk.end != original["end"]):
                 reason = "source_changed"
             publication = s.get(KnowledgePublication, doc.id)
