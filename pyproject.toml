@@ -25,6 +25,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 browser = ["playwright>=1.64,<2"]
+rag = ["fastembed>=0.9.1,<0.10", "sqlite-vec>=0.1.9,<0.2", "psutil>=7.2,<8"]
 
 [project.scripts]
 briefly = "briefly.cli:main"

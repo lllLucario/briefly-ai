@@ -40,3 +40,18 @@ def _thinking_body() -> dict | None:
     if config.THINKING is None:
         return None
     return {"thinking": {"type": "enabled" if config.THINKING else "disabled"}}
+
+
+def create_local_embeddings(model_dir: str, *, threads: int = 4, max_input_tokens: int | None = None):
+    """W3 本地选型入口：只加载白名单中已准备的CPU模型，不自动下载或联网推理。"""
+    import json
+    from pathlib import Path
+    from .local_embeddings import LocalBgeEmbeddings, LocalJinaEmbeddings
+
+    manifest = json.loads((Path(model_dir) / "prepared.json").read_text(encoding="utf-8"))
+    adapters = {"BAAI/bge-small-zh-v1.5":LocalBgeEmbeddings,
+                "jinaai/jina-embeddings-v2-base-zh":LocalJinaEmbeddings}
+    adapter = adapters.get(manifest.get("model"))
+    if adapter is None:
+        raise ValueError("本地Embedding模型未在已验证候选白名单中")
+    return adapter(model_dir, threads=threads, max_input_tokens=max_input_tokens)
