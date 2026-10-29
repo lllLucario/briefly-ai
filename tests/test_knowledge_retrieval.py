@@ -87,6 +87,24 @@ def test_document_context_adds_same_version_intro_within_scope(indexed):
     assert contextual["parameters"]["version"] == 2
 
 
+def test_context_budget_counts_the_actual_question_headers_and_wrappers(indexed, monkeypatch):
+    from briefly.knowledge.payload import evidence_payload
+    from briefly.knowledge.retrieval import PARAMETERS
+    store, svc, lifecycle, retrieval = setup(indexed)
+    kb = svc.create("库")
+    for i in range(3):
+        add(store, svc, lifecycle, kb, f"适用对象和版本均须核对的业务制度{i}", f"住宿必须预订前审批，规则{i}。")
+    question = "请说明住宿的审批要求与对应版本。"
+    before = retrieval.search(kb.id, question)
+    limit = Encoder.token_length(evidence_payload(question, before["evidence"][:1])) + 1
+    monkeypatch.setitem(PARAMETERS, "context_tokens", limit)
+    result = retrieval.search(kb.id, question, include_document_context=True)
+    assert len(result["evidence"]) == 1
+    actual = Encoder.token_length(evidence_payload(question, result["evidence"]))
+    assert result["diagnostics"]["context_tokens"] == actual <= limit
+    assert result["diagnostics"]["omitted_for_budget"] > 0
+
+
 @pytest.mark.parametrize("question", ["两字", "编号E403 2026", '" OR * : 日本語', "🙂 ???"])
 def test_queries_are_data_and_do_not_escape_scope(indexed, question):
     store, svc, lifecycle, retrieval = setup(indexed)

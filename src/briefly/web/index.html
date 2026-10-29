@@ -505,7 +505,7 @@
           <p class="muted small">每批最多16份、合计50MB。解析后先核对切片，再确认建立索引。结构未确认的资料会保留复核提醒。</p>
           <p id="kb-update-target" class="muted small"></p>
           <div class="row gap wrap"><label class="stack">文件<input id="kb-files" type="file" multiple accept=".txt,.md,.doc,.docx,.pdf,.xlsx,.csv"></label>
-            <label class="stack">切片目标<input id="kb-tokens" type="number" min="32" max="512" value="256" aria-label="切片目标token数"></label>
+            <label class="stack">切片目标<input id="kb-tokens" type="number" min="32" max="1024" value="512" aria-label="切片目标token数"></label>
             <button id="kb-upload" class="primary">上传并预览</button><button id="kb-cancel-update" class="ghost hidden">取消更新</button></div>
           <div id="kb-jobs" aria-live="polite"></div>
         </section>

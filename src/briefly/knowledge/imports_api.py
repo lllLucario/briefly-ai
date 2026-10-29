@@ -56,7 +56,7 @@ def register(app):
     def upload(kb_id: str, background: BackgroundTasks,
                files: Annotated[list[UploadFile], File()],
                request_key: Annotated[str, Form(min_length=1, max_length=160)],
-               tokens: Annotated[int, Form(ge=32, le=512)] = 256,
+               tokens: Annotated[int, Form(ge=32, le=1024)] = 512,
                expected_revision: Annotated[int, Form(ge=0)] = 0,
                source_key: Annotated[str | None, Form(max_length=200)] = None,
                business_version: Annotated[str | None, Form(max_length=100)] = None):

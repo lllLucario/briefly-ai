@@ -78,6 +78,17 @@ def _worker_command(folder):
 
 
 def load_isolated(filename, data, *, timeout=None):
+    started = monotonic()
+    doc = _load_isolated(filename, data, timeout=timeout)
+    total = monotonic() - started
+    timings = dict(doc.report.get("timings", {}))
+    timings["isolated_total_seconds"] = round(total, 6)
+    timings["isolation_overhead_seconds"] = round(max(0, total - timings.get("parse_total_seconds", total)), 6)
+    doc.report = {**doc.report, "timings": timings}
+    return doc
+
+
+def _load_isolated(filename, data, *, timeout=None):
     """总预算包含排队、启动、DOC直读/回退、Docling和结果校验；不写业务库。"""
     file_type(filename)
     if not data or len(data) > config.MAX_UPLOAD_MB * 1024 * 1024:

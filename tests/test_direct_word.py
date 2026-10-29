@@ -81,6 +81,19 @@ def test_strict_direct_does_not_convert_unsupported(native,monkeypatch):
         load_document('a.doc',direct_word.OLE_HEADER+b'unsupported')
 
 
+def test_rtf_fallback_reports_actual_format_and_separate_timings(native, monkeypatch):
+    from briefly import legacy_word
+    from test_legacy_word import docx_bytes
+    monkeypatch.setattr(legacy_word, 'convert_doc', lambda _: docx_bytes())
+    result = load_document('renamed.doc', b'{\\rtf1 fixture}')
+    assert result.report['detected_format'] == 'rtf'
+    assert any('RTF' in w for w in result.report['warnings'])
+    assert not native  # RTF识别不启动Java。
+    times = result.report['timings']
+    assert times['conversion_seconds'] >= 0 and times['document_parse_seconds'] > 0
+    assert times['parse_total_seconds'] >= times['conversion_seconds'] + times['document_parse_seconds']
+
+
 def test_missing_direct_runtime_can_select_existing_conversion(native,monkeypatch):
     from briefly import legacy_word
     from test_legacy_word import docx_bytes

@@ -2,6 +2,7 @@
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
+from time import perf_counter
 
 SUPPORTED_TYPES = ("txt", "md", "doc", "docx", "pdf", "xlsx", "csv")
 
@@ -36,8 +37,12 @@ def escape_heading_marks(text: str) -> str:
 
 def load_document(filename: str, data: bytes) -> LoadedDocument:
     kind = file_type(filename)
+    started = perf_counter()
     try:
-        return _load(kind, data)
+        doc = _load(kind, data)
+        doc.report = {**doc.report, "timings": {**doc.report.get("timings", {}),
+                      "parse_total_seconds": round(perf_counter() - started, 6)}}
+        return doc
     except ValueError:
         raise
     except Exception as e:  # 底层库的报错（如 BadZipFile）对用户没有意义
@@ -51,19 +56,29 @@ def _load(kind: str, data: bytes) -> LoadedDocument:
         from .legacy_word import convert_doc
         if config.DOC_PARSER not in {"auto", "direct", "convert"}:
             raise ValueError("BRIEFLY_DOC_PARSER须为auto、direct或convert")
-        reason = None
+        reason, timings = None, {}
+        tick = perf_counter()
         if config.DOC_PARSER == "direct" or (config.DOC_PARSER == "auto" and direct_available()):
             try:
                 text, report = parse_doc(data)
-                return LoadedDocument(text, markdown=True, report=report)
-            except DirectWordUnsupported:
+                timings["direct_seconds"] = round(perf_counter() - tick, 6)
+                return LoadedDocument(text, markdown=True, report={**report, "timings": timings})
+            except DirectWordUnsupported as exc:
                 if config.DOC_PARSER == "direct":
                     raise
-                reason = "直接解析暂不支持此结构，已使用本地转换路径；请核对原文件"
+                reason = str(exc) + "；直接解析暂不支持此结构，已使用本地转换路径；请核对原文件"
         elif config.DOC_PARSER == "auto":
             reason = "本地直接解析依赖未就绪，已使用LibreOffice转换路径"
-        doc = _load_docx(convert_doc(data))
+        timings["direct_attempt_seconds"] = round(perf_counter() - tick, 6)
+        tick = perf_counter()
+        converted = convert_doc(data)
+        timings["conversion_seconds"] = round(perf_counter() - tick, 6)
+        tick = perf_counter()
+        doc = _load_docx(converted)
+        timings["document_parse_seconds"] = round(perf_counter() - tick, 6)
         doc.report = {**doc.report, "original_format": "doc", "conversion": "libreoffice-to-docx",
+                      "detected_format": "rtf" if data.lstrip().startswith(b"{\\rtf") else "doc",
+                      "timings": timings,
                       "warnings": [*doc.report.get("warnings", []), *([reason] if reason else []), "旧版 .doc 经本地转换后解析，复杂排版及修订内容请核对原文件"]}
         return doc
     if kind == "md":
@@ -71,7 +86,10 @@ def _load(kind: str, data: bytes) -> LoadedDocument:
     if kind == "txt":
         return LoadedDocument(decode_text(data), markdown=False)
     if kind == "docx":
-        return _load_docx(data)
+        tick = perf_counter()
+        doc = _load_docx(data)
+        doc.report = {**doc.report, "timings": {"document_parse_seconds": round(perf_counter() - tick, 6)}}
+        return doc
     if kind == "xlsx":
         from .tables import load_xlsx
 

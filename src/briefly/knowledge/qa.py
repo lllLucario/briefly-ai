@@ -59,17 +59,13 @@ class KnowledgeQA:
         if result["unavailable"] and not allow_partial:
             return dict(**base, status="incomplete_scope", answer="范围内仍有资料未就绪；请完成索引，或明确选择只依据当前可用部分回答。")
         # 整个外发包（问题、标题、原文）一起处理；不发送原始引用ID或聊天历史。
-        from ..materials import wrap_material
-        blocks, documents = [], {}
-        for i, item in enumerate(evidence, 1):
-            key = (item["document_id"], item["version_id"])
-            documents.setdefault(key, f"文档{len(documents) + 1}")
-            label = documents[key]
-            header = (f"【依据{i}；同源标识：{label}；标题《{item['source']['title']}》；"
-                f"业务版本标签：{item['business_version'] or '未提供'}；章节：{item['section'] or '未确定'}】")
-            blocks.append(wrap_material(header, item["content"]))
+        from .payload import evidence_payload
+        from .retrieval import PARAMETERS
         redactor = Redactor(private_values)
-        payload = redactor.text("问题：" + question + "\n\n" + "\n\n".join(blocks))
+        payload = redactor.text(evidence_payload(question, evidence))
+        encoder = self.retrieval.imports.encoder_factory()
+        if encoder.token_length(payload) > PARAMETERS["context_tokens"]:
+            raise KnowledgeConflict("规则处理后的依据包超过固定检索预算，请缩小范围")
         egress = dict(redactions=redactor.counts, history_sent=False,
             policy="常见邮箱/手机号/密钥/密码及用户指定字段；不保证识别所有企业敏感信息")
         if not allow_external:

@@ -4,6 +4,7 @@ from time import perf_counter
 from uuid import uuid4
 
 from .models import IndexGeneration, KnowledgeVersion
+from .payload import evidence_payload
 from .service import KnowledgeConflict, KnowledgeNotFound
 
 PARAMETERS = dict(version=1, per_route=20, rrf_k=60, top_k=5, context_tokens=4000,
@@ -56,18 +57,18 @@ class RetrievalService:
                 scores[key] += 1 / (PARAMETERS["rrf_k"] + rank)
                 routes[key].append(dict(route=route, rank=rank, raw_score=raw_score))
         by_generation = {v["generation_id"]: v for v in versions}
-        budget = 0
+        budget = encoder.token_length(evidence_payload(question, []))
         omitted = 0
         for (generation, number), score in sorted(scores.items(), key=lambda row: (-row[1], row[0])):
             item = by_generation[generation]
             source = svc.chunk(kb_id, item["document_id"], item["version_id"], number)
             if source["status"] != "current" or source["content"] is None:
                 raise KnowledgeConflict("来源在检索期间已变化，请重新检索")
-            tokens = encoder.token_length(source["source"]["title"] + "\n" + source["content"])
-            if budget + tokens > PARAMETERS["context_tokens"]:
+            tokens = encoder.token_length(evidence_payload(question, [*result["evidence"], source]))
+            if tokens > PARAMETERS["context_tokens"]:
                 omitted += 1
                 continue
-            budget += tokens
+            budget = tokens
             result["evidence"].append(dict(**source, generation_id=generation,
                 retrieval=dict(rrf_score=score, routes=routes[(generation, number)])))
             if len(result["evidence"]) >= PARAMETERS["top_k"]:
@@ -86,11 +87,11 @@ class RetrievalService:
                 source = svc.chunk(kb_id, doc_id, item["version_id"], first)
                 if source["status"] != "current" or source["content"] is None:
                     raise KnowledgeConflict("文档上下文在检索期间已变化，请重新检索")
-                tokens = encoder.token_length(source["source"]["title"] + "\n" + source["content"])
-                if budget + tokens > PARAMETERS["context_tokens"]:
+                tokens = encoder.token_length(evidence_payload(question, [*result["evidence"], source]))
+                if tokens > PARAMETERS["context_tokens"]:
                     omitted += 1
                     continue
-                budget += tokens
+                budget = tokens
                 context_added += 1
                 result["evidence"].append(dict(**source, generation_id=item["generation_id"],
                     retrieval=dict(rrf_score=None, routes=[dict(route="document_context", rule="first_source_chunk")])) )
@@ -104,5 +105,5 @@ class RetrievalService:
             deduplicated_candidates=len(scores), selected=len(result["evidence"]),
             context_tokens=budget, omitted_for_budget=omitted, seconds=round(perf_counter() - started, 4),
             document_context_added=context_added,
-            answerability="not_assessed")
+            answerability="not_assessed", context_accounting="question-and-serialized-evidence/v1")
         return result

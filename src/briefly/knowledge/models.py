@@ -2,7 +2,7 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, CheckConstraint, DateTime, ForeignKey, ForeignKeyConstraint, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, ForeignKey, ForeignKeyConstraint, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db import Base
@@ -117,3 +117,19 @@ class KnowledgeImport(Base):
     lease_token: Mapped[str | None] = mapped_column(String(32))
     lease_until: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class KnowledgeParseCache(Base):
+    __tablename__ = "knowledge_parse_cache"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kb_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.id"), index=True)
+    material_id: Mapped[int | None] = mapped_column(ForeignKey("materials.id", ondelete="SET NULL"))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    markdown: Mapped[bool | None] = mapped_column(Boolean)
+    report_snapshot: Mapped[dict] = mapped_column(JSON)
+
+
+class KnowledgeImportMetrics(Base):
+    __tablename__ = "knowledge_import_metrics"
+    import_id: Mapped[str] = mapped_column(ForeignKey("knowledge_imports.id", ondelete="CASCADE"), primary_key=True)
+    values: Mapped[dict] = mapped_column(JSON)
