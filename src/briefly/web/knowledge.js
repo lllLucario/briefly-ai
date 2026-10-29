@@ -150,7 +150,8 @@
     const rows = await api(`/knowledge-bases/${p.kb}/imports/${p.job.id}/chunks?offset=${offset}&limit=10`);
     if (preview !== p || p.seq !== seq || !active(p.kb, p.rev)) return;
     p.loaded = true; $("#kb-preview-checked").disabled = false;
-    $("#kb-preview-info").textContent = `${p.job.filename} · 目标 ${p.job.tokens} token · 第${offset+1}～${offset+rows.length}段，共${p.job.chunk_count}段。仅当前页展示原文，请按需翻页核对。`;
+    const overlap = p.job.chunk_config?.parameters?.overlap ?? 0;
+    $("#kb-preview-info").textContent = `${p.job.filename} · 目标 ${p.job.tokens} token，正文重叠约 ${overlap} token；表格/图形不重叠 · 第${offset+1}～${offset+rows.length}段，共${p.job.chunk_count}段。仅当前页展示原文，请按需翻页核对。`;
     $("#kb-preview-body").innerHTML = rows.map(row => `<article><h4>${escapeHtml(row.section || "章节未确定")}</h4><pre>${escapeHtml(row.content)}</pre>${Object.keys(row.constraints).length ? '<p class="danger small">该片段有未确认的结构关系，问答时将保留复核限制。</p>' : ""}</article>`).join("");
     $("#kb-preview-prev").disabled = p.offset === 0; $("#kb-preview-next").disabled = p.offset+10 >= p.job.chunk_count;
     $("#kb-confirm").disabled = p.job.status !== "preview" || !$("#kb-preview-checked").checked;

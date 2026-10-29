@@ -15,7 +15,8 @@ class RetrievalService:
     def __init__(self, imports):
         self.imports = imports
 
-    def search(self, kb_id, question, *, document_ids=None, include_document_context=False):
+    def search(self, kb_id, question, *, document_ids=None, include_document_context=False,
+               context_budget_only=False):
         if not question.strip() or len(question) > 4000:
             raise ValueError("问题须为1～4000字")
         started = perf_counter()
@@ -33,6 +34,8 @@ class RetrievalService:
                       unavailable=metadata["unavailable"], diagnostics={})
         if include_document_context:
             result["parameters"].update(version=2, document_context="最多2份已命中文档的首片段")
+        if context_budget_only:
+            result["parameters"].update(top_k=None, selection="top5-and-intros-then-fill-complete-chunks-within-budget")
         if not metadata["versions"]:
             result["status"] = "not_ready" if metadata["unavailable"] else "empty_scope" if document_ids == [] else "empty_library"
             return result
@@ -95,6 +98,24 @@ class RetrievalService:
                 context_added += 1
                 result["evidence"].append(dict(**source, generation_id=item["generation_id"],
                     retrieval=dict(rrf_score=None, routes=[dict(route="document_context", rule="first_source_chunk")])) )
+        if context_budget_only:
+            # 先保留同样的Top5与首片段规则，再给小块补足剩余额度；不能挤掉适用范围。
+            selected = {(e["generation_id"], e["chunk"]) for e in result["evidence"]}
+            for (generation, number), score in sorted(scores.items(), key=lambda row: (-row[1], row[0])):
+                if (generation, number) in selected:
+                    continue
+                item = by_generation[generation]
+                source = svc.chunk(kb_id, item["document_id"], item["version_id"], number)
+                if source["status"] != "current" or source["content"] is None:
+                    raise KnowledgeConflict("来源在预算装填期间已变化，请重新检索")
+                tokens = encoder.token_length(evidence_payload(question, [*result["evidence"], source]))
+                if tokens > PARAMETERS["context_tokens"]:
+                    omitted += 1
+                    continue
+                budget = tokens
+                selected.add((generation, number))
+                result["evidence"].append(dict(**source, generation_id=generation,
+                    retrieval=dict(rrf_score=score, routes=routes[(generation, number)])))
         # 发布、删除或来源变化不能悄悄混进同一请求的索引快照。
         latest = svc.scope([kb_id])
         current = {(v["document_id"], v["generation_id"]) for v in latest["versions"]}

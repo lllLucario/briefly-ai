@@ -85,6 +85,8 @@ def test_document_context_adds_same_version_intro_within_scope(indexed):
     assert any(e["start"] == 0 for e in contextual["evidence"])
     assert all(e["document_id"] == doc.id and e["version_id"] == version.id for e in contextual["evidence"])
     assert contextual["parameters"]["version"] == 2
+    filled = retrieval.search(kb.id, "住宿", include_document_context=True, context_budget_only=True)
+    assert {e["reference"] for e in contextual["evidence"]} <= {e["reference"] for e in filled["evidence"]}
 
 
 def test_context_budget_counts_the_actual_question_headers_and_wrappers(indexed, monkeypatch):
@@ -103,6 +105,19 @@ def test_context_budget_counts_the_actual_question_headers_and_wrappers(indexed,
     actual = Encoder.token_length(evidence_payload(question, result["evidence"]))
     assert result["diagnostics"]["context_tokens"] == actual <= limit
     assert result["diagnostics"]["omitted_for_budget"] > 0
+
+
+def test_token_budget_comparison_does_not_limit_small_chunks_to_top_five(indexed):
+    from briefly.knowledge.payload import evidence_payload
+    store, svc, lifecycle, retrieval = setup(indexed)
+    kb = svc.create("库")
+    for i in range(9):
+        add(store, svc, lifecycle, kb, f"住宿制度{i}", f"住宿审批规则{i}，出差前确认。")
+    standard = retrieval.search(kb.id, "住宿审批")
+    budgeted = retrieval.search(kb.id, "住宿审批", context_budget_only=True)
+    assert len(standard["evidence"]) == 5
+    assert len(budgeted["evidence"]) > 5 and budgeted["parameters"]["top_k"] is None
+    assert Encoder.token_length(evidence_payload("住宿审批",budgeted["evidence"])) <= 4000
 
 
 @pytest.mark.parametrize("question", ["两字", "编号E403 2026", '" OR * : 日本語', "🙂 ???"])

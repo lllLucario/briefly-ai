@@ -37,6 +37,7 @@ def import_file(page, content="# 制度\n正式员工出差须在预订前审批
 def test_import_confirm_external_choice_and_original_reference(web_page):
     page = web_page
     open_knowledge(page)
+    expect(page.locator("#kb-tokens")).to_have_value("512")
     create(page, "办公制度")
     page.locator("#kb-question").fill("它什么时候？")
     page.locator("#kb-ask").click()
