@@ -1,5 +1,7 @@
 """隔离网页服务及确定性模型；供网页回归和手动真实模型走查共用。"""
 import json
+import asyncio
+import os
 import re
 import random
 import socket
@@ -26,6 +28,13 @@ MEETING = """支付改造会议文字稿（虚构）
 """
 TASK = "李强负责整理测试记录，截止2026-10-23。"
 PROGRESS = "已完成测试记录初稿，正在复核异常分支。"
+
+
+def server_event_loop():
+    # 隔离服务线程仅处理TCP，不创建asyncio子进程。Windows Proactor在浏览器
+    # 断开并行请求后可能留下closing transport；用Selector让关闭回调正常完成。
+    # 仅影响测试服务，Playwright自身仍使用支持子进程的默认事件循环。
+    return asyncio.SelectorEventLoop() if os.name == "nt" else asyncio.new_event_loop()
 
 
 def fake_model():
@@ -116,7 +125,8 @@ def live_app(root: Path, model_factory=fake_model, embeddings_factory=None):
     port = sock.getsockname()[1]
     # Windows 上连接异常关闭（_call_connection_lost 报错）时 asyncio 的 server.wait_closed() 可能永不返回；
     # 设置优雅关闭超时，让 uvicorn 到时继续退出，而不是卡满 15 秒
-    server = uvicorn.Server(uvicorn.Config(app, log_level="error", timeout_graceful_shutdown=5))
+    server = uvicorn.Server(uvicorn.Config(app, log_level="error", timeout_graceful_shutdown=5,
+                                         loop=f"{__name__}:server_event_loop"))
     thread = threading.Thread(target=server.run, kwargs={"sockets":[sock]}, daemon=True)
     thread.start()
     try:
