@@ -23,12 +23,22 @@ LAYERS = {1: "规则层", 2: "语义层", 3: "兜底层"}
 
 @dataclass
 class TurnState:
-    """语义层使用的会话状态；只用于判断意图，不作为事实依据。"""
+    """语义层使用的会话状态；只用于判断意图，不作为事实依据。
+
+    has_materials：本条消息附了材料；earlier_materials：本会话之前附过或读过材料。
+    has_previous_reply：之前有可供调整的回答（问候、拒绝、提示选择知识库等固定回复不算）。
+    """
 
     has_materials: bool = False
     kb_id: str | None = None
     last_intent: str | None = None
     has_previous_reply: bool = False
+    earlier_materials: bool = False
+
+    @property
+    def has_body(self) -> bool:
+        """有可处理的对象：本轮或之前的材料，或可调整的上一轮回答。"""
+        return self.has_materials or self.earlier_materials or self.has_previous_reply
 
 
 @dataclass
@@ -48,17 +58,43 @@ class IntentDecision:
 
 
 # 规则层：准入严格，只放长期稳定、没有歧义的写法。
+# 越权拦截分三类：索要系统内部信息、要求绕过限制、索要他人数据。误拦是直接拒绝，代价高，
+# 所以密钥/密码类必须明确指向系统自身（“你的”“.env”“后端”等），办公里正常提到密码、API key 不拦。
+_GIVE = r"(?:给我|发给?我?|看看?|贴|展示|显示|输出|泄露|透露|打印|附|复制|读取?|告诉|导出|列出|编码|反写|拿出)"
+_SELF_SECRET = r"(?:系统提示词?|提示词原文|system ?prompt|开发者指令|隐藏的?(?:指令|提示词?|消息|设定)|system ?消息|\.env|环境变量)"
+_KEY = (r"(?:你的|你用的|你们用的|系统的?|后端的?|服务器的?|运行环境的?|环境变量中?的?|\.env里?的?|配置里的?)"
+        r".{0,8}?(?:密钥|api ?key|token|密码)")
 _BLOCKED = re.compile(
-    r"忽略(?:之前|以上|上面|前面|所有)?的?(?:规则|指令|提示|设定)|ignore (?:all |the )?(?:previous|above) instructions"
-    r"|(?:告诉|显示|输出|泄露|打印)(?:我)?(?:你的)?(?:系统提示词?|system prompt|密钥|api ?key)", re.I)
-_GREETING = re.compile(r"(?:你好|您好|嗨|hi|hello|在吗|早上好|下午好|晚上好)[呀啊！!。.~\s]*", re.I)
-_ABILITY = re.compile(r"你(?:能|可以|会)(?:做|干|帮我做)?(?:什么|啥|哪些)|你有(?:哪些|什么)(?:功能|能力)|怎么用你")
+    rf"{_GIVE}.{{0,20}}?(?:{_SELF_SECRET}|{_KEY})|(?:{_SELF_SECRET}|{_KEY}).{{0,20}}?{_GIVE}"
+    r"|(?:忽略|无视|绕过|跳过|关闭|关掉)(?:你的|所有的?|一切|之前的?|以上的?|上面的?|前面的?|系统的?)?"
+    r"(?:规则|指令|提示词?|设定|权限检查|保密限制|安全限制|审计)"
+    r"|给我(?:你的)?(?:api ?key|密钥)(?!.{0,6}(?:怎么|如何|申请|流程|在哪|规定))"
+    r"|ignore (?:all |the )?(?:previous |above )?(?:rules|instructions)"
+    r"|其他用户|别的用户|没(?:有)?权限(?:看|访问|查看)", re.I)
+_GREETING = re.compile(r"(?:你好|您好|嗨|哈喽|hi|hello|在吗|早上好|下午好|晚上好)[呀啊！!。.~\s]*", re.I)
+_ABILITY = re.compile(r"你(?:能|可以|会)(?:帮.{0,8}?)?(?:做|干)?(?:些|点)?(?:什么|啥|哪些)|你有(?:哪些|什么)(?:功能|能力)|怎么用你")
 _WEEKLY = re.compile(r"(?:生成|写|起草|撰写)(?:一份|一下)?(?:本周|这周|这一周|上周)?的?周报")
 _FULL_SUMMARY = re.compile(r"全文总结|(?:总结|概括|梳理)(?:一下)?(?:整份|整个|全部|全文|所有|这份|该份|这篇|本文)")
 _BARE_REFERENCE = re.compile(r"(?:它|这个|那个|刚才那个|上面那个)(?:呢|是什么|什么时候|要多久|怎么做|如何处理)[？?。!\s]*")
 _REALTIME = re.compile(r"(?:今天|明天|现在|实时|最新|当前).{0,6}?(?:天气|气温|股价|汇率|新闻|油价|航班|路况|比分)")
+# 问自己业务数据的进度/数量：明确的进度词，或“我/自己”加业务对象和“哪些/几条”
+_PROGRESS = re.compile(
+    r"(?:待办|任务|周报|审核|材料).{0,10}?(?:生成了[吗没]|好了[吗没]|提交了[吗没]|到哪一?步|什么状态|进度(?:如何|怎么样))"
+    r"|(?:我|自己)(?:的|这周的?|还|现在)?(?:有|剩)?(?:哪些|几条|多少条?).{0,6}?(?:待办|任务|逾期)"
+    r"|(?:我|自己)(?:的|这周的?|还|现在)?(?:有|剩)?.{0,6}?(?:待办|任务|逾期).{0,4}?(?:哪些|几条|多少)")
+# 没有正文的处理指令、指向材料的提问：会话里没有材料和可调整的回答时需要澄清
+_BARE_TASK = re.compile(r"(?:请|帮我|麻烦)?(?:润色|总结|概括|提炼|整理|改写|优化|纪要|梳理)(?:一下|下)?"
+                        r"(?:这里面|这份|这篇|这个|它|材料|文件|内容)?(?:的?(?:内容|要点))?[。！？!?\s~]*")
+_DEICTIC = re.compile(r"(?:这里面|这份|这篇|这个文件|附件|上面的?材料)(?:都|主要)?(?:讲了?|说了?|写了?)(?:些)?(?:什么|啥)")
+# 知识库路由：话题由选定知识库的检索相关度判断（示例句覆盖不了千变万化的话题），任务由句式判断。
+_TASK_VERB = re.compile(r"总结|概括|提炼|梳理|捋|摘要|概览|介绍一下|整理|纪要|周报|起草|撰写|写(?:一?[封份篇段个首]|成)"
+                        r"|润色|改写|优化|翻译|拟|设计|做[个一]|生成|列成|拆成|新增|添加|追加|记一条|改成|换成|讲解稿"
+                        r"|比较(?:这|两|一下|下)")
+_ASK = re.compile(r"[？?]$|多少|几[天种条个次门项级年月周]|哪些|什么|怎么|怎样|如何|是否|能否|吗[？?。]?$|谁|多久|何时|有没有")
+_WHERE = re.compile(r"哪[个份]?(?:文件|文档|制度|手册|方案|程序|材料)|哪一?[章节条]|哪个?小节|出处|原文在哪|写在哪|哪里写"
+                    r"|条号|章节|定位|(?:表|附件|条款|规定)(?:放)?在哪|附件位置|标出.{0,6}位置")
 # 多目标、追问补全交给兜底层，语义层不硬分类。
-_COMPLEX = re.compile(r"然后|并且|同时|顺便|再把|另外|以及|对比|区别|那.{1,12}呢")
+_COMPLEX = re.compile(r"然后|并且|同时|顺便|再把|另外|以及|对比|区别|那.{1,12}呢|先.{1,30}再")
 
 EXAMPLES: dict[str, list[str]] = {
     "summarize": ["总结一下这份文档", "这份材料主要讲了什么", "帮我提炼这篇文章的要点", "概括这份报告的核心内容"],
@@ -89,8 +125,11 @@ class IntentFunnel:
     """encoder_factory 返回本地 Embedding（需有 embed_documents）；不传或加载失败时只用规则层。"""
 
     def __init__(self, encoder_factory=None, examples: dict[str, list[str]] | None = None,
-                 threshold: float | None = None, margin: float | None = None) -> None:
+                 threshold: float | None = None, margin: float | None = None, kb_probe=None) -> None:
+        """kb_probe(kb_id, text) 返回选定知识库中最相关片段的相似度（本地检索，不外发）。"""
         self.encoder_factory = encoder_factory
+        self.kb_probe = kb_probe
+        self.kb_threshold = config.INTENT_KB_THRESHOLD
         self.examples = examples or EXAMPLES
         self.threshold = config.INTENT_THRESHOLD if threshold is None else threshold
         self.margin = config.INTENT_MARGIN if margin is None else margin
@@ -100,7 +139,8 @@ class IntentFunnel:
         state = state or TurnState()
         if skill:  # 命令行显式指定的能力是规则层输入
             return IntentDecision(skill, 1, "用户显式指定能力", 1.0, skill)
-        return self._rules(text.strip(), state) or self._semantic(text.strip(), state) or \
+        text = text.strip()
+        return self._rules(text, state) or self._knowledge(text, state) or self._semantic(text, state) or \
             IntentDecision("agent", 3, "规则与语义层都没有把握，交给助理理解")
 
     def _rules(self, text: str, state: TurnState) -> IntentDecision | None:
@@ -114,11 +154,36 @@ class IntentFunnel:
             return IntentDecision("realtime", 1, "需要实时外部数据", 1.0, m.group())
         if _BARE_REFERENCE.fullmatch(text) and not state.has_previous_reply:
             return IntentDecision("clarify", 1, "只有指代、没有可补全的上文", 1.0, text)
+        # 选了知识库时可能指库里的资料，交给后续判断
+        if not state.has_body and not state.kb_id and (_BARE_TASK.fullmatch(text) or _DEICTIC.search(text)):
+            return IntentDecision("clarify", 1, "要处理的对象不明：没有附材料，也没有可调整的回答", 1.0, text[:20])
+        if (m := _PROGRESS.search(text)) and not _COMPLEX.search(text):
+            return IntentDecision("business_query", 1, "查询自己的业务数据或进度", 1.0, m.group())
         if m := _WEEKLY.search(text):
             return IntentDecision("weekly", 1, "明确要求起草周报", 1.0, m.group())
         if (m := _FULL_SUMMARY.search(text)) and not _COMPLEX.search(text):
             return IntentDecision("summarize", 1, "明确要求整份总结", 1.0, m.group())
         return None
+
+    def _knowledge(self, text: str, state: TurnState) -> IntentDecision | None:
+        """选了知识库、句式是提问或找出处、且库里有相关原文时，走知识问答或文档定位。"""
+        if not state.kb_id or self.kb_probe is None:
+            return None
+        if _COMPLEX.search(text) or _TASK_VERB.search(text) or len(text) > 80 or "\n" in text \
+                or re.match(r".{4,30}?[：:]", text):
+            return None
+        where, ask = _WHERE.search(text), _ASK.search(text)
+        if not (where or ask):
+            return None
+        try:
+            score = self.kb_probe(state.kb_id, text)
+        except Exception:  # 索引未就绪或检索失败时不影响对话
+            return None
+        if score is None or score < self.kb_threshold:
+            return None
+        intent, cue = ("locate", where.group()) if where else ("knowledge", ask.group())
+        return IntentDecision(intent, 2, f"选定知识库中有相关原文（相似度{score:.2f}），句式为{'找出处' if where else '提问'}",
+                              round(score, 4), cue)
 
     def _semantic(self, text: str, state: TurnState) -> IntentDecision | None:
         if _COMPLEX.search(text) or len(text) > 300:  # 多目标、追问与长输入交给兜底层
@@ -134,8 +199,6 @@ class IntentFunnel:
             return None
         best: dict[str, tuple[float, str]] = {}
         for intent, example, vector in vectors:
-            if intent in _NEEDS_PREVIOUS and not state.has_previous_reply:
-                continue
             score = _cosine(query, vector)
             if score > best.get(intent, (-1.0, ""))[0]:
                 best[intent] = (score, example)
@@ -146,7 +209,19 @@ class IntentFunnel:
         second = ranked[1][1][0] if len(ranked) > 1 else 0.0
         if score < self.threshold + _STRICTER.get(intent, 0) or score - second < self.margin:
             return None
-        return IntentDecision(intent, 2, f"与示例“{example}”最接近", round(score, 4), example)
+        reason = f"与示例“{example}”最接近"
+        if intent in {"knowledge", "locate"}:
+            # 知识问答只由知识库路由判断：没选库或库里没有相关原文时交给助理，不凭示例句走捷径
+            return None
+        if intent in _NEEDS_PREVIOUS and not state.has_previous_reply:
+            # “再短一点”“换成表格”却没有可调整的回答：问清楚，而不是让助理猜；带了正文或材料时交给助理
+            if head or state.has_materials or state.earlier_materials:
+                return None
+            return IntentDecision("clarify", 2, reason + "，但没有可调整的回答", round(score, 4), example)
+        if intent == "polish" and state.has_previous_reply and not state.has_materials and not head and len(text) <= 30:
+            # 有上一轮回答、本轮没给新正文的改写要求，是在改上一轮
+            return IntentDecision("revise", 2, reason + "，本轮没有新正文，按调整上一轮处理", round(score, 4), example)
+        return IntentDecision(intent, 2, reason, round(score, 4), example)
 
     def _load(self):
         if self._vectors is not None or self.encoder_factory is None:

@@ -29,7 +29,7 @@ def test_retry_budget_and_hint_survive_tool_loop_and_reset_next_turn(store):
     ])
     model = FunctionModel(respond=lambda _: next(responses), calls=[])
     agent = Agent(model, store=store)
-    assert agent.chat("总结") == "仍见第2块。"
+    assert agent.chat("总结一下进展") == "仍见第2块。"
     assert len(model.calls) == 3
     assert "本轮纠正要求" in model.calls[2][0].text
     assert "见第2块" in model.calls[2][0].text
@@ -48,7 +48,7 @@ def test_failed_new_session_is_reachable_and_retry_keeps_paired_history(store):
         return AIMessage("恢复后的回答")
     agent = Agent(FunctionModel(respond=respond, calls=[]), store=store)
     with TestClient(create_app(store, agent_factory=lambda _: agent)) as client:
-        failed = client.post("/chat", json={"text": "总结"})
+        failed = client.post("/chat", json={"text": "总结一下进展"})
         assert failed.status_code == 502
         thread = failed.json()["thread_id"]
         detail = client.get(f"/chat/sessions/{thread}").json()["messages"]
@@ -56,7 +56,7 @@ def test_failed_new_session_is_reachable_and_retry_keeps_paired_history(store):
         assert "本轮调用失败" in detail[-1]["text"]
         assert agent.graph.get_state({"configurable": {"thread_id": thread}}).next == ()
         state["fail"] = False
-        assert client.post("/chat", json={"thread_id": thread, "text": "总结"}).status_code == 200
+        assert client.post("/chat", json={"thread_id": thread, "text": "总结一下进展"}).status_code == 200
         history = client.get(f"/chat/sessions/{thread}").json()["messages"]
         assert [m["role"] for m in history] == ["user", "assistant", "user", "assistant"]
 

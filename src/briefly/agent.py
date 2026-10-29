@@ -29,7 +29,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from . import config
 from .compaction import Compactor
 from .context import Context
-from .context_builder import CONTEXT_OVERFLOW, ContextBuilder, system_reply
+from .context_builder import CONTEXT_OVERFLOW, SYSTEM_REPLY, ContextBuilder, system_reply
 from .context_store import ContextStore
 from .db import create_db_engine
 from .llm import create_chat_model
@@ -252,9 +252,7 @@ class Agent:
                     {"messages": [message, system_reply(notice)]}, as_node="model")
                 return notice
         history = self.history_of(thread_id)
-        decision = self.funnel.classify(display, TurnState(
-            has_materials=bool(material_ids), kb_id=kb_id, last_intent=_last_intent(history),
-            has_previous_reply=any(isinstance(m, AIMessage) and not m.tool_calls and m.text for m in history)), skill)
+        decision = self.funnel.classify(display, turn_state(history, material_ids, kb_id), skill)
         intent = decision.to_dict()
         if kb_id and self.knowledge is not None:
             intent["kb_id"], intent["kb_name"] = kb_id, self.knowledge.base_name(kb_id)
@@ -303,10 +301,9 @@ class Agent:
         """处理器登记表：能直接回复的意图不进入智能体循环；返回 None 时交给智能体。"""
         if decision.intent in DIRECT_REPLIES:
             return _intent_reply(DIRECT_REPLIES[decision.intent])
-        if decision.intent not in {"knowledge", "locate"} or self.knowledge is None:
+        # 知识捷径只由知识库路由给出（已选库且库里有相关原文）；没选库的知识问题由助理提示选择
+        if decision.intent not in {"knowledge", "locate"} or self.knowledge is None or not kb_id:
             return None
-        if not kb_id:
-            return system_reply("这是知识库查询。请先在输入框上方选择要查询的知识库，再提问。")
         evidence = []
         if decision.intent == "locate":  # 只在本地检索，不调用模型、不外发；列出的文档都可核对
             result = self.knowledge.locate(kb_id, text)
@@ -452,6 +449,20 @@ def _intent_reply(text: str) -> AIMessage:
     reply = system_reply(text)
     reply.response_metadata["intent_reply"] = True
     return reply
+
+
+def turn_state(history: list[AnyMessage], material_ids: list[int] | None, kb_id: str | None) -> TurnState:
+    """从完整会话历史（checkpointer 不因压缩删除消息）推出意图判断用的状态。"""
+    return TurnState(has_materials=bool(material_ids), kb_id=kb_id, last_intent=_last_intent(history),
+                     has_previous_reply=any(_revisable(m) for m in history),
+                     earlier_materials=bool(conversation_material_ids(history)))
+
+
+def _revisable(m: AnyMessage) -> bool:
+    """可供“调整上一轮”的回答：模型回答和文档定位结果；问候、拒绝、提示类固定回复不算。"""
+    if not isinstance(m, AIMessage) or m.tool_calls or not m.text:
+        return False
+    return not m.response_metadata.get(SYSTEM_REPLY) or bool(m.response_metadata.get("knowledge"))
 
 
 def _last_intent(messages: list[AnyMessage]) -> str | None:

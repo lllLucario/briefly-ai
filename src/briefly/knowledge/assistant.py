@@ -27,6 +27,13 @@ class KnowledgeAssistant:
         with self.knowledge._session() as s:
             return self.knowledge._kb(s, kb_id).name
 
+    def relevance(self, kb_id: str, question: str) -> float | None:
+        """意图漏斗用：选定知识库中最相关片段的语义相似度。只在本地检索，不外发。"""
+        result = self.retrieval.search(kb_id, question)
+        sims = [1 - route["raw_score"] for item in result["evidence"]
+                for route in item["retrieval"]["routes"] if route["route"] == "semantic"]
+        return max(sims) if sims else None
+
     def answer(self, kb_id: str, question: str) -> dict:
         """B1 单点查询捷径：沿用知识问答的质量、授权与引用检查。"""
         return self.qa.answer(kb_id, question)

@@ -39,6 +39,8 @@ KNOWLEDGE_PROMPT_TOKENS = int(os.getenv("BRIEFLY_KNOWLEDGE_PROMPT_TOKENS", "1200
 # 意图漏斗语义层：与示例句的最低相似度、与第二名意图的最小差距；达不到交给助理判断
 INTENT_THRESHOLD = float(os.getenv("BRIEFLY_INTENT_THRESHOLD", "0.64"))
 INTENT_MARGIN = float(os.getenv("BRIEFLY_INTENT_MARGIN", "0.05"))
+# 知识库路由：选定知识库中最相关片段的语义相似度下限（本地检索），达到且句式为提问/找出处才走知识捷径
+INTENT_KB_THRESHOLD = float(os.getenv("BRIEFLY_INTENT_KB_THRESHOLD", "0.5"))
 # 旧版Word本地转换；不配置时查PATH及常见LibreOffice安装位置。
 LIBREOFFICE_PATH = os.getenv("BRIEFLY_LIBREOFFICE", "")
 DOC_CONVERSION_TIMEOUT_S = max(1, int(os.getenv("BRIEFLY_DOC_CONVERSION_TIMEOUT_S", "90")))

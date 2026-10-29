@@ -64,11 +64,11 @@ def test_unknown_skill_rejected():
 def test_history_is_kept_across_turns():
     model = fake(text_msg("第一条回复"), text_msg("第二条回复"))
     agent = Agent(model, tools=[])
-    agent.chat("总结这个")
+    agent.chat("总结这个方案的要点")
     agent.chat("再短一点")
     msgs = model.calls[1]
     assert [type(m) for m in msgs] == [SystemMessage, HumanMessage, AIMessage, HumanMessage]
-    assert msgs[1].content == "总结这个"
+    assert msgs[1].content == "总结这个方案的要点"
 
 
 def test_reset_starts_new_thread():

@@ -46,8 +46,8 @@ class KnowledgeQA:
         with knowledge._session() as s:
             knowledge._kb(s, kb_id)
         # 意图漏斗规则层（与助理入口共用）：澄清与全文流程不走Top-K问答。
-        from ..intent import DIRECT_REPLIES, IntentFunnel
-        decision = IntentFunnel().classify(question)
+        from ..intent import DIRECT_REPLIES, IntentFunnel, TurnState
+        decision = IntentFunnel().classify(question, TurnState(kb_id=kb_id))
         if decision.intent in {"clarify", "blocked"}:
             return dict(status="clarification_required" if decision.intent == "clarify" else "blocked",
                         answer="请明确指代的对象和需要确认的信息；需要结合上文时请在助理中继续提问。" if decision.intent == "clarify" else DIRECT_REPLIES["blocked"],

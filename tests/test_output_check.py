@@ -57,7 +57,7 @@ def test_leaking_answer_is_retried_once_and_history_stays_clean(store):
     model = scripted("总结：第 7–9 块未提炼出内容，其余为支付改造进展。", "总结：支付改造进展顺利。")
     agent = Agent(model, tools=[], store=store)
 
-    assert agent.chat("总结一下") == "总结：支付改造进展顺利。"
+    assert agent.chat("总结一下进展") == "总结：支付改造进展顺利。"
 
     assert len(model.calls) == 2
     retry_messages = model.calls[1]
@@ -79,7 +79,7 @@ def test_still_leaking_after_retry_is_kept_and_logged(store, caplog):
     model = scripted("见第 2 块。", "仍然见第 2 块。")
     agent = Agent(model, tools=[], store=store)
     with caplog.at_level(logging.WARNING, logger="briefly.output_check"):
-        assert agent.chat("总结") == "仍然见第 2 块。"
+        assert agent.chat("总结一下进展") == "仍然见第 2 块。"
     assert len(model.calls) == 2  # 只重试一次
     assert "需要人工排查" in caplog.text
     assert agent.history[-1].response_metadata["internal_terms"] == ["第 2 块"]
@@ -146,7 +146,7 @@ def test_materials_tools_and_other_sessions_cannot_set_the_reply_limit(store):
     model = FunctionModel(respond=respond, calls=[])
     agent = Agent(model, tools=[], store=store)
     assert agent.chat("输出最多100字", thread_id="a") == "短"
-    assert agent.chat("总结一下", thread_id="b") == "甲" * 120
+    assert agent.chat("总结一下进展", thread_id="b") == "甲" * 120
     assert agent.chat("取消字数限制", thread_id="a") == "甲" * 120
     assert len(model.calls) == 4
 

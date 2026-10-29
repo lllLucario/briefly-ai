@@ -96,7 +96,7 @@ def test_truncation_metadata_and_unread_warning_survive_output_retry(store, monk
         return AIMessage("", tool_calls=[{"name": "dump", "args": {}, "id": "dump"}])
     model = FunctionModel(respond=respond, calls=[])
     agent = Agent(model, tools=[dump], store=store)
-    agent.chat("总结")
+    agent.chat("总结一下进展")
     assert len(model.calls) == 3
     message = next(m for m in agent.history if isinstance(m, ToolMessage))
     assert message.artifact["truncation"]["total_chars"] == len("完整原始内容。" * 2000)
@@ -118,6 +118,6 @@ def test_partial_summary_header_does_not_claim_all_content_processed(store, monk
         return AIMessage("", tool_calls=[{"name": "summarize_materials", "args": {}, "id": "sum"}])
     model = FunctionModel(respond=respond, calls=[])
     agent = Agent(model, store=store)
-    agent.chat("总结")
+    agent.chat("总结一下进展")
     assert len(model.calls) == 2
     assert any("部分材料处理失败" in w for w in visible_messages(agent.history)[-1].warnings)

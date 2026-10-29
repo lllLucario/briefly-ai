@@ -1,7 +1,10 @@
 """意图漏斗本地评测：只跑规则层与语义层（本机BGE），不调用生成模型、不外发。
 
-用法：python tests/eval/intent_eval.py [--cases files/eval/intent/cases.jsonl] [--sweep] [--errors]
+用法：python tests/eval/intent_eval.py [--cases files/eval/intent/cases.jsonl] [--split dev] [--sweep] [--errors]
+                                     [--kb-root 本地评测知识库目录]
 兜底层（agent）记为“交给助理”，只统计分流是否合理，不评价助理最终回答。
+--kb-root 指向用 ImportService 建好的本地知识库目录（含 app.db、index.sqlite、kb_id.txt），
+用例选了知识库时按该库做知识库路由；只在本机检索，不外发。
 """
 import argparse
 from collections import Counter, defaultdict
@@ -32,13 +35,21 @@ class CachedEncoder:
         return [self.cache[t] for t in texts]
 
 
-def load_cases(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+def load_cases(path: Path, split: str = "all") -> list[dict]:
+    """split：dev 用于调规则和阈值；holdout 为每类按编号每 3 条封存 1 条，只用于最终报告，调参时不看明细。"""
+    cases = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if split == "all":
+        return cases
+    by = defaultdict(list)
+    for case in cases:
+        by[case["expected_intent"]].append(case)
+    held = {c["id"] for group in by.values() for i, c in enumerate(sorted(group, key=lambda c: c["id"])) if i % 3 == 2}
+    return [c for c in cases if (c["id"] in held) == (split == "holdout")]
 
 
-def state_of(case: dict) -> TurnState:
+def state_of(case: dict, kb_id: str = "kb-eval") -> TurnState:
     s = case["state"]
-    return TurnState(has_materials=s["has_materials"], kb_id="kb-eval" if s["kb_selected"] else None,
+    return TurnState(has_materials=s["has_materials"], kb_id=kb_id if s["kb_selected"] else None,
                      has_previous_reply=s["previous_turn"] is not None)
 
 
@@ -59,10 +70,10 @@ def outcome(case: dict, predicted: str) -> str:
     return "wrong_hint"  # 误判能力，只作为提示交给助理，用户原话优先
 
 
-def run(cases, funnel) -> list[dict]:
+def run(cases, funnel, kb_id: str = "kb-eval") -> list[dict]:
     rows = []
     for case in cases:
-        d = funnel.classify(case["text"], state_of(case))
+        d = funnel.classify(case["text"], state_of(case, kb_id))
         rows.append(dict(case=case, intent=d.intent, layer=d.layer, confidence=d.confidence,
                          outcome=outcome(case, d.intent)))
     return rows
@@ -117,6 +128,36 @@ def report(rows, show_errors: bool) -> None:
                       f"{LABELS[r['intent']]}：{c['text'][:60]}")
 
 
+def kb_probe(root: Path, encoder_factory):
+    """返回 (kb_id, 带缓存的相关度函数, 关闭函数)。"""
+    from briefly.db import create_db_engine
+    from briefly.knowledge.assistant import KnowledgeAssistant
+    from briefly.knowledge.index import LocalIndex
+    from briefly.knowledge.ingestion import ImportService
+    from briefly.knowledge.retrieval import RetrievalService
+
+    engine = create_db_engine("sqlite:///" + (root / "app.db").as_posix())
+    imports = ImportService(engine, root, LocalIndex(root / "index.sqlite"), encoder_factory)
+    assistant, cache = KnowledgeAssistant(RetrievalService(imports), None), {}
+
+    def probe(kb_id, text):
+        if text not in cache:
+            cache[text] = assistant.relevance(kb_id, text)
+        return cache[text]
+    return (root / "kb_id.txt").read_text(encoding="utf-8").strip(), probe, engine.dispose
+
+
+def kb_sweep(cases, encoder, kb_id, probe) -> None:
+    print("\n知识库路由相似度下限扫描（下限 → 可接受率、前两层处理比例、前两层正确率、误判直接回复、误走捷径、误判提示）：")
+    for floor in (0.45, 0.50, 0.55, 0.60):
+        funnel = IntentFunnel(lambda: encoder, kb_probe=probe)
+        funnel.kb_threshold = floor
+        s = summarize(run(cases, funnel, kb_id))
+        print(f"  {floor:.2f}  {s['acceptable']:.1%}  {1 - s['layers'].get(3, 0):.1%}  {s['early_precision'] or 0:.1%}  "
+              f"{s['outcomes'].get('wrong_direct', 0):>3}  {s['outcomes'].get('wrong_shortcut', 0):>3}  "
+              f"{s['outcomes'].get('wrong_hint', 0):>3}")
+
+
 def sweep(cases, encoder) -> None:
     print("\n阈值扫描（阈值/差距 → 可接受率、前两层处理比例、前两层正确率、误判直接回复、误走捷径、误判提示）：")
     for threshold in (0.60, 0.62, 0.64, 0.66, 0.68, 0.70):
@@ -134,15 +175,26 @@ def main():
     parser.add_argument("--model-dir", default=config.EMBEDDING_DIR)
     parser.add_argument("--sweep", action="store_true", help="扫描语义层阈值与差距")
     parser.add_argument("--errors", action="store_true", help="列出每条误判")
+    parser.add_argument("--split", choices=["all", "dev", "holdout"], default="all")
+    parser.add_argument("--kb-root", type=Path, help="本地评测知识库目录，启用知识库路由")
     args = parser.parse_args()
     if not args.model_dir:
         parser.error("需要本地Embedding目录（.env 的 BRIEFLY_EMBEDDING_DIR 或 --model-dir）")
-    cases = load_cases(Path(args.cases))
+    cases = load_cases(Path(args.cases), args.split)
     encoder = CachedEncoder(create_local_embeddings(args.model_dir))
     print("== 只用规则层 ==")
     report(run(cases, IntentFunnel()), False)
     print("\n== 规则层＋语义层（当前阈值） ==")
-    report(run(cases, IntentFunnel(lambda: encoder)), args.errors)
+    report(run(cases, IntentFunnel(lambda: encoder)), args.errors and not args.kb_root)
+    if args.kb_root:
+        kb_id, probe, close = kb_probe(args.kb_root, lambda: encoder.encoder)
+        try:
+            print("\n== 规则层＋知识库路由＋语义层 ==")
+            report(run(cases, IntentFunnel(lambda: encoder, kb_probe=probe), kb_id), args.errors)
+            if args.sweep:
+                kb_sweep(cases, encoder, kb_id, probe)
+        finally:
+            close()
     if args.sweep:
         sweep(cases, encoder)
 
