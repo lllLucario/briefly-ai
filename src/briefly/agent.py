@@ -1,4 +1,4 @@
-"""单智能体：一份总提示词 + 五项能力说明，由模型自行判断任务。
+"""单智能体：一份总提示词 + 五项能力说明；意图漏斗（intent.py）先做低成本判断，没把握时由模型自行判断任务。
 
 基于 LangChain create_agent：工具调用循环由框架负责，会话记忆存在 LangGraph checkpointer 中，
 以 thread_id 区分会话。本模块只补充项目自己的规则：动态提示词、上下文管理、工具轮数上限、工具报错回传。
@@ -40,6 +40,8 @@ from .sources import conversation_material_ids
 from .tokens import TokenCounter
 from .tool_budget import ToolBudgetMiddleware, turn_key
 from .feishu import configured as feishu_configured
+from .intent import DIRECT_REPLIES, IntentDecision, IntentFunnel, TurnState
+from .knowledge.assistant import KnowledgeAssistant, knowledge_tools
 from .feishu.client import default_client
 from .clock import RequestTime, request_time
 from .tools import DEFAULT_TOOLS
@@ -68,17 +70,25 @@ INPUT_HEAD_CHARS = 600  # 长输入转存为材料后，消息里保留的开头
 INPUT_TAIL_CHARS = 400
 
 
-def build_system_prompt(skill: str | None = None) -> str:
+def build_system_prompt(skill: str | None = None, inferred: str | None = None, knowledge: str | None = None) -> str:
+    """skill 为用户显式指定的能力；inferred 为意图漏斗推断的能力，只作提示，用户要求不同时以用户为准。"""
     parts = [read_prompt("base"), "# 能力说明", *(s.prompt for s in SKILLS.values())]
     if skill:
         parts.append(f"# 本次任务\n用户已指定使用「{SKILLS[skill].description}」能力，按该能力的规则和输出格式执行，不改用其他能力的格式；认为别的能力更合适时，只在末尾用一句话建议。")
+    elif inferred:
+        parts.append(f"# 本次任务\n意图识别判断本次请求是「{SKILLS[inferred].description}」，按该能力的规则和输出格式执行；如果用户的原话明显是别的要求，以用户原话为准。")
+    if knowledge:
+        parts.append(f"# 知识库\n用户选定了知识库《{knowledge}》。涉及制度、项目资料、产品手册等知识问题时，用 search_knowledge 检索原文后回答，"
+                     "只依据检索到的原文并标注〔依据N〕；之前的聊天回答只用于理解问题，不作为事实依据。")
     return "\n\n".join(parts)
 
 
 @dynamic_prompt
 def _system_prompt(request: ModelRequest) -> str:
     context = request.runtime.context
-    prompt = build_system_prompt(context.skill if context else None)
+    intent = (context.intent or {}) if context else {}
+    inferred = intent.get("intent") if intent.get("intent") in SKILLS else None
+    prompt = build_system_prompt(context.skill if context else None, inferred, intent.get("kb_name"))
     if context and context.now:  # 只在每次调用的系统提示里，不进会话历史
         prompt += "\n\n" + RequestTime(context.now).prompt()
     return prompt
@@ -115,6 +125,8 @@ class Agent:
         store: MaterialStore | None = None,
         context_store: ContextStore | None = None,
         feishu_factory: Callable | None = None,
+        funnel: IntentFunnel | None = None,
+        knowledge: KnowledgeAssistant | None = None,
     ) -> None:
         """context_store 存会话记忆、超大工具结果和观测数据；不传时与材料库同库，都没有时用内存库。
 
@@ -134,6 +146,8 @@ class Agent:
             self.counter, self.context_store, self.compactor, self.model_name, task_state=self._task_state
         )
 
+        self.funnel = funnel or IntentFunnel()  # 默认只有规则层；网页后端注入本地 Embedding 后启用语义层
+        self.knowledge = knowledge
         tools = list(DEFAULT_TOOLS if tools is None else tools)
         tools += context_tools(self.context_store)
         if store is not None:
@@ -141,9 +155,16 @@ class Agent:
             tools += material_tools(store, model, self.context_store)  # 完整提炼工具与智能体用同一个模型
             if feishu_factory is not None or feishu_configured():
                 tools += feishu_tools(store, feishu_factory or default_client)
-        self.graph = create_agent(
-            model,
-            tools=tools,
+        if knowledge is not None:
+            tools += knowledge_tools(knowledge)
+        self._model, self._tools, self._checkpointer = model, tools, checkpointer or InMemorySaver()
+        self.graph = self._build_graph()
+        self.thread_id = thread_id or new_thread_id()
+
+    def _build_graph(self):
+        return create_agent(
+            self._model,
+            tools=self._tools,
             middleware=[  # 列表中靠前的包在外层：先定提示词，再由 Context Builder 组装上下文并检查预算
                 _system_prompt,
                 InternalTermCheck(self._check_sources, self._reply_limit),  # 在 Context Builder 外层：重试也经过预算检查
@@ -154,9 +175,16 @@ class Agent:
                 ToolErrorMiddleware(on_error=_tool_error),
             ],
             context_schema=Context,
-            checkpointer=checkpointer or InMemorySaver(),
+            checkpointer=self._checkpointer,
         )
-        self.thread_id = thread_id or new_thread_id()
+
+    def enable_knowledge(self, knowledge: KnowledgeAssistant, funnel: IntentFunnel | None = None) -> None:
+        """网页后端在知识库服务就绪后接入知识能力和语义层；会话历史在 checkpointer 中，不受影响。"""
+        if self.knowledge is None:
+            self._tools = [*self._tools, *knowledge_tools(knowledge)]
+        self.knowledge = knowledge
+        self.funnel = funnel or self.funnel
+        self.graph = self._build_graph()
 
     def _quality_middleware(self):
         @before_model(can_jump_to=["end"])
@@ -201,10 +229,12 @@ class Agent:
         skill: str | None = None,
         material_ids: list[int] | None = None,
         thread_id: str | None = None,
+        kb_id: str | None = None,
     ) -> str:
         """thread_id 不传时用当前会话（CLI）；网页后端多个会话共用一个 Agent，每次调用传入会话编号。
 
         用户的原始输入记在消息的 additional_kwargs["display"] 里，供网页显示历史（发给模型的是附了材料的全文）。
+        本轮意图记在 additional_kwargs["intent"]；kb_id 为用户选定的知识库。
         """
         thread_id = thread_id or self.thread_id
         display = text
@@ -221,6 +251,19 @@ class Agent:
                 self.graph.update_state({"configurable": {"thread_id": thread_id}},
                     {"messages": [message, system_reply(notice)]}, as_node="model")
                 return notice
+        history = self.history_of(thread_id)
+        decision = self.funnel.classify(display, TurnState(
+            has_materials=bool(material_ids), kb_id=kb_id, last_intent=_last_intent(history),
+            has_previous_reply=any(isinstance(m, AIMessage) and not m.tool_calls and m.text for m in history)), skill)
+        intent = decision.to_dict()
+        if kb_id and self.knowledge is not None:
+            intent["kb_id"], intent["kb_name"] = kb_id, self.knowledge.base_name(kb_id)
+        direct = self._direct(decision, display, kb_id)
+        if direct is not None:
+            message = HumanMessage(display, id=uuid.uuid4().hex, additional_kwargs=dict(
+                display=display, material_ids=material_ids or [], skill=skill, intent=intent, kb_id=kb_id))
+            self.graph.update_state({"configurable": {"thread_id": thread_id}}, {"messages": [message, direct]}, as_node="model")
+            return direct.text
         try:
             text, stored = self._preflight(text)
         except ValueError as e:
@@ -230,7 +273,7 @@ class Agent:
         scope = [*material_ids, *stored] if material_ids else None
         material_ids = [*(material_ids or []), *stored]  # 转存的长输入只给引用，不再全文附回
         compacted = self._compact(thread_id, run_id)
-        meta = {"display": display, "material_ids": material_ids, "skill": skill}
+        meta = {"display": display, "material_ids": material_ids, "skill": skill, "intent": intent, "kb_id": kb_id}
         message = HumanMessage(text, id=uuid.uuid4().hex, additional_kwargs=meta)
         try:
             result = self.graph.invoke(
@@ -244,6 +287,8 @@ class Agent:
                     compacted=compacted,
                     reply_limit=reply_char_limit([*self.history_of(thread_id), message]),
                     now=started.now,
+                    kb_id=kb_id,
+                    intent=intent,
                 ),
             )
         except Exception:
@@ -253,6 +298,28 @@ class Agent:
                 log.exception("保存本轮调用失败说明失败")
             raise
         return result["messages"][-1].text
+
+    def _direct(self, decision: IntentDecision, text: str, kb_id: str | None) -> AIMessage | None:
+        """处理器登记表：能直接回复的意图不进入智能体循环；返回 None 时交给智能体。"""
+        if decision.intent in DIRECT_REPLIES:
+            return system_reply(DIRECT_REPLIES[decision.intent])
+        if decision.intent not in {"knowledge", "locate"} or self.knowledge is None:
+            return None
+        if not kb_id:
+            return system_reply("这是知识库查询。请先在输入框上方选择要查询的知识库，再提问。")
+        if decision.intent == "locate":  # 只在本地检索，不调用模型、不外发
+            result = self.knowledge.locate(kb_id, text)
+        else:
+            result = self.knowledge.answer(kb_id, text)
+            if result["status"] in {"workflow_required", "clarification_required", "blocked"}:
+                return None  # 知识问答入口不处理的请求，交给智能体结合上下文判断
+        references = [dict(label=f"依据{i}", reference=item["reference"], title=item["source"]["title"])
+                      for i, item in enumerate(result.get("evidence") or [], 1)]
+        reply = AIMessage(result["answer"], id=uuid.uuid4().hex) if result.get("model_called") else system_reply(result["answer"])
+        reply.response_metadata["knowledge"] = dict(kb_id=kb_id, status=result["status"], references=references,
+                                                    warnings=result.get("warnings") or [],
+                                                    egress=result.get("egress") if result.get("model_called") else None)  # 只记录实际发生的外发
+        return reply
 
     def _close_failed_turn(self, thread_id, message_id):
         """闭合已入checkpoint的失败轮次，不删除用户原话，不重发或恢复旧工具任务。"""
@@ -373,6 +440,13 @@ def _fallback_engine():
     if _fallback is None:
         _fallback = create_db_engine("sqlite://")
     return _fallback
+
+
+def _last_intent(messages: list[AnyMessage]) -> str | None:
+    for m in reversed(messages):
+        if isinstance(m, HumanMessage) and not m.additional_kwargs.get("internal"):
+            return (m.additional_kwargs.get("intent") or {}).get("intent")
+    return None
 
 
 def new_thread_id() -> str:

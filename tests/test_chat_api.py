@@ -46,7 +46,8 @@ def test_new_session_then_continue(chat_client):
     assert first.json()["reply"] == "第一条回复"
 
     second = client.post("/chat", json={"text": "再短一点", "thread_id": thread})
-    assert second.json() == {"thread_id": thread, "reply": "第二条回复"}
+    assert {k: second.json()[k] for k in ("thread_id", "reply")} == {"thread_id": thread, "reply": "第二条回复"}
+    assert second.json()["intent"]["layer"] == 3  # 没有本地 Embedding 时“再短一点”交给助理结合上文理解
     assert [m.content for m in model.calls[1][1:]][-1] == "再短一点"  # 同一会话带着历史
 
     sessions = client.get("/chat/sessions").json()
@@ -81,14 +82,14 @@ def test_history_lists_tools_used(chat_client):
 
 def test_context_usage_is_reported(chat_client):
     client, _ = chat_client
-    thread = client.post("/chat", json={"text": "你好"}).json()["thread_id"]
+    thread = client.post("/chat", json={"text": "帮我看看"}).json()["thread_id"]
     ctx = client.get(f"/chat/sessions/{thread}/context").json()
     assert ctx["usage"]["estimated_tokens"] > 0 and ctx["memory_version"] is None
 
 
 def test_delete_session(chat_client):
     client, _ = chat_client
-    thread = client.post("/chat", json={"text": "你好"}).json()["thread_id"]
+    thread = client.post("/chat", json={"text": "帮我看看"}).json()["thread_id"]
     assert client.delete(f"/chat/sessions/{thread}").status_code == 204
     assert client.get("/chat/sessions").json() == []
     assert client.get(f"/chat/sessions/{thread}").status_code == 404
@@ -114,7 +115,7 @@ def test_chat_errors_are_readable(chat_client, body, code, message):
 def test_model_error_becomes_502():
     engine, _, client = make_client(error=RuntimeError())
     with client:
-        resp = client.post("/chat", json={"text": "你好"})
+        resp = client.post("/chat", json={"text": "帮我看看"})
         assert resp.status_code == 502 and "模型调用失败" in resp.json()["detail"]
     engine.dispose()
 
@@ -145,7 +146,7 @@ def test_missing_model_config_keeps_non_model_features_available(monkeypatch, tm
             assert client.get("/").status_code == 200
             assert client.get("/materials").status_code == 200
             assert client.post("/materials", json={"content": "无需模型即可保存"}).status_code == 201
-            response = client.post("/chat", json={"text": "你好"})
+            response = client.post("/chat", json={"text": "帮我看看"})
             assert response.status_code == 503
             assert "BRIEFLY_" + field in response.json()["detail"]
             assert "重启" in response.json()["detail"]

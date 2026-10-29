@@ -33,6 +33,12 @@ MAX_UPLOAD_MB = int(os.getenv("BRIEFLY_MAX_UPLOAD_MB", "10"))
 PARSE_TIMEOUT_S = max(1, int(os.getenv("BRIEFLY_PARSE_TIMEOUT_S", "120")))
 KNOWLEDGE_DIR = os.getenv("BRIEFLY_KNOWLEDGE_DIR", "data/knowledge")
 EMBEDDING_DIR = os.getenv("BRIEFLY_EMBEDDING_DIR", "")
+# 知识问答：发给生成模型的依据包总额（按本地 Embedding 分词器计）及整个回答提示的上限（按生成模型计）
+KNOWLEDGE_CONTEXT_TOKENS = int(os.getenv("BRIEFLY_KNOWLEDGE_CONTEXT_TOKENS", "8000"))
+KNOWLEDGE_PROMPT_TOKENS = int(os.getenv("BRIEFLY_KNOWLEDGE_PROMPT_TOKENS", "12000"))
+# 意图漏斗语义层：与示例句的最低相似度、与第二名意图的最小差距；达不到交给助理判断
+INTENT_THRESHOLD = float(os.getenv("BRIEFLY_INTENT_THRESHOLD", "0.64"))
+INTENT_MARGIN = float(os.getenv("BRIEFLY_INTENT_MARGIN", "0.05"))
 # 旧版Word本地转换；不配置时查PATH及常见LibreOffice安装位置。
 LIBREOFFICE_PATH = os.getenv("BRIEFLY_LIBREOFFICE", "")
 DOC_CONVERSION_TIMEOUT_S = max(1, int(os.getenv("BRIEFLY_DOC_CONVERSION_TIMEOUT_S", "90")))

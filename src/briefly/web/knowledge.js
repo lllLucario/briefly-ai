@@ -4,7 +4,7 @@
   const drafts = new Map();
   let current = "", revision = 0, timer = null, preview = null;
   const names = {queued:"等待解析", parsing:"解析中", preview:"等待核对切片", indexing:"建立索引中", ready:"已完成", failed:"处理失败", rejected:"未接收"};
-  const statuses = {answered:"草稿回答", partial_answer:"部分可答", insufficient_evidence:"依据不足", needs_review:"需要复核", external_confirmation_required:"等待外发确认", incomplete_scope:"部分资料未就绪", not_ready:"资料未就绪", empty_scope:"范围为空", empty_library:"库内暂无可用资料", workflow_required:"请使用完整材料流程", clarification_required:"请补充问题", no_candidates:"没有召回依据"};
+  const statuses = {answered:"草稿回答", partial_answer:"部分可答", insufficient_evidence:"依据不足", needs_review:"需要复核", external_authorization_required:"本库未允许外发", located:"文档定位", blocked:"已拦截", incomplete_scope:"部分资料未就绪", not_ready:"资料未就绪", empty_scope:"范围为空", empty_library:"库内暂无可用资料", workflow_required:"请使用完整材料流程", clarification_required:"请补充问题", no_candidates:"没有召回依据"};
   function draft(id = current) {
     if (!drafts.has(id)) drafts.set(id, {question:"", privateText:"", all:true, selected:new Set(), files:[], seq:0, result:null, message:"", uploading:false, asking:false, target:null});
     return drafts.get(id);
@@ -14,14 +14,16 @@
     if (id) draft(id).message = text;
     if (!id || current === id) $("#kb-message").textContent = text;
   }
-  function invalidate() { draft().seq++; $("#kb-external").checked = false; }
+  function invalidate() { draft().seq++; }
+  let bases = [];
+  function syncEgress() { $("#kb-external").checked = Boolean(bases.find(kb => kb.id === current)?.external_allowed); }
   function selectedScope(d) { return d.all ? null : [...d.selected]; }
   function restore() {
     const d = draft();
     $("#kb-question").value = d.question;
     $("#kb-private").value = d.privateText;
     $("#kb-all").checked = d.all;
-    $("#kb-external").checked = false;
+    syncEgress();
     $("#kb-partial").checked = false;
     $("#kb-upload").disabled = d.uploading;
     $("#kb-ask").disabled = d.asking;
@@ -78,7 +80,7 @@
   window.loadKnowledge = async () => {
     const rev = ++revision;
     try {
-      const bases = await api("/knowledge-bases");
+      bases = await api("/knowledge-bases");
       if (revision !== rev) return;
       $("#kb-select").innerHTML = '<option value="">选择知识库</option>' + bases.map(kb => `<option value="${escapeHtml(kb.id)}">${escapeHtml(kb.name)}</option>`).join("");
       const id = bases.some(kb => kb.id === current) ? current : bases[0]?.id || "";
@@ -87,6 +89,19 @@
     } catch (error) { if (revision === rev) message(error.message); }
   };
   $("#kb-select").addEventListener("change", () => choose($("#kb-select").value));
+  // 一次性授权：保存到服务端，对本库之后的问答和助理均生效，可随时关闭。
+  $("#kb-external").addEventListener("change", async () => {
+    const id = current, allowed = $("#kb-external").checked;
+    if (!id) return;
+    $("#kb-external").disabled = true;
+    try {
+      await api(`/knowledge-bases/${id}/egress`, {method:"PUT", json:{allowed}});
+      const kb = bases.find(item => item.id === id); if (kb) kb.external_allowed = allowed;
+      message(allowed ? "已允许本知识库外发，之后提问不再逐次确认；可随时关闭。" : "已关闭本知识库外发，之后只在本地核验依据。", id);
+      if (typeof loadChatBases === "function") loadChatBases().catch(() => {});
+    } catch (error) { message(error.message, id); syncEgress(); }
+    finally { $("#kb-external").disabled = false; }
+  });
   $("#kb-create").addEventListener("click", async () => {
     const name = $("#kb-name").value.trim();
     if (!name) return message("请输入知识库名称。");
@@ -170,13 +185,14 @@
     $("#kb-result").innerHTML = `<h4>${escapeHtml(statuses[result.status] || result.status)}</h4><div class="markdown">${renderMaterialMarkdown(result.answer || "")}</div>
       ${result.stale ? '<p class="danger small">引用所对应的文档已更新或移出，请重新检索；旧引用仍可核对原版本。</p>' : ""}
       ${(result.warnings || []).map(note => `<p class="danger small">${escapeHtml(note)}</p>`).join("")}
+      ${result.model_called && result.egress ? `<p class="muted small">本次已将问题与 ${result.egress.evidence_sent} 个片段经规则处理后发送给外部生成服务。</p>` : ""}
       ${(result.evidence || []).length ? '<h4>核对原文与版本</h4>' : ""}
       ${(result.evidence || []).map((item, i) => `<button class="ghost small" data-kb-reference="${escapeHtml(item.reference)}">依据${i+1} · ${escapeHtml(item.source.title)}</button>`).join("")}`;
   }
   $("#kb-ask").addEventListener("click", async () => {
     const id = current, d = draft(id), seq = ++d.seq;
     if (!d.question.trim()) return message("请输入问题。", id);
-    const json = {question:d.question, document_ids:selectedScope(d), allow_external:$("#kb-external").checked,
+    const json = {question:d.question, document_ids:selectedScope(d),
       allow_partial:$("#kb-partial").checked, private_values:d.privateText.split("\n").map(line => line.trim()).filter(Boolean)};
     d.asking = true; $("#kb-ask").disabled = true; message("正在核验当前范围的依据。", id);
     try { const result = await api(`/knowledge-bases/${id}/answer`, {method:"POST", json}); if (seq === d.seq) { d.result = result; if (current === id) renderResult(result); } }

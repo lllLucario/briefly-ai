@@ -8,7 +8,7 @@ from sqlalchemy.orm import defer, sessionmaker
 
 from ..clock import now_local, system_naive
 from ..materials import Material, MaterialChunk
-from .models import IndexGeneration, KnowledgeBase, KnowledgeChunk, KnowledgeDocument, KnowledgePublication, KnowledgeVersion
+from .models import IndexGeneration, KnowledgeBase, KnowledgeChunk, KnowledgeEgressGrant, KnowledgeDocument, KnowledgePublication, KnowledgeVersion
 from .evidence import constraints, quality_snapshot, restricted_answer
 
 
@@ -116,6 +116,25 @@ class KnowledgeService:
     def list_bases(self):
         with self._session() as s:
             return list(s.scalars(select(KnowledgeBase).where(KnowledgeBase.deleted_at.is_(None)).order_by(KnowledgeBase.created_at, KnowledgeBase.id)))
+
+    def egress_allowed(self, kb_id):
+        with self._session() as s:
+            self._kb(s, kb_id)
+            grant = s.get(KnowledgeEgressGrant, kb_id)
+            return bool(grant and grant.allowed)
+
+    def set_egress(self, kb_id, allowed):
+        """按知识库一次性授权外发，可随时关闭；之后的问答不再逐次确认。"""
+        with self._session.begin() as s:
+            self._kb(s, kb_id)
+            grant = s.get(KnowledgeEgressGrant, kb_id) or KnowledgeEgressGrant(kb_id=kb_id)
+            grant.allowed = bool(allowed)
+            s.add(grant)
+        return bool(allowed)
+
+    def egress_grants(self):
+        with self._session() as s:
+            return {g.kb_id for g in s.scalars(select(KnowledgeEgressGrant).where(KnowledgeEgressGrant.allowed.is_(True)))}
 
     def documents(self, kb_id):
         with self._session() as s:

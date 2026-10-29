@@ -16,7 +16,9 @@ class RetrievalService:
         self.imports = imports
 
     def search(self, kb_id, question, *, document_ids=None, include_document_context=False,
-               context_budget_only=False):
+               context_budget_only=False, context_tokens=None):
+        """context_tokens：依据包总额，默认沿用对照实验口径；正式回答传入 KNOWLEDGE_CONTEXT_TOKENS。"""
+        limit = context_tokens or PARAMETERS["context_tokens"]
         if not question.strip() or len(question) > 4000:
             raise ValueError("问题须为1～4000字")
         started = perf_counter()
@@ -32,6 +34,7 @@ class RetrievalService:
             metadata["unavailable"] = [v for v in metadata["unavailable"] if v["document_id"] in selected]
         result = dict(request_id=uuid4().hex, parameters=PARAMETERS.copy(), evidence=[],
                       unavailable=metadata["unavailable"], diagnostics={})
+        result["parameters"]["context_tokens"] = limit
         if include_document_context:
             result["parameters"].update(version=2, document_context="最多2份已命中文档的首片段")
         if context_budget_only:
@@ -68,7 +71,7 @@ class RetrievalService:
             if source["status"] != "current" or source["content"] is None:
                 raise KnowledgeConflict("来源在检索期间已变化，请重新检索")
             tokens = encoder.token_length(evidence_payload(question, [*result["evidence"], source]))
-            if tokens > PARAMETERS["context_tokens"]:
+            if tokens > limit:
                 omitted += 1
                 continue
             budget = tokens
@@ -91,7 +94,7 @@ class RetrievalService:
                 if source["status"] != "current" or source["content"] is None:
                     raise KnowledgeConflict("文档上下文在检索期间已变化，请重新检索")
                 tokens = encoder.token_length(evidence_payload(question, [*result["evidence"], source]))
-                if tokens > PARAMETERS["context_tokens"]:
+                if tokens > limit:
                     omitted += 1
                     continue
                 budget = tokens
@@ -109,7 +112,7 @@ class RetrievalService:
                 if source["status"] != "current" or source["content"] is None:
                     raise KnowledgeConflict("来源在预算装填期间已变化，请重新检索")
                 tokens = encoder.token_length(evidence_payload(question, [*result["evidence"], source]))
-                if tokens > PARAMETERS["context_tokens"]:
+                if tokens > limit:
                     omitted += 1
                     continue
                 budget = tokens

@@ -122,12 +122,14 @@ class ChatIn(BaseModel):
     text: str
     thread_id: str | None = None  # 不填则开始新会话
     material_ids: list[int] = []
-    skill: str | None = None  # 指定能力；不填由模型判断
+    skill: str | None = None  # 显式指定能力（命令行等）；不填由意图漏斗与模型判断
+    kb_id: str | None = None  # 本轮查询的知识库；知识检索只在这一个库内进行
 
 
 class ChatOut(BaseModel):
     thread_id: str
     reply: str
+    intent: dict | None = None  # 本轮意图判断：意图、所在层、置信度与原因
 
 
 class SessionOut(BaseModel):
@@ -148,6 +150,8 @@ class MessageOut(BaseModel):
     warnings: list[str] = []
     result_kinds: list[str] = []  # 只用于安排结果操作，不作为业务保存或事实依据
     system_reply: bool = False
+    intent: dict | None = None  # 用户消息：意图漏斗的判断
+    knowledge: dict | None = None  # 知识回答：知识库、状态与可打开的原文引用
 
 
 class SessionDetail(SessionOut):
@@ -204,6 +208,7 @@ def visible_messages(messages: list[AnyMessage]) -> list[MessageOut]:
                     text=meta.get("display", m.text),
                     material_ids=meta.get("material_ids") or [],
                     skill=meta.get("skill"),
+                    intent=meta.get("intent"),
                 )
             )
             tools = []
@@ -228,12 +233,16 @@ def visible_messages(messages: list[AnyMessage]) -> list[MessageOut]:
                     warnings.append(f"回答中的日期换算可能有误（{'；'.join(m.response_metadata['date_issues'])}），请按原文核对。")
                 if m.response_metadata.get("length_limit"):
                     warnings.append(f"回答仍超过你要求的 {m.response_metadata['length_limit']} 字上限（当前 {m.response_metadata['actual_chars']} 字），可以精简要求后重试。")
+                knowledge = m.response_metadata.get("knowledge")
+                if knowledge:
+                    warnings += knowledge.get("warnings") or []
                 system = bool(m.response_metadata.get(SYSTEM_REPLY))
                 # 仅识别栏目以安排界面动作；不从 Markdown 提取任务或保存业务事实。
                 markers = {"summarize": "一句话总结", "minutes": "会议信息|行动项", "weekly": "周报标题", "todo": "待办清单", "polish": "优化后"}
                 kinds = [k for k, marker in markers.items() if re.search(rf"(?m)^\s*(?:#{{1,6}}\s*)?(?:\*\*)?【(?:{marker})】", m.text)] if not system else []
                 out.append(MessageOut(role="assistant", text=m.text, tools=tools, message_id=m.id,
-                                      skill=skill, warnings=warnings, result_kinds=kinds, system_reply=system))
+                                      skill=skill, warnings=warnings, result_kinds=kinds, system_reply=system,
+                                      knowledge=knowledge))
                 tools = []
     return out
 
@@ -292,7 +301,13 @@ def create_app(
     def get_agent() -> Agent:
         with agent_lock:
             if app.state.agent is None:
-                app.state.agent = agent_factory(app.state.store)
+                agent = agent_factory(app.state.store)
+                from .intent import IntentFunnel
+                from .knowledge.assistant import KnowledgeAssistant
+                # 知识能力与语义层（本地 Embedding）在知识库服务就绪后接入；未配置 Embedding 时语义层自动跳过
+                agent.enable_knowledge(KnowledgeAssistant(app.state.knowledge_retrieval, model_factory),
+                                       IntentFunnel(app.state.knowledge_imports.encoder_factory))
+                app.state.agent = agent
             return app.state.agent
 
     @app.exception_handler(ModelConfigurationError)
@@ -331,7 +346,7 @@ def create_app(
         thread_id = body.thread_id or new_thread_id()
         with thread_locks[thread_id]:
             try:
-                reply = agent.chat(body.text, body.skill, material_ids=body.material_ids or None, thread_id=thread_id)
+                reply = agent.chat(body.text, body.skill, material_ids=body.material_ids or None, thread_id=thread_id, kb_id=body.kb_id)
             except (ValueError, MaterialNotFound, ModelConfigurationError):
                 raise
             except Exception as e:  # 模型接口出错（网络、密钥、限流等）
@@ -340,7 +355,8 @@ def create_app(
                 from fastapi.responses import JSONResponse
                 return JSONResponse(status_code=502, content={"detail": f"模型调用失败：{e}", "thread_id": thread_id})
             sessions.touch(thread_id, body.text)
-        return ChatOut(thread_id=thread_id, reply=reply)
+            last = next((m for m in reversed(agent.history_of(thread_id)) if isinstance(m, HumanMessage)), None)
+        return ChatOut(thread_id=thread_id, reply=reply, intent=last.additional_kwargs.get("intent") if last else None)
 
     @app.get("/chat/sessions", tags=[docs.CHAT], response_model=list[SessionOut], summary="会话列表（最近的在前）")
     def list_sessions(sessions: Sessions):

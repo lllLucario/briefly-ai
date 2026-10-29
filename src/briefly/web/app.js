@@ -6,7 +6,6 @@ const state = {
   threadId: null, // 当前会话；null 表示新会话，发送第一句后由后端分配
   picked: new Set(), // 对话中选用的材料编号
   materials: [],
-  skills: [],
   activeMaterial: null,
   feishu: null, // 飞书配置状态（/feishu/status）
   mail: null, // 邮件配置状态（/mail/status）
@@ -210,6 +209,7 @@ function materialTitle(id) {
 // ---------- 标签页 ----------
 async function activateTab(name, load = true) {
     if (name !== "knowledge") window.pauseKnowledge?.();
+    if (name === "chat") loadChatBases().catch(() => {}); // 知识库及其外发授权可能刚在知识库页变化
     if (name !== "todos" && $("#todo-panel").open) $("#todo-panel").close();
     if ($("#material-panel").open) $("#material-panel").close(); // 从材料详情转去对话、周报、待办时先关闭
     const btn = document.querySelector(`.tabs button[data-tab="${name}"]`);
@@ -396,7 +396,7 @@ async function showMaterialDetail(id) {
       document.querySelector('.tabs button[data-tab="chat"]').click();
     };
     box.querySelectorAll("[data-material-skill]").forEach((b) => b.onclick = () => {
-      useMaterial(id, b.dataset.materialSkill);
+      useMaterial(id);
       $("#input").value = {summarize:"请总结所选材料。", minutes:"请整理所选材料中的会议纪要。", todo:"请提取所选材料中的明确待办。"}[b.dataset.materialSkill];
     });
     $("#material-to-week").onclick = () => transferToWeek({material_ids:[id]});
@@ -912,10 +912,19 @@ function handleFeishuRedirect() {
 }
 
 // ---------- 对话 ----------
-async function loadSkills() {
-  state.skills = await api("/skills");
-  $("#skill").innerHTML = `<option value="">自动判断能力</option>` +
-    state.skills.map((s) => `<option value="${s.name}">${escapeHtml(s.description)}</option>`).join("");
+async function loadChatBases() {
+  const bases = await api("/knowledge-bases");
+  const current = $("#chat-kb").value;
+  $("#chat-kb").innerHTML = `<option value="">不查知识库</option>` +
+    bases.map((b) => `<option value="${escapeHtml(b.id)}">知识库：${escapeHtml(b.name)}${b.external_allowed ? "" : "（未允许外发）"}</option>`).join("");
+  if (bases.some((b) => b.id === current)) $("#chat-kb").value = current;
+}
+
+const INTENT_LAYERS = {1:"规则", 2:"语义", 3:"助理判断"};
+function intentMeta(intent) {
+  if (!intent) return "";
+  const score = intent.layer === 2 && intent.confidence != null ? ` ${Math.round(intent.confidence * 100)}%` : "";
+  return `<span class="intent-meta" title="${escapeHtml(intent.reason || "")}">识别：${escapeHtml(intent.label)} · ${INTENT_LAYERS[intent.layer] || ""}${score}</span>`;
 }
 
 async function loadSessions() {
@@ -938,7 +947,7 @@ function setSessionButtons() {
 }
 
 function rememberComposer() {
-  state.drafts.set(state.threadId || "new", {text:$("#input").value, skill:$("#skill").value, material_ids:[...state.picked]});
+  state.drafts.set(state.threadId || "new", {text:$("#input").value, material_ids:[...state.picked]});
 }
 
 async function openSession(threadId) {
@@ -946,7 +955,6 @@ async function openSession(threadId) {
   const view = ++state.viewRevision;
   const draft = state.drafts.get(threadId);
   state.picked = new Set(draft?.material_ids || []); renderPicked();
-  $("#skill").value = draft?.skill || "";
   $("#input").value = draft?.text || "";
   state.lastRequest = null;
   state.threadId = threadId;
@@ -966,7 +974,7 @@ function newSession() {
   state.threadId = null;
   setSessionButtons();
   $("#session-title").textContent = "新会话";
-  state.picked.clear(); renderPicked(); $("#skill").value = "";
+  state.picked.clear(); renderPicked();
   state.lastRequest = null;
   $("#input").value = "";
   showWelcome();
@@ -986,9 +994,10 @@ function appendMessage(m) {
   el.className = `msg ${m.role}${m.pending ? " pending" : ""}`;
   const meta = [];
   if (m.role === "user") {
-    state.lastRequest = {text:m.text, material_ids:m.material_ids || [], skill:m.skill || null};
+    state.lastRequest = {text:m.text, material_ids:m.material_ids || []};
     if (m.material_ids?.length) meta.push(`材料：${m.material_ids.map(materialTitle).map(escapeHtml).join("、")}`);
-    if (m.skill) meta.push(`能力：${escapeHtml(state.skills.find((s) => s.name === m.skill)?.description || m.skill)}`);
+    if (m.intent?.kb_name) meta.push(`知识库：${escapeHtml(m.intent.kb_name)}`);
+    if (m.intent) meta.push(intentMeta(m.intent));
   } else if (m.tools?.length) {
     meta.push(`调用了工具：${escapeHtml([...new Set(m.tools)].join("、"))}`);
   }
@@ -1001,10 +1010,33 @@ function appendMessage(m) {
     el.querySelectorAll(".bubble table").forEach((table) => { const wrap = document.createElement("div"); wrap.className = "answer-table-scroll"; wrap.tabIndex = 0; wrap.setAttribute("role","region"); wrap.setAttribute("aria-label","回答表格，可横向滚动"); table.before(wrap); wrap.append(table); });
     const metaBox = el.querySelector(".msg-meta");
     if (metaBox && m.tools?.length) { const detail = document.createElement("details"); detail.className = "message-process"; const summary = document.createElement("summary"); summary.textContent = "查看处理过程"; metaBox.before(detail); detail.append(summary,metaBox); }
+    knowledgeReferences(el, m.knowledge);
     resultActions(el, m);
     addAnswerNavigation(el, m.text);
   }
   return el;
+}
+
+// 知识回答的原文依据：按稳定引用打开当时的版本，不把模型回答当事实。
+function knowledgeReferences(el, knowledge) {
+  if (!knowledge?.references?.length) return;
+  const box = document.createElement("div");
+  box.className = "knowledge-refs";
+  const sent = knowledge.egress?.evidence_sent ? `<span class="muted small">已将 ${knowledge.egress.evidence_sent} 个片段经规则处理后发给外部生成服务 · </span>` : "";
+  box.innerHTML = sent + `<span class="muted small">核对原文：</span>` + knowledge.references.map((r) =>
+    `<button type="button" class="ghost small" data-chat-reference="${escapeHtml(r.reference)}">${escapeHtml(r.label)} · ${escapeHtml(r.title)}</button>`).join("");
+  box.addEventListener("click", async (e) => {
+    const button = e.target.closest("[data-chat-reference]");
+    if (!button) return;
+    try {
+      const item = await api(`/knowledge-bases/${knowledge.kb_id}/references/${encodeURIComponent(button.dataset.chatReference)}`);
+      $("#kb-source-title").textContent = item.source.title;
+      $("#kb-source-info").textContent = `技术版本 ${item.number} · 业务版本 ${item.business_version || "未提供"} · ${item.section || "章节未确定"} · ${item.status === "current" ? "当前有效版本" : item.status === "historical" ? "历史版本" : "来源已变化或不可用"}`;
+      $("#kb-source-text").textContent = item.content ?? "来源已删除或变化，旧引用不会指向新内容。";
+      $("#kb-source").showModal();
+    } catch (err) { button.title = err.message; }
+  });
+  el.querySelector(".bubble").after(box);
 }
 
 function scrollMessages() {
@@ -1018,10 +1050,10 @@ $("#composer").addEventListener("submit", async (e) => {
   const text = $("#input").value.trim();
   if (!text) return;
   const material_ids = [...state.picked];
-  const skill = $("#skill").value || null;
+  const kb_id = $("#chat-kb").value || null;
   const requestThread = state.threadId;
   const view = state.viewRevision;
-  appendMessage({ role: "user", text, material_ids, skill });
+  const userEl = appendMessage({ role: "user", text, material_ids });
   const pending = appendMessage({ role: "assistant", text: "思考中…（读取材料或长文档时可能需要一两分钟）", pending: true });
   scrollMessages();
   $("#input").value = "";
@@ -1029,7 +1061,7 @@ $("#composer").addEventListener("submit", async (e) => {
   const previousActions = [...document.querySelectorAll(".result-action")].map((button) => ({button, disabled:button.disabled}));
   previousActions.forEach(({button}) => button.disabled = true);
   try {
-    const r = await api("/chat", { method: "POST", json: { text, thread_id: requestThread, material_ids, skill } });
+    const r = await api("/chat", { method: "POST", json: { text, thread_id: requestThread, material_ids, kb_id } });
     // 等待期间用户切换了会话时，不把旧任务的结果和能力设置带到新会话。
     if (state.viewRevision !== view) { loadSessions(); return; }
     const isNew = !requestThread;
@@ -1039,12 +1071,15 @@ $("#composer").addEventListener("submit", async (e) => {
     const detail = await api(`/chat/sessions/${r.thread_id}`);
     if (state.viewRevision !== view) return;
     pending.remove();
+    if (r.intent) {
+      const meta = userEl.querySelector(".msg-meta") || userEl.appendChild(Object.assign(document.createElement("div"), {className:"msg-meta"}));
+      meta.innerHTML = [meta.innerHTML, r.intent.kb_name ? `知识库：${escapeHtml(r.intent.kb_name)}` : "", intentMeta(r.intent)].filter(Boolean).join(" · ");
+    }
     // 预检拒绝可能没有新增模型历史；仍显示这次实际返回的说明，不能误用上一条回答。
     const answer = [...detail.messages].reverse().find((m) => m.role === "assistant" && m.text === r.reply);
     appendMessage(answer || {role:"assistant", text:r.reply, system_reply:true});
     if (isNew) $("#session-title").textContent = detail.title;
     state.picked.clear();
-    $("#skill").value = "";
     state.drafts.delete(requestThread || "new");
     renderPicked();
     loadSessions();
@@ -1241,7 +1276,7 @@ $("#inbox").addEventListener("click", async (e) => {
 (async function init() {
   showWelcome();
   try {
-    await Promise.all([loadSkills(), loadMaterials(), loadSessions(), loadInbox(), loadFeishu(), loadMail()]);
+    await Promise.all([loadChatBases(), loadMaterials(), loadSessions(), loadInbox(), loadFeishu(), loadMail()]);
     await activateTab(document.querySelector(".tabs button.active").dataset.tab);
     handleFeishuRedirect();
     setInterval(loadInbox, 60000);

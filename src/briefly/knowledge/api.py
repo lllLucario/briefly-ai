@@ -23,6 +23,10 @@ class VersionIn(BaseModel):
     business_version: str | None = Field(default=None, max_length=100)
 
 
+class EgressIn(BaseModel):
+    allowed: bool
+
+
 class ScopeIn(BaseModel):
     kb_ids: list[str] = Field(max_length=100)
 
@@ -38,7 +42,6 @@ class SearchIn(BaseModel):
 
 
 class AnswerIn(SearchIn):
-    allow_external: bool = False
     allow_partial: bool = False
     private_values: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(default_factory=list, max_length=50)
 
@@ -71,7 +74,7 @@ def register(app: FastAPI,model_factory):
     def answer(kb_id: str, body: AnswerIn):
         try:
             return qa.answer(kb_id, body.question, document_ids=body.document_ids,
-                allow_external=body.allow_external, allow_partial=body.allow_partial, private_values=body.private_values)
+                allow_partial=body.allow_partial, private_values=body.private_values)
         except (KnowledgeConflict, KnowledgeNotFound, ValueError):
             raise
         except Exception as exc:
@@ -102,7 +105,13 @@ def register(app: FastAPI,model_factory):
 
     @app.get("/knowledge-bases", tags=["知识库"])
     def bases():
-        return [dict(id=b.id, name=b.name, revision=b.revision, created_at=b.created_at) for b in service.list_bases()]
+        allowed = service.egress_grants()
+        return [dict(id=b.id, name=b.name, revision=b.revision, created_at=b.created_at, external_allowed=b.id in allowed)
+                for b in service.list_bases()]
+
+    @app.put("/knowledge-bases/{kb_id}/egress", tags=["知识库"], summary="按知识库一次性授权外发（可随时关闭）")
+    def egress(kb_id: str, body: EgressIn):
+        return dict(kb_id=kb_id, external_allowed=service.set_egress(kb_id, body.allowed))
 
     @app.post("/knowledge-bases", status_code=201, tags=["知识库"])
     def create(body: BaseIn):
@@ -110,7 +119,7 @@ def register(app: FastAPI,model_factory):
             b = service.create(body.name)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return dict(id=b.id, name=b.name, revision=b.revision, created_at=b.created_at)
+        return dict(id=b.id, name=b.name, revision=b.revision, created_at=b.created_at, external_allowed=False)
 
     @app.post("/knowledge-scope", tags=["知识库"])
     def scope(body: ScopeIn):

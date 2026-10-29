@@ -4,11 +4,10 @@
 const actionDrafts = new Map();
 let addForAssistant = false;
 
-function useMaterial(id, skill = "") {
+function useMaterial(id) {
   document.querySelector('.tabs button[data-tab="chat"]').click();
   state.picked.add(id);
   renderPicked();
-  if (skill) $("#skill").value = skill;
   $("#input").focus();
 }
 
@@ -59,7 +58,6 @@ function resultActions(el, message) {
       if (!original) return;
       if ($("#input").value.trim() && $("#input").value !== original.text && !(await uiConfirm("替换输入框中尚未发送的内容，填回这次原始请求？"))) return;
       $("#input").value = original.text;
-      $("#skill").value = original.skill || "";
       state.picked = new Set(original.material_ids); renderPicked();
       $("#input").focus();
     };
@@ -195,15 +193,13 @@ async function transferToWeek(origin) {
   body.querySelector("[data-load]").click();
 }
 
+// 欢迎页卡片只预填一句话，不锁定能力：意图由服务端漏斗判断，用户之后可继续转待办等其他任务。
 function chooseQuickAction(e) {
-  const button = e.target.closest("[data-quick], [data-start]");
-  if (!button || !button.closest(".welcome, #quick-actions")) return;
-  const skill = button.dataset.quick || button.dataset.start;
-  $("#skill").value = skill;
-  if (!$("#input").value.trim()) $("#input").value = {summarize:"请总结所选材料。", minutes:"请整理成会议纪要。", todo:"请提取明确的待办事项。", polish:"请优化这段文字，保持事实不变。", weekly:"请根据所选材料起草周报。"}[skill];
+  const button = e.target.closest("[data-start]");
+  if (!button || !button.closest(".welcome")) return;
+  if (!$("#input").value.trim()) $("#input").value = {summarize:"请总结所选材料。", minutes:"请整理成会议纪要。", todo:"请提取明确的待办事项。", polish:"请优化这段文字，保持事实不变。", weekly:"请根据所选材料起草周报。"}[button.dataset.start];
   $("#input").focus();
 }
-$("#quick-actions").addEventListener("click", chooseQuickAction);
 $("#messages").addEventListener("click", chooseQuickAction);
 $("#start-todo").onclick = () => $("#new-todo").click();
 $("#start-assistant").onclick = () => activateTab("chat");

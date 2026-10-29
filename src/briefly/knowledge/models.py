@@ -21,6 +21,14 @@ class KnowledgeBase(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class KnowledgeEgressGrant(Base):
+    """按知识库一次性授权：允许把问题与检索片段经规则处理后发给外部生成服务。没有记录即未授权。"""
+    __tablename__ = "knowledge_egress_grants"
+    kb_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.id"), primary_key=True)
+    allowed: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 class KnowledgeDocument(Base):
     __tablename__ = "knowledge_documents"
     __table_args__ = (UniqueConstraint("kb_id", "source_key"),)

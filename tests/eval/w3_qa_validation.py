@@ -38,6 +38,7 @@ def main():
         if len(bases) != 1 or bases[0].name != "生产路径原创基准":
             raise ValueError("不是专用原创评测数据库，拒绝外发")
         kb = bases[0]
+        imports.knowledge.set_egress(kb.id, True)  # 已核对为专用原创评测库，按库授权外发
         mapping = {doc.source_key: doc.id for doc in imports.knowledge.documents(kb.id)}
         # 核对待外发版本的原文和来源键，防止路径误指业务数据库。
         for item in documents:
@@ -51,7 +52,7 @@ def main():
                 started = perf_counter()
                 event = dict(case=case["id"], repeat=repeat, expected=case["answerability"])
                 try:
-                    result = qa.answer(kb.id, case["question"], document_ids=[mapping.get(key, key) for key in case["scope"]], allow_external=True)
+                    result = qa.answer(kb.id, case["question"], document_ids=[mapping.get(key, key) for key in case["scope"]])
                     event.update(status=result["status"], answer=result["answer"], citations=result.get("citations", []),
                         model_called=result["model_called"], warnings=result.get("warnings", []),
                         evidence=[dict(reference=e["reference"], content=e["content"]) for e in result["evidence"]])

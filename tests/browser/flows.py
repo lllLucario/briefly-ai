@@ -6,16 +6,14 @@ from playwright.sync_api import expect
 from .support import MEETING, PROGRESS
 
 
-def send(page, text, skill=None):
-    if skill is not None:
-        page.locator("#skill").select_option(skill)
+def send(page, text):
     page.locator("#input").fill(text)
     with page.expect_response(lambda r: r.url.endswith("/chat") and r.request.method == "POST", timeout=90000) as response:
         page.locator("#send").click()
     assert response.value.ok, response.value.text()
     expect(page.locator("#send")).to_be_enabled(timeout=90000)
     expect(page.locator(".msg.assistant:not(.pending)").last.locator(".msg-actions")).to_be_visible()
-    expect(page.locator("#skill")).to_have_value("")
+    expect(page.locator(".msg.user").last.locator(".intent-meta")).to_contain_text("识别：")  # 显示意图判断
     return page.locator(".msg.assistant:not(.pending)").last
 
 
@@ -29,7 +27,7 @@ def start_meeting(page):
     expect(page.locator("#add-msg")).to_contain_text("已保存")
     page.locator("#add-dialog [data-close]").click()
     expect(page.locator("#picked")).to_contain_text("支付改造会议")
-    first = send(page, "请整理这份会议纪要，明确行动项，不把讨论建议当成已决定的任务。", "minutes")
+    first = send(page, "请整理这份会议纪要，明确行动项，不把讨论建议当成已决定的任务。")
     expect(first).to_contain_text("李强")
     expect(first).to_contain_text("赵琳")
     latest = send(page, "现在只保留李强负责的行动项，删去赵琳和竞品建议，保留原始期限。")

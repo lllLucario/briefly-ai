@@ -99,19 +99,12 @@
       <div id="context-box" class="notice hidden"></div>
       <div id="messages" class="messages" role="log" aria-label="会话内容" aria-live="polite"></div>
       <form id="composer" class="composer">
-        <div id="quick-actions" class="row gap wrap">
-          <button type="button" class="ghost" data-quick="summarize">总结文档</button>
-          <button type="button" class="ghost" data-quick="minutes">整理会议纪要</button>
-          <button type="button" class="ghost" data-quick="todo">提取待办</button>
-          <button type="button" class="ghost" data-quick="polish">优化文本</button>
-          <button type="button" class="ghost" data-quick="weekly">起草周报</button>
-        </div>
         <div class="row gap wrap">
           <button type="button" id="chat-add" class="ghost"><svg class="icon action-icon" aria-hidden="true"><use href="#i-upload"/></svg>添加文件 / 链接</button>
           <button type="button" id="pick-materials" class="ghost"><svg class="icon action-icon" aria-hidden="true"><use href="#i-folder"/></svg>选择材料</button>
           <div id="picked" class="chips"></div>
-          <select id="skill" aria-label="本条消息的能力" title="仅指定下一条消息的能力；成功发送后恢复自动判断">
-            <option value="">自动判断能力</option>
+          <select id="chat-kb" aria-label="查询的知识库" title="知识问题只在所选知识库内检索；不选则不查知识库">
+            <option value="">不查知识库</option>
           </select>
         </div>
         <div class="row gap">
@@ -515,8 +508,8 @@
         </section>
         <section class="knowledge-section"><h3>依据问答</h3>
           <label class="stack" for="kb-question">问题<textarea id="kb-question" rows="3" maxlength="4000" placeholder="例如：上海住宿上限及适用对象是什么？"></textarea></label>
-          <label class="knowledge-consent"><input id="kb-external" type="checkbox"> 允许将本次问题、标题和召回片段经规则处理后发送给已配置的外部生成服务</label>
-          <p class="muted small">规则处理常见邮箱、手机号、密钥和指定字段，不保证识别所有企业敏感信息。未勾选时只在本地核验依据。</p>
+          <label class="knowledge-consent"><input id="kb-external" type="checkbox"> 允许本知识库外发：提问时把问题、标题和召回片段经规则处理后发送给已配置的外部生成服务（一次设置，对本库之后的问答和助理均生效，可随时关闭）</label>
+          <p class="muted small">规则处理常见邮箱、手机号、密钥和指定字段，不保证识别所有企业敏感信息。未开启时只在本地核验依据，不生成回答。</p>
           <details><summary>更多范围与外发设置</summary><label class="stack">额外隐藏的字段（每行一个，最多50项）<textarea id="kb-private" rows="2"></textarea></label>
             <label><input id="kb-partial" type="checkbox"> 范围有未就绪文档时，允许仅依据可用部分回答</label></details>
           <button id="kb-ask" class="primary">核验依据并回答</button>

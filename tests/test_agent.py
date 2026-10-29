@@ -36,7 +36,7 @@ def test_system_prompt_contains_base_and_all_skills():
 def test_system_message_comes_first_and_history_excludes_it():
     model = fake(text_msg("ok"))
     agent = Agent(model, tools=[])
-    agent.chat("hi")
+    agent.chat("帮我看看")
     assert isinstance(model.calls[0][0], SystemMessage)
     assert not any(isinstance(m, SystemMessage) for m in agent.history)
 

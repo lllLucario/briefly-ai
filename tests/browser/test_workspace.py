@@ -48,22 +48,21 @@ def test_task_first_journey_upload_progress_and_review(web_page):
     assert page.request.get(base+"/todos").json()[0]["status"] == "todo"
 
 
-def test_assistant_start_selects_skill_without_sending_or_losing_draft(web_page):
+def test_assistant_start_prefills_without_locking_skill_sending_or_losing_draft(web_page):
     page = web_page
     page.locator("#start-assistant").click()
     expect(page.locator('[data-tab="chat"]')).to_have_attribute("aria-current", "page")
+    expect(page.locator("#skill")).to_have_count(0)  # 不再锁定能力，由意图漏斗判断
     page.locator('[data-start="minutes"]').click()
-    expect(page.locator("#skill")).to_have_value("minutes")
     expect(page.locator("#input")).to_have_value("请整理成会议纪要。")
     page.locator("#input").fill("这是尚未发送的原始输入")
     page.locator('[data-start="polish"]').click()
     expect(page.locator("#input")).to_have_value("这是尚未发送的原始输入")
-    expect(page.locator("#skill")).to_have_value("polish")
     assert page.request.get(page.url.rstrip("/")+"/chat/sessions").json() == []
     page.locator("#new-session").click()
     expect(page.locator(".welcome")).to_be_visible()
     page.locator('[data-start="todo"]').click()
-    expect(page.locator("#skill")).to_have_value("todo")
+    expect(page.locator("#input")).to_have_value("请提取明确的待办事项。")
 
 
 def test_initial_task_load_error_visible_and_retry_recovers(web_page):
@@ -75,11 +74,11 @@ def test_initial_task_load_error_visible_and_retry_recovers(web_page):
     page.locator("[data-retry-todos]").click()
     expect(page.locator("#todo-load-msg")).to_be_hidden()
     expect(page.locator("#todo-list")).to_contain_text("没有未完成的待办")
-    page.route("**/skills", lambda route: route.fulfill(status=503,json={"detail":"初始化暂不可用"}))
+    page.route("**/knowledge-bases", lambda route: route.fulfill(status=503,json={"detail":"初始化暂不可用"}))
     page.reload()
     expect(page.locator("#app-status")).to_contain_text("连接服务失败")
     expect(page.locator("#tab-todos")).to_be_visible()
-    page.unroute("**/skills")
+    page.unroute("**/knowledge-bases")
     page.reload()
     expect(page.locator("#app-status")).to_be_hidden()
 

@@ -54,7 +54,7 @@ def test_time_context_is_injected_without_extra_calls_or_history(store, sydney, 
     clock_at(monkeypatch, datetime(2026, 10, 22, 18, 22, tzinfo=SYDNEY))
     model = recording(AIMessage("你好，有什么可以帮你？"))
     agent = Agent(model, tools=[], store=store)
-    agent.chat("你好")
+    agent.chat("帮我看看")
     assert len(model.calls) == 1  # 普通对话不增加模型调用
     [prompt] = system_prompts(model)
     assert "Current datetime: 2026-10-22T18:22:00+11:00" in prompt
