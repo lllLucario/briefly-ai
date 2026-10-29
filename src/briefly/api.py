@@ -16,7 +16,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Respo
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel
 
 from . import api_docs as docs
@@ -196,7 +196,10 @@ def visible_messages(messages: list[AnyMessage]) -> list[MessageOut]:
     out: list[MessageOut] = []
     tools: list[str] = []
     skill = None
+    searched = None  # 本轮知识检索工具返回的依据，用于给智能体回答附上可核对的原文
     for m in messages:
+        if isinstance(m, ToolMessage) and isinstance(m.artifact, dict) and m.artifact.get("knowledge"):
+            searched = m.artifact["knowledge"]
         if isinstance(m, HumanMessage):
             meta = m.additional_kwargs
             if meta.get("internal"):
@@ -212,6 +215,7 @@ def visible_messages(messages: list[AnyMessage]) -> list[MessageOut]:
                 )
             )
             tools = []
+            searched = None
         elif isinstance(m, AIMessage):
             if m.tool_calls:
                 tools += [c["name"] for c in m.tool_calls]
@@ -236,7 +240,13 @@ def visible_messages(messages: list[AnyMessage]) -> list[MessageOut]:
                 knowledge = m.response_metadata.get("knowledge")
                 if knowledge:
                     warnings += knowledge.get("warnings") or []
-                system = bool(m.response_metadata.get(SYSTEM_REPLY))
+                elif searched and searched.get("references"):
+                    # 多次检索时编号可能重复，只按最后一次检索核对回答中出现的编号
+                    cited = set(re.findall(r"依据\s*(\d+)", m.text))
+                    refs = [r for r in searched["references"] if r["label"].removeprefix("依据") in cited]
+                    knowledge = dict(kb_id=searched["kb_id"], references=refs) if refs else None
+                # 意图漏斗的直接答复（问候、定位等）是正常结果，不按“未生成可用结果”提示
+                system = bool(m.response_metadata.get(SYSTEM_REPLY)) and not m.response_metadata.get("intent_reply")
                 # 仅识别栏目以安排界面动作；不从 Markdown 提取任务或保存业务事实。
                 markers = {"summarize": "一句话总结", "minutes": "会议信息|行动项", "weekly": "周报标题", "todo": "待办清单", "polish": "优化后"}
                 kinds = [k for k, marker in markers.items() if re.search(rf"(?m)^\s*(?:#{{1,6}}\s*)?(?:\*\*)?【(?:{marker})】", m.text)] if not system else []

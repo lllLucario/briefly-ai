@@ -302,20 +302,25 @@ class Agent:
     def _direct(self, decision: IntentDecision, text: str, kb_id: str | None) -> AIMessage | None:
         """处理器登记表：能直接回复的意图不进入智能体循环；返回 None 时交给智能体。"""
         if decision.intent in DIRECT_REPLIES:
-            return system_reply(DIRECT_REPLIES[decision.intent])
+            return _intent_reply(DIRECT_REPLIES[decision.intent])
         if decision.intent not in {"knowledge", "locate"} or self.knowledge is None:
             return None
         if not kb_id:
             return system_reply("这是知识库查询。请先在输入框上方选择要查询的知识库，再提问。")
-        if decision.intent == "locate":  # 只在本地检索，不调用模型、不外发
+        evidence = []
+        if decision.intent == "locate":  # 只在本地检索，不调用模型、不外发；列出的文档都可核对
             result = self.knowledge.locate(kb_id, text)
+            evidence = list(enumerate(result.get("evidence") or [], 1))
+            reply = _intent_reply(result["answer"])
         else:
             result = self.knowledge.answer(kb_id, text)
             if result["status"] in {"workflow_required", "clarification_required", "blocked"}:
                 return None  # 知识问答入口不处理的请求，交给智能体结合上下文判断
-        references = [dict(label=f"依据{i}", reference=item["reference"], title=item["source"]["title"])
-                      for i, item in enumerate(result.get("evidence") or [], 1)]
-        reply = AIMessage(result["answer"], id=uuid.uuid4().hex) if result.get("model_called") else system_reply(result["answer"])
+            if result.get("model_called"):  # 只列回答实际引用的依据，编号与回答一致
+                cited = {c["label"] for c in result.get("citations") or []}
+                evidence = [(i, e) for i, e in enumerate(result["evidence"], 1) if f"依据{i}" in cited]
+            reply = AIMessage(result["answer"], id=uuid.uuid4().hex) if result.get("model_called") else system_reply(result["answer"])
+        references = [dict(label=f"依据{i}", reference=item["reference"], title=item["source"]["title"]) for i, item in evidence]
         reply.response_metadata["knowledge"] = dict(kb_id=kb_id, status=result["status"], references=references,
                                                     warnings=result.get("warnings") or [],
                                                     egress=result.get("egress") if result.get("model_called") else None)  # 只记录实际发生的外发
@@ -440,6 +445,13 @@ def _fallback_engine():
     if _fallback is None:
         _fallback = create_db_engine("sqlite://")
     return _fallback
+
+
+def _intent_reply(text: str) -> AIMessage:
+    """意图漏斗直接给出的正常答复（问候、拦截说明、文档定位等）：不是模型输出，也不是失败提示。"""
+    reply = system_reply(text)
+    reply.response_metadata["intent_reply"] = True
+    return reply
 
 
 def _last_intent(messages: list[AnyMessage]) -> str | None:

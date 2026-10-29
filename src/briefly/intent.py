@@ -126,8 +126,10 @@ class IntentFunnel:
         vectors = self._load()
         if not vectors:
             return None
+        # “要求：正文”的写法只比较冒号前的要求，避免粘贴的正文稀释相似度
+        head = re.match(r"(.{4,30}?)[：:]", text)
         try:
-            query = self.encoder_factory().embed_documents([text])[0]
+            query = self.encoder_factory().embed_documents([head.group(1) if head else text])[0]
         except Exception:  # 输入超长、模型异常时不影响对话
             return None
         best: dict[str, tuple[float, str]] = {}

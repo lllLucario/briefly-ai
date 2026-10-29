@@ -39,7 +39,8 @@ class KnowledgeAssistant:
         documents: dict[str, list[str]] = {}
         for item in result["evidence"]:
             sections = documents.setdefault(item["source"]["title"], [])
-            if (section := item["section"] or "章节未确定") not in sections:
+            # 章节路径首段通常是文档标题，只显示最后一级，便于阅读
+            if (section := (item["section"] or "章节未确定").split(" > ")[-1]) not in sections:
                 sections.append(section)
         lines = [f"- 《{title}》：{'、'.join(sections)}" for title, sections in documents.items()]
         return dict(status="located", evidence=result["evidence"],
