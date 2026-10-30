@@ -4,14 +4,16 @@
 明显超过块大小的章节在内部按行、句切开。这样标题不会被切成单独的碎块，大章节也不会撑爆一块。
 """
 import re
+from collections import Counter
 from dataclasses import dataclass
+from functools import cmp_to_key
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from . import config
 
 MAX_HEADING_LEN = 40  # 猜测标题时，超过该长度的行视为正文
-MAX_COLON_HEADING_LEN = 15  # “一、目的：”这类带编号的冒号短行仍算标题；去掉冒号后超过该长度视为正文
+MAX_COLON_HEADING_LEN = 20  # “一、目的：”这类带编号的冒号短行仍算标题；去掉冒号后超过该长度视为正文
 # 章节只略超块大小时整节保留，不切出一小块尾巴；块大小是目标值，不是模型的硬限制
 SECTION_STRETCH = 1.25
 
@@ -65,6 +67,10 @@ class _Guess:
     depth: int
     title: str
     inline: bool  # 条号与正文同在一行，章节名只取条号
+    first: bool = False  # 编号为“一/1”：紧跟在另一种写法的标题之后出现，说明这种写法是它的下级
+
+
+_FIRST_NUMBER = re.compile(r"[（(]?(?:0*1|一)[）)]?[、．.]?\s*")
 
 
 def _lines(text: str):
@@ -118,7 +124,7 @@ def _guess(line: str) -> _Guess | None:
     rest = core[len(number):].lstrip(" ：:")  # “第一条：原始凭证……”编号后的冒号是分隔，不算正文标点
     if (len(core) <= (MAX_COLON_HEADING_LEN if colon else MAX_HEADING_LEN)
             and not core.endswith(_SENTENCE_END) and not _INNER_PUNCT.search(rest)):
-        return _Guess(key, family, depth, core, False)
+        return _Guess(key, family, depth, core, False, depth == 0 and bool(_FIRST_NUMBER.fullmatch(number)))
     if key == "article":
         return _Guess(key, family, depth, number, True)
     return None
@@ -177,15 +183,33 @@ def _drop_lists(guessed: list[tuple[int, _Guess] | None]) -> list[tuple[int, _Gu
 
 
 def _rank(kept: list[tuple[int, _Guess]]) -> list[tuple[int, tuple[int, int, int], str]]:
-    """章/节/条在上；其余编号写法按首次出现的先后往下排，多级编号跟着首段，“1.1”在“1”之下。"""
+    """章/节/条在上；其余编号写法的上下级看“从一重新编号”：B 写法的“1、”紧跟在 A 写法的标题之后，算一票 A 在 B 之上。
+
+    票数相同或没有票时按首次出现的先后（先出现的在上）。只看首次出现会被开头的小节带偏：
+    “序言”下先出现“1、…5、”，后面整篇的“一、…十四、”就都成了“5、”的下级。
+    多级编号跟着首段，“1.1”在“1”之下。
+    """
     fixed = {"chapter": 0, "section": 1, "article": 2}
-    order: dict[str, int] = {}
+    seen: dict[str, int] = {}
+    votes: Counter[tuple[str, str]] = Counter()
+    previous = None
+    for _, g in kept:
+        if g.family in fixed:
+            continue
+        seen.setdefault(g.family, len(seen))
+        if g.first and previous is not None and previous != g.family:
+            votes[previous, g.family] += 1
+        previous = g.family
+
+    def above(a: str, b: str) -> int:
+        return (votes[b, a] - votes[a, b]) or (seen[a] - seen[b])
+    order = {family: i for i, family in enumerate(sorted(seen, key=cmp_to_key(above)))}
     result = []
     for offset, g in kept:
         if g.family in fixed:
             key = (1, fixed[g.family], 0)
         else:
-            key = (2, order.setdefault(g.family, len(order)), g.depth)
+            key = (2, order[g.family], g.depth)
         result.append((offset, key, g.title))
     return result
 

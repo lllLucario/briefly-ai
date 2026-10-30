@@ -95,6 +95,14 @@ def test_relative_levels_follow_first_appearance():
     assert titles_md(arabic_first) == [(1, "1、总则"), (2, "一、目的"), (1, "2、职责")]
 
 
+def test_numbering_restart_outweighs_first_appearance():
+    # 序言下先出现“1、”，但之后“1、”两次在“一、”系列后从 1 重新编号，说明“1、”是下级
+    text = ("**序言**\n正文。\n1、现状\n正文。\n2、小结\n正文。\n一、目的\n正文。\n二、职责\n正文。\n1、人事部\n正文。\n"
+            "三、方式\n正文。\n1、理论学习\n正文。")
+    assert titles_md(text) == [(2, "1、现状"), (2, "2、小结"), (1, "一、目的"), (1, "二、职责"), (2, "1、人事部"),
+                               (1, "三、方式"), (2, "1、理论学习")]
+
+
 def test_fixed_and_relative_levels_together():
     text = "第一章 总则\n正文。\n一、目的\n正文。\n（一）适用对象\n正文。\n1.1 细则\n正文。\n1.1.1 说明\n正文。"
     assert titles_md(text) == [(1, "第一章 总则"), (2, "一、目的"), (3, "（一）适用对象"), (4, "1.1 细则"), (5, "1.1.1 说明")]
@@ -108,6 +116,7 @@ def test_dotted_numbering_sits_under_its_single_level_parent():
 
 def test_short_numbered_line_ending_with_colon_is_a_heading():
     assert [t for _, t in titles_md("一、目的：\n正文。\n二、适用范围：\n正文。")] == ["一、目的", "二、适用范围"]
+    assert [t for _, t in titles_md("**一、公司内部讲师培养计划方案说明：**\n正文。")] == ["一、公司内部讲师培养计划方案说明"]
     assert titles_md("背景：\n正文。") == []  # 不带编号的冒号短句仍是正文
 
 
