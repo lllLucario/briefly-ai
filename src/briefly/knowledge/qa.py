@@ -99,7 +99,12 @@ class KnowledgeQA:
             return dict(base, status="low_relevance", evidence=closest,
                         references=[reference_entry(f"出处{i}", e) for i, e in enumerate(closest, 1)],
                         answer=LOW_RELEVANCE + "\n最接近的出处（相关度低于下限，仅供自行核对）：\n" + "\n".join(lines))
-        if restricted := restricted_answer(evidence):
+        # 结构未确认的依据不进外发包、不生成归属结论。还有可用依据时只剔除它们并提示核对，而不是整题拒答：
+        # 同库任何一份带组织图的 Word 混进依据，原先会让与它无关的问题也无法回答（2026-10-31 真实模型问答发现）
+        withheld = [e for e in evidence if e.get("constraints")]
+        if len(withheld) < len(evidence):
+            evidence = [e for e in evidence if not e.get("constraints")]
+        elif restricted := restricted_answer(evidence):
             return {**base, **restricted}
         if unavailable and not allow_partial:
             return dict(base, status="incomplete_scope", answer="范围内仍有资料未就绪；请完成索引，或明确选择只依据当前可用部分回答。")
@@ -114,6 +119,9 @@ class KnowledgeQA:
                 raise KnowledgeConflict("规则处理后的依据包超过固定检索预算，请缩小范围")
             evidence = evidence[:-1]
         warnings = ["仅依据当前可用部分回答，范围内还有未完成索引的资料。"] if unavailable else []
+        if withheld:
+            titles = "、".join(dict.fromkeys(f"《{e['source']['title']}》" for e in withheld))
+            warnings.append(f"另有 {len(withheld)} 条依据的结构仍有未确认部分（{titles}），未用于回答，请自行核对原文。")
         egress = dict(evidence_sent=len(evidence), history_sent=False, history_evidence=0, materials=0,
                       redactions=redactor.counts, policy=EGRESS_POLICY)
         bundle = dict(base, evidence=evidence, warnings=warnings, payload_text=payload, egress=egress,

@@ -64,6 +64,20 @@ def chunk_fingerprint(config, manifest):
     return fingerprint(dict(config=config, manifest=manifest))
 
 
+def _table_header(chunk):
+    """续表片段的表头：切片时表头只加在编码文本里、原文之前（见 slicing），原文范围本身不含表头。
+    给问答模型时要补上，否则长表后段的行看不到列名。首块（原文已含表头）、按列拆开的行（章节写明列）返回 None。"""
+    text, content = getattr(chunk, "embedding_text", None), chunk.content
+    if not text or not content.lstrip().startswith("|") or not text.endswith(content):
+        return None
+    header = []
+    for line in reversed(text[:-len(content)].splitlines(keepends=True)):
+        if not line.lstrip().startswith("|"):
+            break
+        header.insert(0, line)
+    return "".join(header) if len(header) >= 2 else None
+
+
 class KnowledgeService:
     def __init__(self, engine):
         self._session = sessionmaker(engine, expire_on_commit=False)
@@ -407,7 +421,8 @@ class KnowledgeService:
                 document_id=doc.id, version_id=version.id, number=version.number, business_version=version.business_version,
                 status=status, source=version.source_snapshot, chunk=index,
                 section=None if "section_attribution" in limits else original["section"],constraints=limits,
-                start=original["start"], end=original["end"], page=None, content=chunk.content if chunk and not reason else None)
+                start=original["start"], end=original["end"], page=None, content=chunk.content if chunk and not reason else None,
+                table_header=_table_header(chunk) if chunk and not reason else None)
 
     def answer_from_references(self,kb_id,question,references,model_factory):
         """已召回稳定引用→核验→回答；不伪装为已交付向量召回。"""

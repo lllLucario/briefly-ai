@@ -59,6 +59,23 @@ def test_restricted_evidence_and_incomplete_scope_do_not_generate(indexed):
     assert qa.answer(other.id, "如何审批？")["status"] == "incomplete_scope"
 
 
+def test_restricted_evidence_is_withheld_when_clean_evidence_remains(indexed):
+    store, svc, lifecycle, retrieval = setup(indexed)
+    kb = svc.create("库")
+    add(store, svc, lifecycle, kb, "制度", "预订前申请审批。")
+    mat, _ = store.add_text("组织图", "审批由乙部门负责。", report={"object_anchors": 1})
+    doc, version, _ = svc.attach(kb.id, mat.id)
+    lifecycle.build(kb.id, doc.id, version.id, Encoder(), expected_revision=1)
+    model = fake(text_msg("【可答性：可回答】须预订前申请审批。原文：预订前申请审批。〔依据1〕"))
+    svc.set_egress(kb.id, True)
+    result = KnowledgeQA(retrieval, lambda: model).answer(kb.id, "如何申请审批？")
+    assert result["model_called"] and len(model.calls) == 1  # 同库另一份文档受限，不再整题拒答
+    sent = "\n".join(str(m.content) for m in model.calls[0])
+    assert "预订前申请审批" in sent and "乙部门" not in sent  # 受限依据仍不外发
+    assert all(not e.get("constraints") for e in result["evidence"])
+    assert any("《组织图》" in w and "未用于回答" in w for w in result["warnings"])
+
+
 def test_model_can_report_insufficient_evidence_without_fake_citations(indexed):
     store, svc, lifecycle, retrieval = setup(indexed)
     kb = svc.create("库")

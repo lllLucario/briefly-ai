@@ -172,3 +172,22 @@ def test_new_slice_versions_keep_old_material_and_reference(tmp_path):
         assert hashlib.sha256(chunks[0].content.encode()).hexdigest() == new.chunk_manifest[0]["sha256"]
     finally:
         engine.dispose()
+
+
+def test_continuation_chunks_give_the_answer_model_their_table_header(tmp_path):
+    from briefly.knowledge.payload import evidence_payload
+    engine = create_db_engine("sqlite:///" + (tmp_path / "header.db").as_posix())
+    try:
+        store, svc = MaterialStore(engine), KnowledgeService(engine)
+        text = "| 地点 | 上限 |\n|---|---|\n" + "".join(f"| 城市{i} | {i + 500} |\n" for i in range(12))
+        material, _ = store.add_text("差旅", text, markdown=True)
+        config, chunks = token_slices(material.content, "差旅", True, Encoder(), tokens=96)
+        kb = svc.create("库")
+        doc, version, _ = svc.stage_slices(kb.id, material.id, "fixture", config, chunks)
+        first, second = (svc.chunk(kb.id, doc.id, version.id, n) for n in (1, 2))
+        assert first["table_header"] is None  # 首块原文已含表头
+        assert second["table_header"] == "| 地点 | 上限 |\n|---|---|\n" and not second["content"].startswith("| 地点")
+        payload = evidence_payload("城市11的上限？", [second])
+        assert "续表" in payload and payload.index("| 地点 | 上限 |") < payload.index(second["content"].splitlines()[0])
+    finally:
+        engine.dispose()
