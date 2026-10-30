@@ -92,7 +92,13 @@ _TASK_VERB = re.compile(r"总结|概括|提炼|梳理|捋|摘要|概览|介绍�
                         r"|比较(?:这|两|一下|下)")
 _ASK = re.compile(r"[？?]$|多少|几[天种条个次门项级年月周]|哪些|什么|怎么|怎样|如何|是否|能否|吗[？?。]?$|谁|多久|何时|有没有")
 _WHERE = re.compile(r"哪[个份]?(?:文件|文档|制度|手册|方案|程序|材料)|哪一?[章节条]|哪个?小节|出处|原文在哪|写在哪|哪里写"
-                    r"|条号|章节|定位|(?:表|附件|条款|规定)(?:放)?在哪|附件位置|标出.{0,6}位置")
+                    r"|条号|章节|定位|(?:表|附件|条款|规定)(?:放)?在哪|附件位置|标出.{0,6}位置"
+                    r"|(?:段|部分|区域)在哪|哪一?段|哪(?:张|个)表|什么表|哪个?(?:区域|部分)|什么区域")
+# 承接上一轮的追问（“那试用期呢”“那假如……”）需要结合上文补全，不按原句直接检索
+_FOLLOW_UP = re.compile(r"(?:那|那么|那如果|那假如|那要是|还有|同样)[，,\s]?")
+# 有上一轮回答、本轮只要求换格式或换语言：调整上一轮
+_REFORMAT = re.compile(r"(?:请|帮我)?再?(?:改成|换成|变成|转成|整理成|做成|列成)(?:一个|一张|一份)?"
+                       r"(?:表格|列表|清单|要点|[两三四五]列|一段话|段落|英文|中文)(?:[，,：:].{0,12})?[。.!！]?")
 # 多目标、追问补全交给兜底层，语义层不硬分类。
 _COMPLEX = re.compile(r"然后|并且|同时|顺便|再把|另外|以及|对比|区别|那.{1,12}呢|先.{1,30}再")
 
@@ -159,6 +165,8 @@ class IntentFunnel:
             return IntentDecision("clarify", 1, "要处理的对象不明：没有附材料，也没有可调整的回答", 1.0, text[:20])
         if (m := _PROGRESS.search(text)) and not _COMPLEX.search(text):
             return IntentDecision("business_query", 1, "查询自己的业务数据或进度", 1.0, m.group())
+        if state.has_previous_reply and not state.has_materials and _REFORMAT.fullmatch(text):
+            return IntentDecision("revise", 1, "只要求调整上一轮回答的格式或语言", 1.0, text[:20])
         if m := _WEEKLY.search(text):
             return IntentDecision("weekly", 1, "明确要求起草周报", 1.0, m.group())
         if (m := _FULL_SUMMARY.search(text)) and not _COMPLEX.search(text):
@@ -170,7 +178,7 @@ class IntentFunnel:
         if not state.kb_id or self.kb_probe is None:
             return None
         if _COMPLEX.search(text) or _TASK_VERB.search(text) or len(text) > 80 or "\n" in text \
-                or re.match(r".{4,30}?[：:]", text):
+                or re.match(r".{4,30}?[：:]", text) or (state.has_previous_reply and _FOLLOW_UP.match(text)):
             return None
         where, ask = _WHERE.search(text), _ASK.search(text)
         if not (where or ask):

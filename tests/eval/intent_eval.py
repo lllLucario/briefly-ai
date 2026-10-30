@@ -36,8 +36,17 @@ class CachedEncoder:
 
 
 def load_cases(path: Path, split: str = "all") -> list[dict]:
-    """split：dev 用于调规则和阈值；holdout 为每类按编号每 3 条封存 1 条，只用于最终报告，调参时不看明细。"""
+    """split：dev 用于调规则和阈值；holdout 为每类按编号每 3 条封存 1 条，只用于最终报告，调参时不看明细。
+
+    多轮对话文件（每行带 turns）按整段封存：按编号每 3 段封存 1 段，再展开成逐轮用例。
+    """
     cases = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if cases and "turns" in cases[0]:
+        dialogues = sorted(cases, key=lambda d: d["id"])
+        held = {d["id"] for i, d in enumerate(dialogues) if i % 3 == 2}
+        if split != "all":
+            dialogues = [d for d in dialogues if (d["id"] in held) == (split == "holdout")]
+        return [turn for d in dialogues for turn in flatten(d)]
     if split == "all":
         return cases
     by = defaultdict(list)
@@ -47,9 +56,32 @@ def load_cases(path: Path, split: str = "all") -> list[dict]:
     return [c for c in cases if (c["id"] in held) == (split == "holdout")]
 
 
-def state_of(case: dict, kb_id: str = "kb-eval") -> TurnState:
+def flatten(dialogue: dict) -> list[dict]:
+    """多轮对话展开成逐轮用例。前面各轮按标注的期望意图模拟系统走过的路径：
+    直接回复（问候、拦截、澄清等）不算可调整的回答，与 agent.turn_state 的口径一致。"""
+    out, materials, revisable, last = [], False, False, None
+    for i, turn in enumerate(dialogue["turns"], 1):
+        out.append(dict(id=f"{dialogue['id']}-t{i}", text=turn["text"], expected_intent=turn["expected_intent"],
+                        acceptable_intents=turn.get("acceptable_intents", []), note=turn.get("note", ""),
+                        difficulty=dialogue.get("difficulty"), kb_mismatch=False,
+                        state=dict(kb_selected=dialogue.get("kb") is not None, kb=dialogue.get("kb"),
+                                   has_materials=turn.get("has_materials", False), previous_turn=None),
+                        turn_state=dict(earlier_materials=materials, has_previous_reply=revisable, last_intent=last)))
+        materials = materials or turn.get("has_materials", False)
+        revisable = revisable or turn["expected_intent"] not in DIRECT
+        last = turn["expected_intent"]
+    return out
+
+
+def state_of(case: dict, kb_ids: dict | str = "kb-eval") -> TurnState:
+    """kb_ids：知识库键（hr/fin…）到本地库 ID 的映射；键 None 为未标库键时的默认库。"""
     s = case["state"]
-    return TurnState(has_materials=s["has_materials"], kb_id=kb_id if s["kb_selected"] else None,
+    if isinstance(kb_ids, str):
+        kb_ids = {None: kb_ids}
+    kb_id = (kb_ids.get(s.get("kb")) or kb_ids.get(None) or "kb-eval") if s["kb_selected"] else None
+    if extra := case.get("turn_state"):
+        return TurnState(has_materials=s["has_materials"], kb_id=kb_id, **extra)
+    return TurnState(has_materials=s["has_materials"], kb_id=kb_id,
                      has_previous_reply=s["previous_turn"] is not None)
 
 
@@ -70,10 +102,10 @@ def outcome(case: dict, predicted: str) -> str:
     return "wrong_hint"  # 误判能力，只作为提示交给助理，用户原话优先
 
 
-def run(cases, funnel, kb_id: str = "kb-eval") -> list[dict]:
+def run(cases, funnel, kb_ids: dict | str = "kb-eval") -> list[dict]:
     rows = []
     for case in cases:
-        d = funnel.classify(case["text"], state_of(case, kb_id))
+        d = funnel.classify(case["text"], state_of(case, kb_ids))
         rows.append(dict(case=case, intent=d.intent, layer=d.layer, confidence=d.confidence,
                          outcome=outcome(case, d.intent)))
     return rows
@@ -112,6 +144,9 @@ def report(rows, show_errors: bool) -> None:
             total = sum(c.values())
             print(f"  {LABELS[intent]:<6} {total:>3}  {c['exact']:>3} {c['acceptable']:>3} {c['fallback']:>3} "
                   f"{c['wrong_direct']:>3} {c['wrong_shortcut']:>3} {c['wrong_hint']:>3} {c['missed_block']:>3}")
+    if mismatch := [r for r in rows if r["case"].get("kb_mismatch")]:
+        routed = sum(r["intent"] in SHORTCUT for r in mismatch)
+        print(f"\n选错库或库里没有的问题 {len(mismatch)} 条：走了知识捷径 {routed} 条")
     confusion = Counter((r["case"]["expected_intent"], r["intent"]) for r in rows
                         if r["outcome"] in WRONG)
     if confusion:
@@ -129,7 +164,9 @@ def report(rows, show_errors: bool) -> None:
 
 
 def kb_probe(root: Path, encoder_factory):
-    """返回 (kb_id, 带缓存的相关度函数, 关闭函数)。"""
+    """返回 (知识库映射, 带缓存的相关度函数, 关闭函数)。
+
+    目录里有 libs.json（多库：{键: {kb_id, …}}）时按用例的 state.kb 选库，否则用 kb_id.txt 的单库。"""
     from briefly.db import create_db_engine
     from briefly.knowledge.assistant import KnowledgeAssistant
     from briefly.knowledge.index import LocalIndex
@@ -141,18 +178,23 @@ def kb_probe(root: Path, encoder_factory):
     assistant, cache = KnowledgeAssistant(RetrievalService(imports), None), {}
 
     def probe(kb_id, text):
-        if text not in cache:
-            cache[text] = assistant.relevance(kb_id, text)
-        return cache[text]
-    return (root / "kb_id.txt").read_text(encoding="utf-8").strip(), probe, engine.dispose
+        if (kb_id, text) not in cache:
+            cache[kb_id, text] = assistant.relevance(kb_id, text)
+        return cache[kb_id, text]
+    libs = root / "libs.json"
+    if libs.is_file():
+        kb_ids = {key: lib["kb_id"] for key, lib in json.loads(libs.read_text(encoding="utf-8")).items()}
+    else:
+        kb_ids = {None: (root / "kb_id.txt").read_text(encoding="utf-8").strip()}
+    return kb_ids, probe, engine.dispose
 
 
-def kb_sweep(cases, encoder, kb_id, probe) -> None:
+def kb_sweep(cases, encoder, kb_ids, probe) -> None:
     print("\n知识库路由相似度下限扫描（下限 → 可接受率、前两层处理比例、前两层正确率、误判直接回复、误走捷径、误判提示）：")
     for floor in (0.45, 0.50, 0.55, 0.60):
         funnel = IntentFunnel(lambda: encoder, kb_probe=probe)
         funnel.kb_threshold = floor
-        s = summarize(run(cases, funnel, kb_id))
+        s = summarize(run(cases, funnel, kb_ids))
         print(f"  {floor:.2f}  {s['acceptable']:.1%}  {1 - s['layers'].get(3, 0):.1%}  {s['early_precision'] or 0:.1%}  "
               f"{s['outcomes'].get('wrong_direct', 0):>3}  {s['outcomes'].get('wrong_shortcut', 0):>3}  "
               f"{s['outcomes'].get('wrong_hint', 0):>3}")
@@ -187,12 +229,12 @@ def main():
     print("\n== 规则层＋语义层（当前阈值） ==")
     report(run(cases, IntentFunnel(lambda: encoder)), args.errors and not args.kb_root)
     if args.kb_root:
-        kb_id, probe, close = kb_probe(args.kb_root, lambda: encoder.encoder)
+        kb_ids, probe, close = kb_probe(args.kb_root, lambda: encoder.encoder)
         try:
             print("\n== 规则层＋知识库路由＋语义层 ==")
-            report(run(cases, IntentFunnel(lambda: encoder, kb_probe=probe), kb_id), args.errors)
+            report(run(cases, IntentFunnel(lambda: encoder, kb_probe=probe), kb_ids), args.errors)
             if args.sweep:
-                kb_sweep(cases, encoder, kb_id, probe)
+                kb_sweep(cases, encoder, kb_ids, probe)
         finally:
             close()
     if args.sweep:

@@ -101,6 +101,25 @@ def test_knowledge_routing_uses_selected_base_relevance_and_question_form():
     assert IntentFunnel(kb_probe=broken).classify("银狮奖有什么要求", state).intent == "agent"
 
 
+def test_locate_phrasing_and_follow_ups_in_knowledge_routing():
+    state = TurnState(kb_id="kb")
+    for text in ["库存现金管理那段在哪里？", "各厂家金额汇总在哪张表的哪个区域？", "资产数量统计在什么表？"]:
+        assert funnel().classify(text, state).intent == "locate"
+    # 承接上一轮的追问要结合上文补全，交给助理；没有上一轮时仍可直接检索
+    follow = TurnState(kb_id="kb", has_previous_reply=True)
+    assert funnel().classify("那销售试用期提成怎么计算？", follow).intent == "agent"
+    assert funnel().classify("那销售试用期提成怎么计算？", state).intent == "knowledge"
+    assert funnel().classify("销售试用期提成怎么计算？", follow).intent == "knowledge"
+
+
+def test_format_change_adjusts_previous_reply():
+    previous = TurnState(has_previous_reply=True)
+    for text in ["改成两列，事项和要求。", "换成表格", "整理成要点"]:
+        assert IntentFunnel().classify(text, previous).intent == "revise"
+    assert IntentFunnel().classify("改成两列，事项和要求。", TurnState(has_previous_reply=True, has_materials=True)).intent != "revise"
+    assert IntentFunnel().classify("把会议记录整理成表格，标出负责人", previous).intent != "revise"
+
+
 def test_requests_without_anything_to_process_ask_for_clarification():
     for text in ["润色下", "这里面讲了什么", "总结一下"]:
         assert IntentFunnel().classify(text).intent == "clarify"
