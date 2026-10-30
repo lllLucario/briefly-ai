@@ -13,7 +13,8 @@ def send(page, text):
     assert response.value.ok, response.value.text()
     expect(page.locator("#send")).to_be_enabled(timeout=90000)
     expect(page.locator(".msg.assistant:not(.pending)").last.locator(".msg-actions")).to_be_visible()
-    expect(page.locator(".msg.user").last.locator(".intent-meta")).to_contain_text("识别：")  # 显示意图判断
+    # 交给助理处理的轮次不显示系统的理解（标签只在捷径和直接回复时出现，见 test_intent_visibility.py）
+    expect(page.locator(".msg.user").last.locator(".intent-meta")).to_have_count(0)
     return page.locator(".msg.assistant:not(.pending)").last
 
 

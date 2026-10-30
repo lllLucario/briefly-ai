@@ -42,6 +42,7 @@ from .tool_budget import ToolBudgetMiddleware, turn_key
 from .turn_record import turn_record
 from .feishu import configured as feishu_configured
 from .intent import DIRECT_REPLIES, IntentDecision, IntentFunnel, TurnState
+from .intent_log import IntentLog
 from .knowledge.assistant import KnowledgeAssistant, knowledge_tools
 from .feishu.client import default_client
 from .clock import RequestTime, request_time
@@ -172,6 +173,7 @@ class Agent:
 
         self.funnel = funnel or IntentFunnel()  # 默认只有规则层；网页后端注入本地 Embedding 后启用语义层
         self.knowledge = knowledge
+        self.intent_log = IntentLog(store.engine) if store is not None else None  # 意图判断与纠正记录，只存本机
         tools = list(DEFAULT_TOOLS if tools is None else tools)
         tools += context_tools(self.context_store)
         if store is not None:
@@ -255,12 +257,16 @@ class Agent:
         material_ids: list[int] | None = None,
         thread_id: str | None = None,
         kb_id: str | None = None,
+        skip_funnel: bool = False,
+        corrects: str | None = None,
     ) -> str:
         """thread_id 不传时用当前会话（CLI）；网页后端多个会话共用一个 Agent，每次调用传入会话编号。
 
         用户的原始输入记在消息的 additional_kwargs["display"] 里，供网页显示历史（发给模型的是附了材料的全文）。
         本轮意图记在 additional_kwargs["intent"]（漏斗判断；轮次收尾补上实际能力 resolved，回复记 result，见 turn_record.py）；
         kb_id 为用户选定的知识库。
+        skip_funnel：用户认为系统理解错了（网页上的“交给助理处理”），同一句话不经意图漏斗直接交给助理；
+        corrects 为被纠正的那条用户消息 ID，记入意图日志（intent_log.py）。
         """
         thread_id = thread_id or self.thread_id
         display = text
@@ -278,8 +284,14 @@ class Agent:
                     {"messages": [message, system_reply(notice)]}, as_node=TURN_END)
                 return notice
         history = self.history_of(thread_id)
-        decision = self.funnel.classify(display, turn_state(history, material_ids, kb_id), skill)
+        state = turn_state(history, material_ids, kb_id)
+        if skip_funnel:
+            decision = IntentDecision("agent", 3, "用户认为判断有误，跳过意图判断交给助理")
+        else:
+            decision = self.funnel.classify(display, state, skill)
         intent = decision.to_dict()
+        if skip_funnel:
+            intent["skip_funnel"], intent["corrects"] = True, corrects
         if kb_id and self.knowledge is not None:
             intent["kb_id"], intent["kb_name"] = kb_id, self.knowledge.base_name(kb_id)
         direct = self._direct(decision, display, kb_id)
@@ -289,9 +301,11 @@ class Agent:
                 direct.text, intent=intent, skill=skill, tools=["search_knowledge"] if "knowledge" in direct.response_metadata else [],
                 message_id=direct.id, system=bool(direct.response_metadata.get(SYSTEM_REPLY)) and not direct.response_metadata.get("intent_reply"))
             intent["resolved"] = decision.intent
+            intent["direct"] = True  # 网页据此显示系统的理解和纠正入口；交给助理的轮次不显示
             message = HumanMessage(display, id=uuid.uuid4().hex, additional_kwargs=dict(
                 display=display, material_ids=material_ids or [], skill=skill, intent=intent, kb_id=kb_id))
             self.graph.update_state({"configurable": {"thread_id": thread_id}}, {"messages": [message, direct]}, as_node=TURN_END)
+            self._log_intent(thread_id, message, state, skill, corrects)
             return direct.text
         try:
             text, stored = self._preflight(text)
@@ -326,7 +340,20 @@ class Agent:
             except Exception:
                 log.exception("保存本轮调用失败说明失败")
             raise
+        finally:
+            self._log_intent(thread_id, message, state, skill, corrects)
         return result["messages"][-1].text
+
+    def _log_intent(self, thread_id, message, state, skill, corrects):
+        """本轮已存入会话后记意图日志（含轮次收尾写回的 resolved）；记录失败不影响对话。"""
+        if self.intent_log is None:
+            return
+        try:
+            saved = next((m for m in reversed(self.history_of(thread_id)) if m.id == message.id), message)
+            self.intent_log.record(thread_id, message.id, message.additional_kwargs["display"],
+                                   saved.additional_kwargs["intent"], state, skill, corrects)
+        except Exception:
+            log.exception("写入意图日志失败")
 
     def _direct(self, decision: IntentDecision, text: str, kb_id: str | None) -> AIMessage | None:
         """处理器登记表：能直接回复的意图不进入智能体循环；返回 None 时交给智能体。"""

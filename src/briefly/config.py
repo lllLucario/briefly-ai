@@ -41,6 +41,9 @@ INTENT_THRESHOLD = float(os.getenv("BRIEFLY_INTENT_THRESHOLD", "0.64"))
 INTENT_MARGIN = float(os.getenv("BRIEFLY_INTENT_MARGIN", "0.05"))
 # 知识库路由：选定知识库中最相关片段的语义相似度下限（本地检索），达到且句式为提问/找出处才走知识捷径
 INTENT_KB_THRESHOLD = float(os.getenv("BRIEFLY_INTENT_KB_THRESHOLD", "0.5"))
+# 意图日志（intent_log.py）：每条消息的判断与纠正记在本机业务库，不外发；原文默认不存，只存长度
+INTENT_LOG = os.getenv("BRIEFLY_INTENT_LOG", "on").lower() != "off"
+INTENT_LOG_TEXT = os.getenv("BRIEFLY_INTENT_LOG_TEXT", "off").lower() == "on"
 # 旧版Word本地转换；不配置时查PATH及常见LibreOffice安装位置。
 LIBREOFFICE_PATH = os.getenv("BRIEFLY_LIBREOFFICE", "")
 DOC_CONVERSION_TIMEOUT_S = max(1, int(os.getenv("BRIEFLY_DOC_CONVERSION_TIMEOUT_S", "90")))

@@ -12,6 +12,7 @@ const state = {
   lastRequest: null,
   viewRevision: 0,
   drafts: new Map(), // 未发送输入按会话保存，不带到其他会话
+  corrected: new Set(), // 当前会话里已点过“交给助理处理”的用户消息 ID
 };
 
 // ---------- 通用 ----------
@@ -921,13 +922,65 @@ async function loadChatBases() {
 }
 
 const INTENT_LAYERS = {1:"规则", 2:"语义", 3:"助理判断"};
+// 只在系统走了捷径或直接回复（intent.direct）时显示它的理解；交给助理处理的轮次不显示，避免满屏标签
+const INTENT_DIRECT_LABELS = {
+  knowledge:"按知识库问答处理", locate:"按文档定位处理", blocked:"已按使用规则拦截", clarify:"判断为需要补充说明",
+  greeting:"按问候回复", realtime:"判断为实时数据请求", out_of_scope:"判断为非办公请求",
+};
 function intentMeta(intent) {
-  if (!intent) return "";
+  if (intent?.skip_funnel) return `<span class="intent-meta">已跳过意图判断，交给助理处理</span>`;
+  if (!intent?.direct) return "";
   const score = intent.layer === 2 && intent.confidence != null ? ` ${Math.round(intent.confidence * 100)}%` : "";
   // 第 2 层的知识问答/文档定位由知识库路由给出，百分比是与库内原文的相关度，不是示例句相似度
   const layer = intent.layer === 2 && ["knowledge", "locate"].includes(intent.intent) ? "知识库相关度" : INTENT_LAYERS[intent.layer] || "";
-  return `<span class="intent-meta" title="${escapeHtml(intent.reason || "")}">识别：${escapeHtml(intent.label)} · ${layer}${score}</span>`;
+  const label = INTENT_DIRECT_LABELS[intent.intent] || `按${intent.label}处理`;
+  return `<span class="intent-meta" data-intent="${escapeHtml(intent.intent)}" title="${escapeHtml(`${intent.reason || ""} · ${layer}${score}`)}">系统理解：${escapeHtml(label)}</span>`;
 }
+
+function userMeta(el, m) {
+  const meta = [];
+  if (m.material_ids?.length) meta.push(`材料：${m.material_ids.map(materialTitle).map(escapeHtml).join("、")}`);
+  if (m.intent?.kb_name) meta.push(`知识库：${escapeHtml(m.intent.kb_name)}`);
+  if (intentMeta(m.intent)) meta.push(intentMeta(m.intent));
+  let box = el.querySelector(".msg-meta");
+  if (!meta.length) return box?.remove();
+  box = box || el.appendChild(Object.assign(document.createElement("div"), {className:"msg-meta"}));
+  box.innerHTML = meta.join(" · ");
+  correctionControl(box, m);
+}
+
+// 判错时的纠正入口：同一句话跳过意图判断交给助理，结果追加在后面，不删原回复。拦截不给按钮，安全规则不由用户一键绕过。
+function correctionControl(box, m) {
+  if (!m.intent?.direct || !m.message_id) return;
+  if (m.intent.intent === "blocked") {
+    box.insertAdjacentHTML("beforeend", ` · <span class="muted">认为拦错了，请把原话反馈给管理员</span>`);
+    return;
+  }
+  const button = Object.assign(document.createElement("button"), {type:"button", className:"ghost small intent-correct"});
+  const done = () => { button.disabled = true; button.textContent = "已交给助理处理"; };
+  if (state.corrected.has(m.message_id)) done();
+  else {
+    button.textContent = "不对，交给助理处理";
+    button.addEventListener("click", async () => {
+      if ($("#send").disabled) return;
+      button.disabled = true;
+      const ok = await sendChat({text:m.text, material_ids:m.material_ids || [], kb_id:m.intent.kb_id || null,
+                                 skip_funnel:true, corrects:m.message_id});
+      if (ok) { state.corrected.add(m.message_id); done(); } else if (button.isConnected) button.disabled = false;
+    });
+  }
+  box.append(" ", button);
+}
+
+// 会话不另存知识库选择：后端从最后一条用户消息取当时选的库；库已删除或不可用时改为不查并提示。
+function restoreKnowledgeBase(kbId, name) {
+  const select = $("#chat-kb");
+  const available = !kbId || [...select.options].some((o) => o.value === kbId);
+  select.value = available ? kbId || "" : "";
+  if (available) return $("#chat-kb-notice").classList.add("hidden");
+  showNotice($("#chat-kb-notice"), `这个会话上次查询的知识库${name ? `《${escapeHtml(name)}》` : ""}已删除或不可用，已改为“不查知识库”；需要时请重新选择。`, "warn");
+}
+$("#chat-kb").addEventListener("change", () => $("#chat-kb-notice").classList.add("hidden"));
 
 async function loadSessions() {
   const sessions = await api("/chat/sessions");
@@ -949,7 +1002,7 @@ function setSessionButtons() {
 }
 
 function rememberComposer() {
-  state.drafts.set(state.threadId || "new", {text:$("#input").value, material_ids:[...state.picked]});
+  state.drafts.set(state.threadId || "new", {text:$("#input").value, material_ids:[...state.picked], kb_id:$("#chat-kb").value});
 }
 
 async function openSession(threadId) {
@@ -961,9 +1014,12 @@ async function openSession(threadId) {
   state.lastRequest = null;
   state.threadId = threadId;
   setSessionButtons();
-  const detail = await api(`/chat/sessions/${threadId}`);
+  // 同时刷新知识库列表：恢复的库可能已在知识库页删除
+  const [detail] = await Promise.all([api(`/chat/sessions/${threadId}`), loadChatBases().catch(() => {})]);
   if (state.viewRevision !== view) return;
   $("#session-title").textContent = detail.title;
+  restoreKnowledgeBase(draft ? draft.kb_id : detail.kb_id, detail.kb_name);
+  state.corrected = new Set(detail.messages.map((m) => m.intent?.corrects).filter(Boolean));
   $("#messages").innerHTML = "";
   detail.messages.forEach(appendMessage);
   scrollMessages();
@@ -974,7 +1030,9 @@ function newSession() {
   rememberComposer();
   state.viewRevision++;
   state.threadId = null;
+  state.corrected = new Set();
   setSessionButtons();
+  $("#chat-kb-notice").classList.add("hidden");
   $("#session-title").textContent = "新会话";
   state.picked.clear(); renderPicked();
   state.lastRequest = null;
@@ -997,9 +1055,6 @@ function appendMessage(m) {
   const meta = [];
   if (m.role === "user") {
     state.lastRequest = {text:m.text, material_ids:m.material_ids || []};
-    if (m.material_ids?.length) meta.push(`材料：${m.material_ids.map(materialTitle).map(escapeHtml).join("、")}`);
-    if (m.intent?.kb_name) meta.push(`知识库：${escapeHtml(m.intent.kb_name)}`);
-    if (m.intent) meta.push(intentMeta(m.intent));
   } else if (m.tools?.length) {
     meta.push(`调用了工具：${escapeHtml([...new Set(m.tools)].join("、"))}`);
   }
@@ -1008,6 +1063,7 @@ function appendMessage(m) {
     : `<div class="bubble">${escapeHtml(m.text)}</div>`;
   el.innerHTML = `<div class="message-author">${m.role === "user" ? "你" : 'Briefly <span>办公助理</span>'}</div>` + body + (meta.length ? `<div class="msg-meta">${meta.join(" · ")}</div>` : "");
   box.appendChild(el);
+  if (m.role === "user") userMeta(el, m);
   if (m.role === "assistant" && !m.pending) {
     el.querySelectorAll(".bubble table").forEach((table) => { const wrap = document.createElement("div"); wrap.className = "answer-table-scroll"; wrap.tabIndex = 0; wrap.setAttribute("role","region"); wrap.setAttribute("aria-label","回答表格，可横向滚动"); table.before(wrap); wrap.append(table); });
     const metaBox = el.querySelector(".msg-meta");
@@ -1051,43 +1107,51 @@ $("#composer").addEventListener("submit", async (e) => {
   if ($("#send").disabled) return;
   const text = $("#input").value.trim();
   if (!text) return;
-  const material_ids = [...state.picked];
-  const kb_id = $("#chat-kb").value || null;
+  $("#input").value = "";
   const requestThread = state.threadId;
   const view = state.viewRevision;
-  const userEl = appendMessage({ role: "user", text, material_ids });
+  const ok = await sendChat({text, material_ids:[...state.picked], kb_id:$("#chat-kb").value || null});
+  if (state.viewRevision !== view) return; // 等待期间切换了会话：不动其他会话的输入
+  if (!ok) { $("#input").value = text; return; } // 失败时把输入放回去
+  state.picked.clear();
+  state.drafts.delete(requestThread || "new");
+  renderPicked();
+});
+
+// 发送一轮对话：输入框发送，或点“交给助理处理”用同一句话跳过意图判断重发（skip_funnel）。成功返回 true。
+async function sendChat({text, material_ids, kb_id, skip_funnel = false, corrects = null}) {
+  const requestThread = state.threadId;
+  const view = state.viewRevision;
+  const userEl = appendMessage({ role: "user", text, material_ids, intent: skip_funnel ? {skip_funnel} : null });
   const pending = appendMessage({ role: "assistant", text: "思考中…（读取材料或长文档时可能需要一两分钟）", pending: true });
   scrollMessages();
-  $("#input").value = "";
   $("#send").disabled = true;
-  const previousActions = [...document.querySelectorAll(".result-action")].map((button) => ({button, disabled:button.disabled}));
+  const previousActions = [...document.querySelectorAll(".result-action, .intent-correct")].map((button) => ({button, disabled:button.disabled}));
   previousActions.forEach(({button}) => button.disabled = true);
+  let ok = false;
   try {
-    const r = await api("/chat", { method: "POST", json: { text, thread_id: requestThread, material_ids, kb_id } });
+    const r = await api("/chat", { method: "POST", json: { text, thread_id: requestThread, material_ids, kb_id, skip_funnel, corrects } });
+    ok = true;
     // 等待期间用户切换了会话时，不把旧任务的结果和能力设置带到新会话。
-    if (state.viewRevision !== view) { loadSessions(); return; }
+    if (state.viewRevision !== view) { loadSessions(); return ok; }
     const isNew = !requestThread;
     state.threadId = r.thread_id;
     setSessionButtons();
     // 重新取历史，拿到本轮调用的工具名
     const detail = await api(`/chat/sessions/${r.thread_id}`);
-    if (state.viewRevision !== view) return;
+    if (state.viewRevision !== view) return ok;
     pending.remove();
-    if (r.intent) {
-      const meta = userEl.querySelector(".msg-meta") || userEl.appendChild(Object.assign(document.createElement("div"), {className:"msg-meta"}));
-      meta.innerHTML = [meta.innerHTML, r.intent.kb_name ? `知识库：${escapeHtml(r.intent.kb_name)}` : "", intentMeta(r.intent)].filter(Boolean).join(" · ");
-    }
+    // 用存下的用户消息补上系统的理解和纠正入口（需要消息 ID）；预检拒绝时没有新增历史，只用接口返回的判断
+    const saved = [...detail.messages].reverse().find((m) => m.role === "user");
+    userMeta(userEl, saved?.text === text ? saved : {text, material_ids, intent:r.intent});
     // 预检拒绝可能没有新增模型历史；仍显示这次实际返回的说明，不能误用上一条回答。
     const answer = [...detail.messages].reverse().find((m) => m.role === "assistant" && m.text === r.reply);
     appendMessage(answer || {role:"assistant", text:r.reply, system_reply:true});
     if (isNew) $("#session-title").textContent = detail.title;
-    state.picked.clear();
-    state.drafts.delete(requestThread || "new");
-    renderPicked();
     loadSessions();
   } catch (err) {
     pending.remove();
-    if (state.viewRevision !== view) return;
+    if (state.viewRevision !== view) return ok;
     if (err.threadId) {
       state.threadId = err.threadId;
       if (!requestThread) $("#session-title").textContent = text.trim().slice(0, 30);
@@ -1096,13 +1160,13 @@ $("#composer").addEventListener("submit", async (e) => {
     }
     const el = appendMessage({ role: "assistant", text: `出错了：${err.message}`, pending: true });
     el.querySelector(".bubble").classList.add("danger");
-    $("#input").value = text; // 失败时把输入放回去
     previousActions.forEach(({button, disabled}) => { if (button.isConnected) button.disabled = disabled; });
   } finally {
     $("#send").disabled = false;
     scrollMessages();
   }
-});
+  return ok;
+}
 
 $("#input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("#composer").requestSubmit();

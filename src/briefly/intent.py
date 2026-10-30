@@ -49,6 +49,10 @@ class IntentDecision:
     confidence: float | None = None
     matched: str | None = None
     reply: str | None = None  # 直接回复的意图按具体原因给出的答复；为空时用 DIRECT_REPLIES 的通用答复
+    # 判断途中算出的分数，只供意图日志调参（intent_log.py），不参与路由：kb_score 为知识库路由相似度，
+    # semantic 为语义层第一名 {intent, example, score, gap}；未达门槛、最后交给助理时也记
+    kb_score: float | None = None
+    semantic: dict | None = None
 
     @property
     def skill(self) -> str | None:
@@ -149,8 +153,11 @@ class IntentFunnel:
         if skill:  # 命令行显式指定的能力是规则层输入
             return IntentDecision(skill, 1, "用户显式指定能力", 1.0, skill)
         text = text.strip()
-        return self._rules(text, state) or self._knowledge(text, state) or self._semantic(text, state) or \
-            IntentDecision("agent", 3, "规则与语义层都没有把握，交给助理理解")
+        signals: dict = {}
+        decision = self._rules(text, state) or self._knowledge(text, state, signals) or \
+            self._semantic(text, state, signals) or IntentDecision("agent", 3, "规则与语义层都没有把握，交给助理理解")
+        decision.kb_score, decision.semantic = signals.get("kb_score"), signals.get("semantic")
+        return decision
 
     def _rules(self, text: str, state: TurnState) -> IntentDecision | None:
         if not text:
@@ -177,7 +184,7 @@ class IntentFunnel:
             return IntentDecision("summarize", 1, "明确要求整份总结", 1.0, m.group())
         return None
 
-    def _knowledge(self, text: str, state: TurnState) -> IntentDecision | None:
+    def _knowledge(self, text: str, state: TurnState, signals: dict) -> IntentDecision | None:
         """选了知识库、句式是提问或找出处、且库里有相关原文时，走知识问答或文档定位。"""
         if not state.kb_id or self.kb_probe is None:
             return None
@@ -191,13 +198,14 @@ class IntentFunnel:
             score = self.kb_probe(state.kb_id, text)
         except Exception:  # 索引未就绪或检索失败时不影响对话
             return None
+        signals["kb_score"] = None if score is None else round(score, 4)
         if score is None or score < self.kb_threshold:
             return None
         intent, cue = ("locate", where.group()) if where else ("knowledge", ask.group())
         return IntentDecision(intent, 2, f"选定知识库中有相关原文（相似度{score:.2f}），句式为{'找出处' if where else '提问'}",
                               round(score, 4), cue)
 
-    def _semantic(self, text: str, state: TurnState) -> IntentDecision | None:
+    def _semantic(self, text: str, state: TurnState, signals: dict) -> IntentDecision | None:
         if _COMPLEX.search(text) or len(text) > 300:  # 多目标、追问与长输入交给兜底层
             return None
         vectors = self._load()
@@ -219,6 +227,7 @@ class IntentFunnel:
             return None
         intent, (score, example) = ranked[0]
         second = ranked[1][1][0] if len(ranked) > 1 else 0.0
+        signals["semantic"] = dict(intent=intent, example=example, score=round(score, 4), gap=round(score - second, 4))
         if score < self.threshold + _STRICTER.get(intent, 0) or score - second < self.margin:
             return None
         reason = f"与示例“{example}”最接近"

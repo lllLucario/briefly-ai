@@ -240,6 +240,9 @@ def test_follow_up_goes_to_agent_with_knowledge_tool_and_history(indexed):
     # 轮次结果记录：捷径与助理调检索工具都记为 knowledge
     asked = [m.additional_kwargs["intent"] for m in agent.history if isinstance(m, HumanMessage)]
     assert [i["resolved"] for i in asked] == ["knowledge", "knowledge"]
+    # 网页只给走了捷径的那轮显示“按知识库问答处理”；追问交给了助理，不显示
+    assert [i.get("direct") for i in asked] == [True, None]
+    assert asked[0]["kb_score"] == asked[0]["confidence"]  # 知识库路由相似度另记一份供意图日志调参
 
 
 def test_instruction_before_colon_is_classified_without_pasted_body():

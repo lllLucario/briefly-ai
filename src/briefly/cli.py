@@ -106,7 +106,11 @@ def main() -> None:
         from .weekly.cli import main as weekly_main
 
         sys.exit(weekly_main(sys.argv[2:]))
-    ap = argparse.ArgumentParser(prog="briefly", description="办公 AI Agent（追踪文件见 briefly track -h，周报见 briefly weekly -h）")
+    if sys.argv[1:2] == ["intent-log"]:  # 意图判断与纠正记录：导出成评测用例
+        from .intent_log import main as intent_log_main
+
+        sys.exit(intent_log_main(sys.argv[2:]))
+    ap = argparse.ArgumentParser(prog="briefly", description="办公 AI Agent（追踪文件见 briefly track -h，周报见 briefly weekly -h，意图记录见 briefly intent-log -h）")
     ap.add_argument(
         "input", nargs="?", help="文件路径（txt/md/doc/docx/pdf/xlsx/csv）或飞书文档链接，- 表示标准输入；不填则进入对话模式"
     )

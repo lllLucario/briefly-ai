@@ -16,7 +16,7 @@ class Base(DeclarativeBase):
 
 def create_db_engine(url: str | None = None) -> Engine:
     """创建引擎并建表。sqlite 内存库用于测试。"""
-    from . import context_store, handoffs, mail, materials, sessions  # noqa: F401  注册表结构
+    from . import context_store, handoffs, intent_log, mail, materials, sessions  # noqa: F401  注册表结构
     from .feishu import service  # noqa: F401
     from .todos import models as _todos  # noqa: F401
     from .tracking import models as _tracking  # noqa: F401

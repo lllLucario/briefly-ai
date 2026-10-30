@@ -130,6 +130,8 @@ class ChatIn(BaseModel):
     material_ids: list[int] = []
     skill: str | None = None  # 显式指定能力（命令行等）；不填由意图漏斗与模型判断
     kb_id: str | None = None  # 本轮查询的知识库；知识检索只在这一个库内进行
+    skip_funnel: bool = False  # 用户认为系统理解错了：同一句话不经意图判断，直接交给助理
+    corrects: str | None = None  # skip_funnel 时被纠正的那条用户消息 ID（message_id），记入意图日志
 
 
 class ChatOut(BaseModel):
@@ -162,6 +164,9 @@ class MessageOut(BaseModel):
 
 class SessionDetail(SessionOut):
     messages: list[MessageOut]
+    # 最后一条用户消息选的知识库，切换会话时恢复；kb_name 为当时的库名，库已删除时用于提示
+    kb_id: str | None = None
+    kb_name: str | None = None
 
 
 class ContextOut(BaseModel):
@@ -218,6 +223,7 @@ def visible_messages(messages: list[AnyMessage]) -> list[MessageOut]:
                     material_ids=meta.get("material_ids") or [],
                     skill=meta.get("skill"),
                     intent=meta.get("intent"),
+                    message_id=m.id,
                 )
             )
             tools = []
@@ -363,7 +369,8 @@ def create_app(
         thread_id = body.thread_id or new_thread_id()
         with thread_locks[thread_id]:
             try:
-                reply = agent.chat(body.text, body.skill, material_ids=body.material_ids or None, thread_id=thread_id, kb_id=body.kb_id)
+                reply = agent.chat(body.text, body.skill, material_ids=body.material_ids or None, thread_id=thread_id,
+                                   kb_id=body.kb_id, skip_funnel=body.skip_funnel, corrects=body.corrects)
             except (ValueError, MaterialNotFound, ModelConfigurationError):
                 raise
             except Exception as e:  # 模型接口出错（网络、密钥、限流等）
@@ -382,7 +389,12 @@ def create_app(
     @app.get("/chat/sessions/{thread_id}", tags=[docs.CHAT], response_model=SessionDetail, summary="会话历史")
     def get_session(thread_id: str, sessions: Sessions, agent: AgentDep):
         s = session_out(sessions.get(thread_id))
-        messages = visible_messages(agent.history_of(thread_id))
+        history = agent.history_of(thread_id)
+        messages = visible_messages(history)
+        # 知识库只随每次请求传入，会话上不另存一份：用户消息元数据里已记着每轮选的库，取最后一轮即“离开时的选择”
+        last = next((m for m in reversed(history) if isinstance(m, HumanMessage) and not m.additional_kwargs.get("internal")), None)
+        kb_id = last.additional_kwargs.get("kb_id") if last else None
+        kb_name = (last.additional_kwargs.get("intent") or {}).get("kb_name") if kb_id else None
         from sqlalchemy import select
         from sqlalchemy.orm import Session
         from .handoffs import TodoImportDraft
@@ -390,7 +402,7 @@ def create_app(
             drafts = list(db.scalars(select(TodoImportDraft).where(TodoImportDraft.thread_id == thread_id, TodoImportDraft.receipt.is_not(None))))
             for message in messages:
                 message.saved_todo_ids = list(dict.fromkeys(i for d in drafts if d.data["message_id"] == message.message_id and d.receipt for i in d.receipt["todo_ids"]))
-        return SessionDetail(**s.model_dump(), messages=messages)
+        return SessionDetail(**s.model_dump(), messages=messages, kb_id=kb_id, kb_name=kb_name)
 
     @app.get("/chat/sessions/{thread_id}/context", tags=[docs.CHAT], response_model=ContextOut, summary="上下文用量")
     def get_context(thread_id: str, sessions: Sessions, agent: AgentDep):
