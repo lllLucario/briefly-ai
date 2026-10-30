@@ -127,3 +127,17 @@ def test_queries_are_data_and_do_not_escape_scope(indexed, question):
     add(store, svc, lifecycle, kb, "资料", "两字词，编号E403 2026。")
     result = retrieval.search(kb.id, question)
     assert result["evidence"] and result["evidence"][0]["kb_id"] == kb.id
+
+
+def test_row_label_route_matches_only_inside_table_row_identifiers():
+    from briefly.knowledge.retrieval import question_identifiers, row_label_match
+    ids = question_identifiers("24级A档的标准工资是多少？")
+    assert ids == {"24", "A"}
+    section = "薪酬结构总表 > 第1行（薪酬等级：24级；薪档：A） > 列：月工资/标准工资"
+    assert row_label_match(ids, section)
+    # 只看行标识括号里：“第24行”不算；按整段编号匹配，“2”不命中“24”
+    assert not row_label_match(ids, "薪酬结构总表 > 第24行（薪酬等级：3级；薪档：A） > 列：月工资/标准工资")
+    assert not row_label_match({"2", "A"}, section)
+    # 问题没有编号、或片段不是表格行：不参与
+    assert question_identifiers("招聘目标达成率的目标要求是什么？") == set()
+    assert not row_label_match(ids, "第三章 薪酬 > 24级A档说明")

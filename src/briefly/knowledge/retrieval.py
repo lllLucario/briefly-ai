@@ -1,5 +1,6 @@
 """正式有范围的混合召回；命中仅是候选依据，不是可答性或答案准确率。"""
 import logging
+import re
 from collections import defaultdict
 from time import perf_counter
 from uuid import uuid4
@@ -12,8 +13,25 @@ from .service import KnowledgeConflict, KnowledgeNotFound
 log = logging.getLogger(__name__)
 
 PARAMETERS = dict(version=1, per_route=20, rrf_k=60, top_k=5, context_tokens=4000,
-                  threshold=None, adjacent_expansion=False)
+                  threshold=None, adjacent_expansion=False, row_label_route="table-row-label/v1")
 _warned: set[str] = set()
+_ROW_LABEL = re.compile(r"第\d+行（([^）]*)）")
+_IDENTIFIER = re.compile(r"[0-9A-Za-z]+")
+
+
+def question_identifiers(question: str) -> set[str]:
+    """问题里的数字/字母编号（“24级A档”→ {"24", "A"}），用于匹配表格行标识。"""
+    return set(_IDENTIFIER.findall(question))
+
+
+def row_label_match(identifiers: set[str], section: str | None) -> bool:
+    """表格行片段（章节里“第N行（行标识）”）的行标识是否包含问题里的全部编号。只看括号里的行标识，不看“第N行”本身；
+    按整段编号匹配，“2”不会命中“24”。"""
+    label = _ROW_LABEL.search(section or "")
+    if not identifiers or not label:
+        return False
+    found = set(_IDENTIFIER.findall(label.group(1)))
+    return identifiers <= found
 
 
 def relevance_floor(identity) -> float | None:
@@ -105,11 +123,31 @@ class RetrievalService:
                 scores[key] += 1 / (PARAMETERS["rrf_k"] + rank)
                 routes[key].append(dict(route=route, rank=rank, raw_score=raw_score))
         by_generation = {v["generation_id"]: v for v in versions}
+        fetched = {}
+
+        def chunk(generation, number):
+            if (generation, number) not in fetched:
+                item = by_generation[generation]
+                fetched[(generation, number)] = svc.chunk(kb_id, item["document_id"], item["version_id"], number)
+            return fetched[(generation, number)]
+
+        # 第三路“表格行标识”：各行几乎同质的数值表（薪酬等级表）语义上分不出“24级”和“3级”，只有词法能分，
+        # 而 RRF 里两路都沾边的相邻行会压过只有词法命中的正确行。问题带数字/字母编号时，已召回的候选中
+        # 行标识包含全部编号的表格行片段，按词法名次（其次语义名次）排成一路，同样按 1/(k+名次) 计入。
+        # 只对已有候选重排，不新增候选，也不影响相关度判断（relevant 只看语义、词法两路）。
+        identifiers = question_identifiers(question)
+        if identifiers:
+            def order(key):
+                ranks = {r["route"]: r["rank"] for r in routes[key]}
+                return ranks.get("lexical", PARAMETERS["per_route"] + 1), ranks.get("semantic", PARAMETERS["per_route"] + 1), key
+            matched = sorted((key for key in scores if row_label_match(identifiers, chunk(*key)["section"])), key=order)
+            for rank, key in enumerate(matched, 1):
+                scores[key] += 1 / (PARAMETERS["rrf_k"] + rank)
+                routes[key].append(dict(route="row_label", rank=rank, raw_score=None))
         budget = encoder.token_length(evidence_payload(question, []))
         omitted = 0
         for (generation, number), score in sorted(scores.items(), key=lambda row: (-row[1], row[0])):
-            item = by_generation[generation]
-            source = svc.chunk(kb_id, item["document_id"], item["version_id"], number)
+            source = chunk(generation, number)
             if source["status"] != "current" or source["content"] is None:
                 raise KnowledgeConflict("来源在检索期间已变化，请重新检索")
             tokens = encoder.token_length(evidence_payload(question, [*result["evidence"], source]))
@@ -149,8 +187,7 @@ class RetrievalService:
             for (generation, number), score in sorted(scores.items(), key=lambda row: (-row[1], row[0])):
                 if (generation, number) in selected:
                     continue
-                item = by_generation[generation]
-                source = svc.chunk(kb_id, item["document_id"], item["version_id"], number)
+                source = chunk(generation, number)
                 if source["status"] != "current" or source["content"] is None:
                     raise KnowledgeConflict("来源在预算装填期间已变化，请重新检索")
                 tokens = encoder.token_length(evidence_payload(question, [*result["evidence"], source]))
