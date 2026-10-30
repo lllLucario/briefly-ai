@@ -3,6 +3,7 @@
 接口函数用 def 而不是 async def：解析文件是耗时的同步操作，FastAPI 会放进线程池执行，不阻塞其他请求。
 """
 import logging
+import mimetypes
 import re
 import threading
 from collections import defaultdict
@@ -36,6 +37,10 @@ from .weekly.service import WeeklyService
 log = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).parent / "web"
+# StaticFiles 按 mimetypes 判断类型，Windows 上会读注册表：有的机器把 .js 登记成 text/plain，
+# 浏览器在 nosniff 或模块脚本下会拒绝执行。网页用到的类型在这里固定，不受本机注册表影响。
+for _type, _ext in [("text/javascript", ".js"), ("text/css", ".css"), ("text/html", ".html")]:
+    mimetypes.add_type(_type, _ext)
 USAGE_FIELDS = [  # 上下文用量里给网页看的字段，与 CLI /context 一致
     "estimated_tokens",
     "input_tokens",
