@@ -86,6 +86,7 @@ def test_failed_turn_is_still_logged(engine):
 def test_funnel_scores_are_recorded_even_when_below_threshold():
     """调参要看差一点没过门槛的分数：未达门槛交给助理时，语义层第一名和知识库路由相似度也记下。"""
     low = IntentFunnel(KeywordEncoder, EXAMPLES, threshold=0.99, margin=0.05, kb_probe=lambda kb, text: 0.3)
+    low.kb_threshold = 0.5  # 假编码器没有模型身份，显式给定下限（按指纹取值见 test_relevance_floor）
     d = low.classify("年假有几天", TurnState(kb_id="kb"))
     assert d.intent == "agent" and d.kb_score == 0.3
     assert d.semantic["intent"] == "knowledge" and d.semantic["score"] > 0.9 and d.semantic["gap"] > 0
