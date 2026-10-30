@@ -69,6 +69,10 @@ def fake_model():
         if "首行必须选择一个状态" in latest:
             quote = re.search(r"【材料开始】\n(.*?)\n【材料结束】", latest, re.S)
             return AIMessage("【可答性：可回答】" + (quote[1][:120] if quote else "资料未提及") + "〔依据1〕")
+        if "列两点出差审批" in latest:  # 助理路径知识问答：先检索知识库，再按依据回答
+            if isinstance(messages[-1], ToolMessage):
+                return AIMessage("1. 出差须在预订前审批〔依据1〕\n2. 具体流程以制度原文为准")
+            return AIMessage("", tool_calls=[{"name": "search_knowledge", "args": {"questions": ["出差审批要求"]}, "id": "kb-search"}])
         if "证据缺口" in latest:
             if isinstance(messages[-1], ToolMessage):
                 return AIMessage("【一句话总结】仅依据当前输入整理。")

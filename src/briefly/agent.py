@@ -43,7 +43,7 @@ from .turn_record import turn_record
 from .feishu import configured as feishu_configured
 from .intent import DIRECT_REPLIES, IntentDecision, IntentFunnel, TurnState
 from .intent_log import IntentLog
-from .knowledge.assistant import KnowledgeAssistant, knowledge_tools
+from .knowledge.assistant import KnowledgeAssistant, knowledge_tools, record_knowledge_turn
 from .feishu.client import default_client
 from .clock import RequestTime, request_time
 from .tools import DEFAULT_TOOLS
@@ -200,6 +200,7 @@ class Agent:
                 self.tool_budget,  # 包在报错回传外层，报错文字也计入预算
                 ToolErrorMiddleware(on_error=_tool_error),
                 _record_turn,
+                record_knowledge_turn,  # 助理路径知识轮次的引用与外发计数（WP2）
             ],
             context_schema=Context,
             checkpointer=self._checkpointer,
@@ -362,20 +363,23 @@ class Agent:
         # 知识捷径只由知识库路由给出（已选库且库里有相关原文）；没选库的知识问题由助理提示选择
         if decision.intent not in {"knowledge", "locate"} or self.knowledge is None or not kb_id:
             return None
-        evidence = []
         if decision.intent == "locate":  # 只在本地检索，不调用模型、不外发；列出的文档都可核对
             result = self.knowledge.locate(kb_id, text)
-            evidence = list(enumerate(result.get("evidence") or [], 1))
+            references = [dict(label=f"依据{i}", reference=item["reference"], title=item["source"]["title"], section=item["section"])
+                          for i, item in enumerate(result.get("evidence") or [], 1)]
             reply = _intent_reply(result["answer"])
         else:
             result = self.knowledge.answer(kb_id, text)
             if result["status"] in {"workflow_required", "clarification_required", "blocked"}:
                 return None  # 知识问答入口不处理的请求，交给智能体结合上下文判断
-            if result.get("model_called"):  # 只列回答实际引用的依据，编号与回答一致
-                cited = {c["label"] for c in result.get("citations") or []}
-                evidence = [(i, e) for i, e in enumerate(result["evidence"], 1) if f"依据{i}" in cited]
-            reply = AIMessage(result["answer"], id=uuid.uuid4().hex) if result.get("model_called") else system_reply(result["answer"])
-        references = [dict(label=f"依据{i}", reference=item["reference"], title=item["source"]["title"]) for i, item in evidence]
+            # 引用由依据包确定：模型回答只列实际引用的依据，编号与回答一致；低相关时列最接近的出处
+            references = result.get("references") or []
+            if result.get("model_called"):
+                reply = AIMessage(result["answer"], id=uuid.uuid4().hex)
+            elif result["status"] == "low_relevance":  # 正常结论（库里没有相关内容），不是失败提示
+                reply = _intent_reply(result["answer"])
+            else:
+                reply = system_reply(result["answer"])
         reply.response_metadata["knowledge"] = dict(kb_id=kb_id, status=result["status"], references=references,
                                                     warnings=result.get("warnings") or [],
                                                     egress=result.get("egress") if result.get("model_called") else None)  # 只记录实际发生的外发

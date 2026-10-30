@@ -1,14 +1,56 @@
 """正式有范围的混合召回；命中仅是候选依据，不是可答性或答案准确率。"""
+import logging
 from collections import defaultdict
 from time import perf_counter
 from uuid import uuid4
 
+from ..relevance_floor import describe, embedding_fingerprint, kb_floor
 from .models import IndexGeneration, KnowledgeVersion
 from .payload import evidence_payload
 from .service import KnowledgeConflict, KnowledgeNotFound
 
+log = logging.getLogger(__name__)
+
 PARAMETERS = dict(version=1, per_route=20, rrf_k=60, top_k=5, context_tokens=4000,
                   threshold=None, adjacent_expansion=False)
+_warned: set[str] = set()
+
+
+def relevance_floor(identity) -> float | None:
+    """检索相关度下限：与意图漏斗的知识库路由同一口径，按 Embedding 指纹查登记值（relevance_floor.kb_floor），
+    配置了 BRIEFLY_INTENT_KB_THRESHOLD 时用覆盖值。没有登记值时返回 None，不判断相关度，每个模型记一次日志。"""
+    floor = kb_floor(identity)
+    if floor is None and (key := embedding_fingerprint(identity)) not in _warned:
+        _warned.add(key)
+        log.warning("Embedding %s 没有登记相关度下限，知识检索不做相关度判断（库外问题也会检索并按授权外发）；"
+                    "请标定后登记到 briefly.relevance_floor.REGISTERED", describe(identity))
+    return floor
+
+
+def similarity(item) -> float | None:
+    """语义路的相似度（1 − cosine 距离）；只有词法路命中、或文档开头补充片段时为 None。"""
+    sims = [1 - route["raw_score"] for route in item["retrieval"]["routes"] if route["route"] == "semantic"]
+    return max(sims) if sims else None
+
+
+def both_routes(item) -> bool:
+    return {route["route"] for route in item["retrieval"]["routes"]} >= {"semantic", "lexical"}
+
+
+def relevant(evidence, floor) -> bool:
+    """一次检索的结果是否与问题相关。语义相似度单独分不开（BGE-small 在 W3-selected 上库内题最低 0.49、
+    库外题最高 0.52），所以同时看语义、词法两路是否一致，只看排名前 5 的召回（不含文档开头补充片段）：
+    - 最高相似度达到下限，但前 5 条没有一条被两路同时命中：只是语义上沾边（只碰上“公司”这类字眼的词法命中不算），
+      按不相关处理；
+    - 低于下限，但前 5 条全部被两路同时命中：两路一致，按相关处理。
+    floor 为 None 或没有语义分数时不判断，按相关处理。规则是在 W3-selected 9 份 Word＋18 道题上看出来的，不是独立验证。"""
+    ranked = [e for e in evidence if e["retrieval"].get("rrf_score") is not None][:PARAMETERS["top_k"]]
+    sims = [s for e in ranked if (s := similarity(e)) is not None]
+    if floor is None or not sims:
+        return True
+    if max(sims) >= floor:
+        return any(both_routes(e) for e in ranked)
+    return all(both_routes(e) for e in ranked)
 
 
 class RetrievalService:

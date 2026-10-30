@@ -1,5 +1,6 @@
 """真实浏览器＋隔离后端：知识库入库、来源、跨库草稿与迟到响应。"""
 import json
+import re
 
 import pytest
 pytest.importorskip("sqlite_vec", reason="知识网页回归需安装.[rag]")
@@ -129,3 +130,21 @@ def test_knowledge_controls_fit_narrow_screen(web_page):
     create(page, "窄屏资料库")
     expect(page.locator("#kb-upload")).to_be_visible()
     assert page.locator("body").evaluate("element => element.scrollWidth <= innerWidth")
+
+
+def test_assistant_knowledge_answer_shows_egress_and_references(web_page):
+    """WP2：助理路径（追问/多问）也显示本次外发了多少片段，引用由程序记录、可打开原文。"""
+    from .flows import send
+    page = web_page
+    open_knowledge(page)
+    kb = create(page, "出差制度")
+    import_file(page)
+    page.locator("#kb-external").check()
+    expect(page.locator("#kb-message")).to_contain_text("已允许本知识库外发")
+    page.locator('.tabs [data-tab="chat"]').click()
+    page.locator("#chat-kb").select_option(kb)
+    answer = send(page, "请结合制度帮我列两点出差审批注意事项")
+    egress = answer.locator(".knowledge-refs [data-egress]")
+    expect(egress).to_contain_text(re.compile(r"已将本轮 \d+ 个片段经规则处理后发给外部生成服务，连同对话历史"))
+    answer.locator("[data-chat-reference]").first.click()
+    expect(page.locator("#kb-source-text")).to_contain_text("预订前审批")

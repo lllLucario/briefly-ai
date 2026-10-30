@@ -51,7 +51,7 @@ def test_restricted_evidence_and_incomplete_scope_do_not_generate(indexed):
     lifecycle.build(kb.id, doc.id, version.id, Encoder(), expected_revision=1)
     qa = KnowledgeQA(retrieval, forbidden)
     svc.set_egress(kb.id, True)
-    assert qa.answer(kb.id, "对应谁？")["status"] == "needs_review"
+    assert qa.answer(kb.id, "表格文字对应谁？")["status"] == "needs_review"
     other = svc.create("其他库")
     add(store, svc, lifecycle, other, "已索引", "预订前审批。")
     add(store, svc, lifecycle, other, "待处理", "其他依据", publish=False)
@@ -65,7 +65,7 @@ def test_model_can_report_insufficient_evidence_without_fake_citations(indexed):
     add(store, svc, lifecycle, kb, "制度", "预订前审批。")
     model = fake(text_msg("【可答性：依据不足】资料未提及企业定价，无法确定。"))
     svc.set_egress(kb.id, True)
-    result = KnowledgeQA(retrieval, lambda: model).answer(kb.id, "企业定价是多少？")
+    result = KnowledgeQA(retrieval, lambda: model).answer(kb.id, "预订前审批的企业定价是多少？")
     assert result["status"] == "insufficient_evidence" and result["citations"] == []
 
 

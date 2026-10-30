@@ -1075,13 +1075,20 @@ function appendMessage(m) {
   return el;
 }
 
+// 本次实际外发：本轮片段、历史中残留的片段、附带的材料分开说明（助理路径还会带上对话历史）。
+function egressText(egress) {
+  if (!egress?.evidence_sent) return "";
+  const extra = [egress.history_evidence ? `历史中的 ${egress.history_evidence} 个片段` : "", egress.materials ? `${egress.materials} 份材料内容` : ""].filter(Boolean);
+  const history = egress.history_sent ? `，连同对话历史${extra.length ? "及" + extra.join("、") : ""}` : "";
+  return `<span class="muted small" data-egress>已将本轮 ${egress.evidence_sent} 个片段经规则处理后发给外部生成服务${history} · </span>`;
+}
+
 // 知识回答的原文依据：按稳定引用打开当时的版本，不把模型回答当事实。
 function knowledgeReferences(el, knowledge) {
-  if (!knowledge?.references?.length) return;
+  if (!knowledge?.references?.length && !knowledge?.egress?.evidence_sent) return;
   const box = document.createElement("div");
   box.className = "knowledge-refs";
-  const sent = knowledge.egress?.evidence_sent ? `<span class="muted small">已将 ${knowledge.egress.evidence_sent} 个片段经规则处理后发给外部生成服务 · </span>` : "";
-  box.innerHTML = sent + `<span class="muted small">核对原文：</span>` + knowledge.references.map((r) =>
+  box.innerHTML = egressText(knowledge.egress) + (knowledge.references?.length ? `<span class="muted small">核对原文：</span>` : "") + (knowledge.references || []).map((r) =>
     `<button type="button" class="ghost small" data-chat-reference="${escapeHtml(r.reference)}">${escapeHtml(r.label)} · ${escapeHtml(r.title)}</button>`).join("");
   box.addEventListener("click", async (e) => {
     const button = e.target.closest("[data-chat-reference]");

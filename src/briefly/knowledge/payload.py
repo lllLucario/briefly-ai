@@ -2,9 +2,10 @@
 from ..materials import wrap_material
 
 
-def evidence_payload(question, evidence):
+def evidence_payload(question, evidence, start=1):
+    """start：首条依据的编号。同一轮多次检索时编号接续，回答里的〔依据N〕在本轮内唯一。"""
     blocks, documents = [], {}
-    for i, item in enumerate(evidence, 1):
+    for i, item in enumerate(evidence, start):
         key = (item["document_id"], item["version_id"])
         documents.setdefault(key, f"文档{len(documents) + 1}")
         header = (f"【依据{i}；同源标识：{documents[key]}；标题《{item['source']['title']}》；"

@@ -39,6 +39,8 @@ BUDGET_EXCEEDED = (
 )
 _MATERIAL_BLOCK = re.compile(r"(【[^】\n]*】)\n【材料开始】\n(.*?)\n【材料结束】", re.S)
 _RESULT_ID = re.compile(r"完整结果已保存为 (r_[0-9a-f]+)")
+_EVIDENCE_HEADER = re.compile(r"^【依据(\d+)；同源标识")
+KNOWLEDGE_TOOL = "search_knowledge"
 
 
 def input_limit(factor: float = 1.0) -> int:
@@ -97,11 +99,25 @@ def stub_materials(message: AnyMessage, threshold: int, counter: TokenCounter) -
     return (message.model_copy(update={"content": new}) if count else message), count
 
 
+def stub_knowledge_result(message: ToolMessage, args: dict) -> ToolMessage:
+    """之前轮次的知识检索结果：不论大小只留检索过什么、返回过哪些出处，不保留原文（事实只来自本轮检索）。"""
+    questions = "；".join(args.get("questions") or []) or "（未记录）"
+    knowledge = message.artifact.get("knowledge") if isinstance(message.artifact, dict) else None
+    titles = list(dict.fromkeys(f"《{r['title']}》" for r in (knowledge or {}).get("references") or []))
+    stub = (f"[之前检索过知识库：{questions}。返回过的出处：{'、'.join(titles) or '无'}。"
+            f"原文不保留，不作为本轮依据；需要时重新调用 {KNOWLEDGE_TOOL}]")
+    return message.model_copy(update={"content": stub})
+
+
 def condense(messages: list[AnyMessage], threshold: int, counter: TokenCounter) -> tuple[list[AnyMessage], int]:
-    """之前各轮：大段工具结果、材料全文换成引用。模型在那一轮给出的回答保留原文。"""
+    """之前各轮：大段工具结果、材料全文换成引用；知识检索结果一律换成简短说明。模型在那一轮给出的回答保留原文。"""
     out, stubbed = [], 0
+    calls = {c["id"]: c.get("args") or {} for m in messages if isinstance(m, AIMessage) for c in m.tool_calls}
     for m in messages:
-        if isinstance(m, ToolMessage):
+        if isinstance(m, ToolMessage) and m.name == KNOWLEDGE_TOOL:
+            m = stub_knowledge_result(m, calls.get(m.tool_call_id, {}))
+            stubbed += 1
+        elif isinstance(m, ToolMessage):
             size = counter.count_text(_text(m.content))
             if size > threshold:
                 m = stub_tool_result(m, size)
@@ -111,6 +127,23 @@ def condense(messages: list[AnyMessage], threshold: int, counter: TokenCounter) 
             stubbed += n
         out.append(m)
     return out, stubbed
+
+
+def egress_counts(history: list[AnyMessage], current: list[AnyMessage]) -> dict:
+    """这次实际发给模型的内容中：本轮知识依据编号、历史中残留的依据数、带正文的材料份数（按块标题去重）。"""
+    evidence, history_evidence, materials = set(), 0, set()
+    for part, messages in (("history", history), ("current", current)):
+        for m in messages:
+            for match in _MATERIAL_BLOCK.finditer(_text(m.content)):
+                header, body = match.group(1), match.group(2)
+                if number := _EVIDENCE_HEADER.match(header):
+                    if part == "current" and isinstance(m, ToolMessage):
+                        evidence.add(f"依据{number.group(1)}")
+                    else:
+                        history_evidence += 1
+                elif not body.startswith("（之前附过的材料全文"):
+                    materials.add(header)
+    return {"evidence": sorted(evidence), "history_evidence": history_evidence, "materials": len(materials)}
 
 
 class ContextBudgetExceeded(Exception):
@@ -186,7 +219,10 @@ class ContextBuilder(AgentMiddleware):
             raise ContextBudgetExceeded(c.budgeted(fixed + current_tokens), limit)
 
         # 4：会话记忆，放不下时缩小渲染预算（低优先级条目先省略）
-        room = limit - c.budgeted(fixed + current_tokens)
+        # 知识问答轮（本轮检索过知识库）另有总输入上限：先少带记忆和历史，不砍本轮依据
+        knowledge_turn = any(isinstance(m, ToolMessage) and m.name == KNOWLEDGE_TOOL for m in current)
+        cap = min(limit, int(config.KNOWLEDGE_TURN_TOKENS * factor)) if knowledge_turn else limit
+        room = max(cap - c.budgeted(fixed + current_tokens), 0)
         memory_text, _ = render_memory(memory, min(config.MEMORY_TOKENS, room), c)
         memory_tokens = c.count_text(memory_text)
         room -= c.budgeted(memory_tokens)
@@ -237,6 +273,8 @@ class ContextBuilder(AgentMiddleware):
             "omitted_turns": omitted,
             "stubbed_results": stubbed,
             "material_hashes": hashes,
+            "knowledge_turn": knowledge_turn,
+            "egress": egress_counts(history, current),
         }
         if omitted:
             log.warning("会话 %s：%s 轮未压缩的历史没有放进上下文", context.thread_id, omitted)
@@ -253,6 +291,8 @@ class ContextBuilder(AgentMiddleware):
         if built:
             data.update(built.parts, estimated_tokens=built.estimated, budgeted_tokens=built.budgeted, context_limit=built.limit)
         data.update(fields)
+        data.pop("egress", None)
+        data.pop("knowledge_turn", None)
         log.info("context_usage %s", {k: v for k, v in data.items() if k != "material_hashes"})
         self.store.record_usage(**data)
 
@@ -282,6 +322,7 @@ class ContextBuilder(AgentMiddleware):
             ai = next((m for m in reversed(result) if isinstance(m, AIMessage)), None)
             if ai is not None:
                 ai.response_metadata["context_omitted_turns"] = built.parts["omitted_turns"]
+                ai.response_metadata["egress_sent"] = built.parts["egress"]  # 知识轮次收尾按此统计实际外发
             usage = (getattr(ai, "usage_metadata", None) or {}) if ai else {}
             self.counter.calibrate(built.estimated, usage.get("input_tokens"))
             self._record(

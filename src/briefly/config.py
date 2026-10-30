@@ -36,6 +36,9 @@ EMBEDDING_DIR = os.getenv("BRIEFLY_EMBEDDING_DIR", "")
 # 知识问答：发给生成模型的依据包总额（按本地 Embedding 分词器计）及整个回答提示的上限（按生成模型计）
 KNOWLEDGE_CONTEXT_TOKENS = int(os.getenv("BRIEFLY_KNOWLEDGE_CONTEXT_TOKENS", "8000"))
 KNOWLEDGE_PROMPT_TOKENS = int(os.getenv("BRIEFLY_KNOWLEDGE_PROMPT_TOKENS", "12000"))
+# 助理路径知识问答这一轮的总输入上限（系统提示＋工具定义＋会话记忆＋历史＋本轮依据与问题，按生成模型计）：
+# 超出时先少带历史，不砍本轮依据；本轮依据本身放不下时仍按单次输入上限处理
+KNOWLEDGE_TURN_TOKENS = int(os.getenv("BRIEFLY_KNOWLEDGE_TURN_TOKENS", "32000"))
 # 意图漏斗语义层：与示例句的最低相似度、与第二名意图的最小差距；达不到交给助理判断
 INTENT_THRESHOLD = float(os.getenv("BRIEFLY_INTENT_THRESHOLD", "0.64"))
 INTENT_MARGIN = float(os.getenv("BRIEFLY_INTENT_MARGIN", "0.05"))

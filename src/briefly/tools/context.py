@@ -14,6 +14,8 @@ from ..context_store import ContextStore
 from ..tool_budget import output_limit
 
 SNIPPET_RADIUS = 150
+KNOWLEDGE_TOOL = "search_knowledge"
+STALE_KNOWLEDGE = "这是早先轮次的知识库检索结果，原文不再读回，也不能作为本轮依据；请用 search_knowledge 重新检索。"
 
 
 def _text(content) -> str:
@@ -83,16 +85,23 @@ def context_tools(store: ContextStore) -> list[BaseTool]:
     @tool(response_format="content_and_artifact")
     def read_tool_result(result_id: str, runtime: ToolRuntime[Context], page: int = 1) -> tuple[str, dict]:
         """读回之前被省略或只给了开头的工具结果。result_id 是提示里给出的编号（r_ 开头，或工具调用编号）；
-        内容较长时分页返回，page 从 1 开始。"""
+        内容较长时分页返回，page 从 1 开始。早先轮次的知识库检索结果不能读回，需要时重新检索。"""
         content = None
         record = store.tool_result(result_id) if result_id.startswith("r_") else None
         if record is not None:
             if record.thread_id and runtime.context and runtime.context.thread_id not in ("", record.thread_id):
                 raise ValueError(f"工具结果 {result_id} 不属于当前会话")
+            if record.tool_name == KNOWLEDGE_TOOL and runtime.context and record.run_id != runtime.context.run_id:
+                raise ValueError(STALE_KNOWLEDGE)
             content = record.content
         else:
             messages = (runtime.state or {}).get("messages", [])
-            hit = next((m for m in messages if isinstance(m, ToolMessage) and m.tool_call_id == result_id), None)
+            index = next((i for i, m in enumerate(messages) if isinstance(m, ToolMessage) and m.tool_call_id == result_id), None)
+            hit = messages[index] if index is not None else None
+            if hit is not None and hit.name == KNOWLEDGE_TOOL:
+                start = max((i for i, m in enumerate(messages) if isinstance(m, HumanMessage) and not m.additional_kwargs.get("internal")), default=-1)
+                if index < start:
+                    raise ValueError(STALE_KNOWLEDGE)
             content = _text(hit.content) if hit else None
         if content is None:
             raise ValueError(f"找不到工具结果 {result_id}")

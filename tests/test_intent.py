@@ -215,7 +215,7 @@ def test_relevance_probe_reads_local_semantic_similarity(indexed):
 
 def test_locate_lists_documents_locally_without_model(indexed):
     agent, kb = knowledge_agent(indexed, fake(), allowed=False)  # 未授权也可定位：不外发
-    reply = agent.chat("哪份文件讲了休假", kb_id=kb.id)
+    reply = agent.chat("哪份文件讲了年假", kb_id=kb.id)
     assert "《休假制度》" in reply
     located = visible_messages(agent.history)[-1]
     assert not located.system_reply and located.knowledge["references"][0]["title"] == "休假制度"

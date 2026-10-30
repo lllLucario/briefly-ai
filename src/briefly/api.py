@@ -249,11 +249,12 @@ def visible_messages(messages: list[AnyMessage]) -> list[MessageOut]:
                     warnings.append(f"回答中的日期换算可能有误（{'；'.join(m.response_metadata['date_issues'])}），请按原文核对。")
                 if m.response_metadata.get("length_limit"):
                     warnings.append(f"回答仍超过你要求的 {m.response_metadata['length_limit']} 字上限（当前 {m.response_metadata['actual_chars']} 字），可以精简要求后重试。")
+                # 引用与外发计数由生成时的知识记录确定（捷径或 record_knowledge_turn）；
+                # 2026-10-30 之前的助理回答没有记录，才按最后一次检索核对回答中出现的编号
                 knowledge = m.response_metadata.get("knowledge")
                 if knowledge:
                     warnings += knowledge.get("warnings") or []
                 elif searched and searched.get("references"):
-                    # 多次检索时编号可能重复，只按最后一次检索核对回答中出现的编号
                     cited = set(re.findall(r"依据\s*(\d+)", m.text))
                     refs = [r for r in searched["references"] if r["label"].removeprefix("依据") in cited]
                     knowledge = dict(kb_id=searched["kb_id"], references=refs) if refs else None
