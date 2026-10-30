@@ -11,6 +11,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from . import config
 
 MAX_HEADING_LEN = 40  # 猜测标题时，超过该长度的行视为正文
+MAX_COLON_HEADING_LEN = 15  # “一、目的：”这类带编号的冒号短行仍算标题；去掉冒号后超过该长度视为正文
 # 章节只略超块大小时整节保留，不切出一小块尾巴；块大小是目标值，不是模型的硬限制
 SECTION_STRETCH = 1.25
 
@@ -35,14 +36,35 @@ class Chunk:
 _MD_HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 _FENCE = re.compile(r"^\s*(```|~~~)")
 _CN_NUM = "一二三四五六七八九十百零〇两"
-_PATTERNS = [
-    (re.compile(rf"^第[{_CN_NUM}\d]+[章篇部]"), 1),
-    (re.compile(rf"^第[{_CN_NUM}\d]+节"), 2),
-    (re.compile(rf"^[{_CN_NUM}]+[、．]"), 2),
-    (re.compile(rf"^[（(][{_CN_NUM}]+[）)]"), 3),
+# 章/节/条的上下级固定；其余编号写法的上下级因文档而异，按在文档中首次出现的先后定
+_FIXED = [
+    (re.compile(rf"^第[{_CN_NUM}\d]+[章篇部]"), "chapter"),
+    (re.compile(rf"^第[{_CN_NUM}\d]+节"), "section"),
+    (re.compile(rf"^第[{_CN_NUM}\d]+条"), "article"),
 ]
-_DOTTED = re.compile(r"^(\d+(?:\.\d+)+)\s*[^\d.\s]")  # 1.1 / 1.2.3 这类多级编号
+_RELATIVE = [
+    (re.compile(rf"^[{_CN_NUM}]+[、．.](?!\d)"), "cn"),
+    (re.compile(rf"^[（(][{_CN_NUM}]+[）)]"), "cn-paren"),
+    (re.compile(r"^[（(]\d{1,3}[）)]"), "arabic-paren"),
+]
+_DOTTED = re.compile(r"^(\d+(?:\.\d+)+)[.．、]?\s*(?=[^\d.\s])")  # 1.1 / 1.2.3 这类多级编号
+_SINGLE = re.compile(r"^\d{1,3}([、．.])(?!\d)")  # 1、目的 / 1. 总则
+_SINGLE_SPACED = re.compile(r"^\d{1,3}\s+(?=[^\d\s])")  # 1 适用：只在编号加粗时认，免得“3 个月内完成”成了标题
+_BOLD_NUMBER = re.compile(r"^(\*\*|__)\d{1,3}\1\s")
+_LIST_PREFIX = re.compile(r"^[-*+]\s+")  # docling 把编号段落转成列表项：“- 一、 申请商品采购流程图”
+_EMPHASIS = re.compile(r"\*\*|__")
 _SENTENCE_END = tuple("。；，,;！？!?：:")
+_INNER_PUNCT = re.compile(r"[：:。；;！？!?]")  # 编号后的文字里带这些，是“安全使命：构筑……”这类条目，不是标题
+_TOC_ENTRY = re.compile(r"(?:\.{3,}|…{2,}|-{3,}|－{3,}|·{3,})\s*(?:第?\s*\d{1,4}\s*页?)?$|\s\d{1,4}$")  # 目录行：引导线或页码结尾
+
+
+@dataclass(frozen=True)
+class _Guess:
+    key: str  # 编号写法，判断列表用：同一写法的行紧挨着才是列表
+    family: str  # 层级归属：多级编号与单级阿拉伯数字同属 arabic，按点数分上下级
+    depth: int
+    title: str
+    inline: bool  # 条号与正文同在一行，章节名只取条号
 
 
 def _lines(text: str):
@@ -52,20 +74,53 @@ def _lines(text: str):
         pos += len(line)
 
 
-def _guess_level(line: str) -> tuple[int, str] | None:
-    """没有 Markdown 标题的文本（txt、无字号与书签的 pdf、粘贴）按常见的中文标题写法猜。
+def _clean(line: str) -> tuple[str, bool]:
+    """去掉列表前缀和行首尾的格式标记，只用于猜标题和章节名，不改原文与偏移。返回 (文字, 编号是否加粗)。"""
+    s = _LIST_PREFIX.sub("", line.strip(), count=1)  # 先判列表前缀“* ”，再剥斜体“*…*”
+    if s.startswith("\\#"):  # word_xhtml 给 # 开头的正文加的转义
+        s = s[1:]
+    bold_number = bool(_BOLD_NUMBER.match(s))
+    s = _EMPHASIS.sub("", s)  # “一、 **采购申请提出**”加粗常在行中间
+    if len(s) > 2 and s[0] == s[-1] and s[0] in "*_":
+        s = s[1:-1]
+    return re.sub(r"\s+", " ", s).strip(), bold_number
 
-    返回 (级别, 编号写法)；编号写法用于区分列表，如“一、”和“1.3”级别相同但不是同一组。
-    """
-    s = line.strip()
-    if not s or len(s) > MAX_HEADING_LEN or s.endswith(_SENTENCE_END):
-        return None
-    for pattern, level in _PATTERNS:
-        if pattern.match(s):
-            return level, pattern.pattern
+
+def _numbering(s: str, bold_number: bool) -> tuple[str, str, int, str] | None:
+    """返回 (编号写法, 层级归属, 深度, 编号本身)。"""
+    for pattern, key in _FIXED:
+        if m := pattern.match(s):
+            return key, key, 0, m.group(0)
+    for pattern, key in _RELATIVE:
+        if m := pattern.match(s):
+            return key, key, 0, m.group(0)
     if m := _DOTTED.match(s):
-        depth = m.group(1).count(".") + 1
-        return depth, f"dotted{depth}"
+        depth = m.group(1).count(".")
+        return f"dotted{depth}", "arabic", depth, m.group(1)
+    if m := _SINGLE.match(s):
+        return f"single{m.group(1)}", "arabic", 0, m.group(0)
+    if bold_number and (m := _SINGLE_SPACED.match(s)):
+        return "single-spaced", "arabic", 0, m.group(0).strip()
+    return None
+
+
+def _guess(line: str) -> _Guess | None:
+    """按常见的中文编号写法猜标题：长句、句末带标点的是正文；带编号的冒号短行算标题。
+
+    “第三条 本制度适用于……。”条款常与正文同行，整行不像标题，仍以该行为章节起点，章节名只取条号。
+    """
+    s, bold_number = _clean(line)
+    if not s or _TOC_ENTRY.search(s) or not (found := _numbering(s, bold_number)):
+        return None
+    key, family, depth, number = found
+    colon = s.endswith(("：", ":"))
+    core = s[:-1].rstrip() if colon else s
+    rest = core[len(number):].lstrip(" ：:")  # “第一条：原始凭证……”编号后的冒号是分隔，不算正文标点
+    if (len(core) <= (MAX_COLON_HEADING_LEN if colon else MAX_HEADING_LEN)
+            and not core.endswith(_SENTENCE_END) and not _INNER_PUNCT.search(rest)):
+        return _Guess(key, family, depth, core, False)
+    if key == "article":
+        return _Guess(key, family, depth, number, True)
     return None
 
 
@@ -77,35 +132,62 @@ def uses_markdown(text: str, markdown: bool | None) -> bool:
 
 
 def find_headings(text: str, markdown: bool | None = None) -> list[tuple[int, int, str]]:
-    """返回 [(偏移, 级别, 标题)]。Markdown 模式只认 # 标题；否则按中文编号写法猜。"""
-    lines = list(_lines(text))
-    if uses_markdown(text, markdown):
-        headings: list[tuple[int, int, str]] = []
-        in_fence = False
-        for offset, line in lines:
-            if _FENCE.match(line):
-                in_fence = not in_fence
-            elif not in_fence and (m := _MD_HEADING.match(line)):
-                headings.append((offset, len(m.group(1)), m.group(2).strip()))
-        return headings
-    return _drop_lists(lines)
+    """返回 [(偏移, 级别, 标题)]。Markdown 模式先认 # 标题；其余正文行按中文编号写法猜，排在 # 标题之下。
+
+    Word 多半不用标题样式，转成 Markdown 后没有 # 行，标题全写在正文里，所以两种模式都要猜。
+    级别只表示上下级，按文档里实际出现的层级重新编为 1、2、3……
+    """
+    marked: list[tuple[int, tuple[int, int, int], str]] = []
+    guessed: list[tuple[int, _Guess] | None] = []  # 与非空行一一对应，不是候选标题时为 None
+    in_fence = False
+    md = uses_markdown(text, markdown)
+    for offset, line in _lines(text):
+        if not line.strip():
+            continue
+        if _FENCE.match(line):
+            in_fence = not in_fence
+            guessed.append(None)
+        elif in_fence or _is_table_line(line):
+            guessed.append(None)
+        elif md and (m := _MD_HEADING.match(line)):
+            marked.append((offset, (0, len(m.group(1)), 0), m.group(2).strip()))
+            guessed.append(None)
+        else:
+            found = _guess(line)
+            guessed.append((offset, found) if found else None)
+    headings = marked + _rank(_drop_lists(guessed))
+    ranks = {key: i + 1 for i, key in enumerate(sorted({key for _, key, _ in headings}))}
+    return sorted((offset, ranks[key], title) for offset, key, title in headings)
 
 
-def _drop_lists(lines: list[tuple[int, str]]) -> list[tuple[int, int, str]]:
-    """按写法猜标题，并排除列表：同一种编号写法的行紧挨着、中间没有正文的，是列表而不是标题。"""
-    guessed: list[tuple[int, int, str, str] | None] = []  # 与非空行一一对应，不是候选标题时为 None
-    for offset, line in lines:
-        if line.strip():
-            found = _guess_level(line)
-            guessed.append((offset, found[0], line.strip(), found[1]) if found else None)
+def _drop_lists(guessed: list[tuple[int, _Guess] | None]) -> list[tuple[int, _Guess]]:
+    """排除列表：同一种编号写法的行紧挨着、中间没有正文的，是列表而不是标题。
+
+    条号与正文同行的条款本身带着正文：它自己不算列表，作邻居时也按正文看。
+    """
     keep = []
     for i, item in enumerate(guessed):
         if item is None:
             continue
         neighbors = [guessed[j] for j in (i - 1, i + 1) if 0 <= j < len(guessed)]
-        if not any(n is not None and n[3] == item[3] for n in neighbors):
-            keep.append(item[:3])
+        if item[1].inline or not any(n is not None and not n[1].inline and n[1].key == item[1].key
+                                     for n in neighbors):
+            keep.append(item)
     return keep
+
+
+def _rank(kept: list[tuple[int, _Guess]]) -> list[tuple[int, tuple[int, int, int], str]]:
+    """章/节/条在上；其余编号写法按首次出现的先后往下排，多级编号跟着首段，“1.1”在“1”之下。"""
+    fixed = {"chapter": 0, "section": 1, "article": 2}
+    order: dict[str, int] = {}
+    result = []
+    for offset, g in kept:
+        if g.family in fixed:
+            key = (1, fixed[g.family], 0)
+        else:
+            key = (2, order.setdefault(g.family, len(order)), g.depth)
+        result.append((offset, key, g.title))
+    return result
 
 
 def parse_sections(text: str, markdown: bool | None = None) -> list[Section]:

@@ -77,7 +77,7 @@ def token_slices(text, title, markdown, encoder, *, tokens=512, overlap=None,
     # 图形范围可能含表格文本，以原图形整体为单位，不能拆成正文或独立行。
     tables = [t for t in tables if not any(a < t[1] and t[0] < b for a, b, _ in graphics)]
     structures = sorted([*( (t[0], t[1], "table") for t in tables), *graphics])
-    config = dict(strategy="title-token-offsets", version=3,
+    config = dict(strategy="title-token-offsets", version=4,
                   parameters=dict(tokens=tokens, overlap=overlap, include_title=True,
                                   context=context, structure_policy="rows-and-graphics-no-overlap",
                                   protected_ranges=[dict(start=a, end=b) for a, b, _ in graphics],

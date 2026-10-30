@@ -25,21 +25,113 @@ def test_markdown_headings_inside_code_fence_are_ignored():
     assert titles("# 标题\n```\n# 注释\n```\n## 小节") == [(1, "标题"), (2, "小节")]
 
 
-def test_markdown_mode_ignores_chinese_patterns():
-    # 有 Markdown 标题时只认 Markdown，避免把正文里的“一、”当标题
-    assert titles("# 纪要\n一、讨论上线") == [(1, "纪要")]
+def test_numbered_headings_in_markdown_rank_below_hash_headings():
+    text = "# 纪要\n一、讨论上线\n正文。\n# 附录\n（一）名单\n正文。"
+    assert titles(text) == [(1, "纪要"), (2, "一、讨论上线"), (1, "附录"), (3, "（一）名单")]
 
 
 def test_guessed_chinese_headings():
     text = "第一章 总体情况\n一、本周进展\n（一）支付\n1.1 回调优化\n1.1.1 细节\n正文内容。"
-    assert titles(text) == [(1, "第一章 总体情况"), (2, "一、本周进展"), (3, "（一）支付"), (2, "1.1 回调优化"), (3, "1.1.1 细节")]
+    assert titles(text) == [(1, "第一章 总体情况"), (2, "一、本周进展"), (3, "（一）支付"), (4, "1.1 回调优化"), (5, "1.1.1 细节")]
 
 
 def test_format_decides_whether_hash_lines_are_headings():
     text = "一、背景\n示例提示词如下：\n# Role\n你是助理"
     assert [t for _, _, t in find_headings(text, markdown=False)] == ["一、背景"]  # txt / 无结构的 pdf
-    assert [t for _, _, t in find_headings(text, markdown=True)] == ["Role"]  # md
-    assert [t for _, _, t in find_headings(text)] == ["Role"]  # 粘贴：按内容判断
+    assert [t for _, _, t in find_headings(text, markdown=True)] == ["一、背景", "Role"]  # md
+    assert [t for _, _, t in find_headings(text)] == ["一、背景", "Role"]  # 粘贴：按内容判断
+
+
+# ---- Word 转出的 Markdown：标题写在正文里 ----
+
+
+def test_word_markdown_without_hash_headings_gets_numbered_sections():
+    text = "**第一章 总则**\n总则正文。\n一、目的\n目的正文。\n二、范围\n范围正文。\n**第二章 职责**\n职责正文。"
+    sections = parse_sections(text, markdown=True)
+    assert [s.path for s in sections] == ["第一章 总则", "第一章 总则 > 一、目的", "第一章 总则 > 二、范围", "第二章 职责"]
+
+
+def test_parser_inserted_textbox_appendix_does_not_hide_body_headings():
+    text = "一、目的\n正文。\n二、范围\n正文。\n# 文本框附录（原文正文位置未绑定）\n框内文字"
+    assert titles_md(text) == [(2, "一、目的"), (2, "二、范围"), (1, "文本框附录（原文正文位置未绑定）")]
+
+
+def titles_md(text: str) -> list[tuple[int, str]]:
+    return [(level, title) for _, level, title in find_headings(text, markdown=True)]
+
+
+def test_inline_article_takes_only_the_article_number():
+    text = "第一章 总则\n第一条 为加强管理，特制定本制度。\n第二条 本制度适用于全体员工。\n第三条：费用报销基本流程\n正文。"
+    assert titles_md(text) == [(1, "第一章 总则"), (2, "第一条"), (2, "第二条"), (2, "第三条：费用报销基本流程")]
+
+
+def test_heading_after_inline_article_is_not_taken_for_a_list():
+    text = "第一条 为加强管理，特制定本制度。\n第二条 公司财务部门的职能是:\n(一)认真贯彻执行国家有关的财务管理制度。"
+    assert titles_md(text) == [(1, "第一条"), (1, "第二条 公司财务部门的职能是")]
+
+
+def test_emphasis_and_list_prefix_are_stripped_from_heading_names():
+    text = ("**第一章 总则**\n正文。\n**5.1** 信息的分类与密级划分\n正文。\n- 一、 **采购申请提出**\n正文。\n"
+            "**1** 适用\n正文。")
+    assert [t for _, t in titles_md(text)] == ["第一章 总则", "5.1 信息的分类与密级划分", "一、 采购申请提出", "1 适用"]
+
+
+def test_list_prefix_and_italic_are_told_apart():
+    assert [t for _, t in titles_md("* 1.1 背景\n正文。\n*1.2 范围*\n正文。")] == ["1.1 背景", "1.2 范围"]
+
+
+def test_spaced_single_number_needs_bold():
+    assert titles_md("3 个月内完成\n正文。") == []
+
+
+def test_single_level_arabic_numbering():
+    assert [t for _, t in titles_md("1、目的\n正文。\n2. 总则\n正文。")] == ["1、目的", "2. 总则"]
+
+
+def test_relative_levels_follow_first_appearance():
+    cn_first = "一、总则\n正文。\n1、目的\n正文。\n二、职责\n正文。"
+    assert titles_md(cn_first) == [(1, "一、总则"), (2, "1、目的"), (1, "二、职责")]
+    arabic_first = "1、总则\n正文。\n一、目的\n正文。\n2、职责\n正文。"
+    assert titles_md(arabic_first) == [(1, "1、总则"), (2, "一、目的"), (1, "2、职责")]
+
+
+def test_fixed_and_relative_levels_together():
+    text = "第一章 总则\n正文。\n一、目的\n正文。\n（一）适用对象\n正文。\n1.1 细则\n正文。\n1.1.1 说明\n正文。"
+    assert titles_md(text) == [(1, "第一章 总则"), (2, "一、目的"), (3, "（一）适用对象"), (4, "1.1 细则"), (5, "1.1.1 说明")]
+
+
+def test_dotted_numbering_sits_under_its_single_level_parent():
+    text = "**1** 范围\n正文。\n**5.1** 分类\n正文。\n**6** 管理\n正文。\n**6.1** 职责\n正文。"
+    assert titles_md(text) == [(1, "1 范围"), (2, "5.1 分类"), (1, "6 管理"), (2, "6.1 职责")]
+    assert titles_md("5.1 分类\n正文。\n5.1.1 细则\n正文。\n一、附则\n正文。") == [(1, "5.1 分类"), (2, "5.1.1 细则"), (3, "一、附则")]
+
+
+def test_short_numbered_line_ending_with_colon_is_a_heading():
+    assert [t for _, t in titles_md("一、目的：\n正文。\n二、适用范围：\n正文。")] == ["一、目的", "二、适用范围"]
+    assert titles_md("背景：\n正文。") == []  # 不带编号的冒号短句仍是正文
+
+
+def test_label_and_content_lines_are_not_headings():
+    text = "1.2.2 安全使命：构筑安全基石，建设和谐企业\n正文。\n（3）课程开发能力：内部讲师仅处在教材编写阶段\n正文。"
+    assert titles_md(text) == []
+
+
+def test_table_of_contents_entries_are_not_headings():
+    text = ("目 录\n第一章 总则 1\n1、目的和范围..........\n1.1、目的..........\n02、企业概况 ......\n"
+            "第一章 总则\n正文。")
+    assert titles_md(text) == [(1, "第一章 总则")]
+
+
+def test_numbered_list_items_are_not_headings():
+    sentences = "1. 请购五金配件、办公用品等杂项由部门经理核准。\n正文。"
+    short_list = "一、准时\n二、安全\n三、整洁\n正文。"
+    sentence_list = "1、报销人应取得真实合法的原始凭证。\n2、发票须加盖公章。\n3、按月报销。"
+    assert titles_md(sentences) == titles_md(short_list) == titles_md(sentence_list) == []
+
+
+def test_numbers_in_tables_and_code_are_not_headings():
+    text = "| 1、目的 | 说明 |\n| - | - |\n| 2、范围 | 说明 |\n```\n一、示例\n```\n正文。"
+    assert titles_md(text) == []
 
 
 def test_consecutive_same_level_numbered_lines_are_a_list_not_headings():
@@ -48,7 +140,7 @@ def test_consecutive_same_level_numbered_lines_are_a_list_not_headings():
 
 
 def test_sentences_and_long_lines_are_not_headings():
-    text = "一、本周完成了接口联调。\n1.1 版本已发布，\n" + "一、" + "很长" * 30 + "\n1. 普通列表项"
+    text = "一、本周完成了接口联调。\n1.1 版本已发布，\n" + "一、" + "很长" * 30 + "\n1. 普通列表项。"
     assert titles(text) == []
 
 

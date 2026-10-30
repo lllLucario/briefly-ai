@@ -38,6 +38,14 @@ def test_title_budget_offsets_and_no_punctuation_only_tail():
     assert "".join(c.content for c in chunks) == text
 
 
+def test_word_body_numbered_headings_become_slice_sections():
+    text = "**第一章 总则**\n" + "总则原文。" * 20 + "\n第三条 本制度适用于全体员工。\n" + "条款原文。" * 20
+    _, chunks = token_slices(text, "制度", True, Encoder(), tokens=128, overlap=0)
+    assert {c.section for c in chunks} == {"第一章 总则", "第一章 总则 > 第三条"}
+    assert all(c.content == text[c.start:c.end] for c in chunks)
+    assert any(c.start == text.index("第三条") for c in chunks)  # 章节起点是切片边界
+
+
 def test_table_rows_are_kept_and_headers_enter_each_continuation():
     text = "| 地点 | 上限 |\n| --- | --- |\n" + "".join(f"| 城市{i} | {i+500} |\n" for i in range(12))
     _, chunks = token_slices(text, "制度", True, Encoder(), tokens=96)
@@ -52,7 +60,7 @@ def test_table_rows_are_kept_and_headers_enter_each_continuation():
 def test_prose_default_overlap_keeps_offsets_and_total_budget():
     text = "# 范围\n\n" + "不同业务条件须结合适用对象判断。" * 100
     config, chunks = token_slices(text, "制度", True, Encoder(), context="适用版本待核对")
-    assert config["version"] == 3 and config["parameters"]["tokens"] == 512
+    assert config["version"] == 4 and config["parameters"]["tokens"] == 512
     assert config["parameters"]["overlap"] == 50
     assert chunks[0].start == 0 and chunks[-1].end == len(text)
     assert all(c.content == text[c.start:c.end] and len(c.embedding_text) <= 512 for c in chunks)
