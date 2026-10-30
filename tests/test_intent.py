@@ -127,6 +127,9 @@ def test_requests_without_anything_to_process_ask_for_clarification():
         assert IntentFunnel().classify(text).intent == "clarify"
         assert IntentFunnel().classify(text, TurnState(has_materials=True)).intent != "clarify"
         assert IntentFunnel().classify(text, TurnState(earlier_materials=True)).intent != "clarify"
+    # 澄清答复按原因给出：没有内容时提示贴文字或附材料，而不是套用知识问答的例子
+    assert "附上文件" in IntentFunnel().classify("润色下").reply
+    assert "reply" not in IntentFunnel().classify("润色下").to_dict()
     # 选了知识库时“这里面讲了什么”可能指库，交给后续判断
     assert IntentFunnel().classify("这里面讲了什么", TurnState(kb_id="kb")).intent != "clarify"
 

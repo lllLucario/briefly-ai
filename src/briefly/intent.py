@@ -48,13 +48,15 @@ class IntentDecision:
     reason: str
     confidence: float | None = None
     matched: str | None = None
+    reply: str | None = None  # 直接回复的意图按具体原因给出的答复；为空时用 DIRECT_REPLIES 的通用答复
 
     @property
     def skill(self) -> str | None:
         return self.intent if self.intent in SKILLS else None
 
     def to_dict(self) -> dict:
-        return {**asdict(self), "label": LABELS[self.intent], "layer_label": LAYERS[self.layer]}
+        data = {k: v for k, v in asdict(self).items() if k != "reply"}  # 答复正文已在回复消息里，不重复记录
+        return {**data, "label": LABELS[self.intent], "layer_label": LAYERS[self.layer]}
 
 
 # 规则层：准入严格，只放长期稳定、没有歧义的写法。
@@ -160,10 +162,11 @@ class IntentFunnel:
         if m := _REALTIME.search(text):
             return IntentDecision("realtime", 1, "需要实时外部数据", 1.0, m.group())
         if _BARE_REFERENCE.fullmatch(text) and not state.has_previous_reply:
-            return IntentDecision("clarify", 1, "只有指代、没有可补全的上文", 1.0, text)
+            return IntentDecision("clarify", 1, "只有指代、没有可补全的上文", 1.0, text, CLARIFY_REFERENCE)
         # 选了知识库时可能指库里的资料，交给后续判断
         if not state.has_body and not state.kb_id and (_BARE_TASK.fullmatch(text) or _DEICTIC.search(text)):
-            return IntentDecision("clarify", 1, "要处理的对象不明：没有附材料，也没有可调整的回答", 1.0, text[:20])
+            return IntentDecision("clarify", 1, "要处理的对象不明：没有附材料，也没有可调整的回答", 1.0, text[:20],
+                                  CLARIFY_NO_BODY)
         if (m := _PROGRESS.search(text)) and not _COMPLEX.search(text):
             return IntentDecision("business_query", 1, "查询自己的业务数据或进度", 1.0, m.group())
         if state.has_previous_reply and not state.has_materials and _REFORMAT.fullmatch(text):
@@ -226,7 +229,8 @@ class IntentFunnel:
             # “再短一点”“换成表格”却没有可调整的回答：问清楚，而不是让助理猜；带了正文或材料时交给助理
             if head or state.has_materials or state.earlier_materials:
                 return None
-            return IntentDecision("clarify", 2, reason + "，但没有可调整的回答", round(score, 4), example)
+            return IntentDecision("clarify", 2, reason + "，但没有可调整的回答", round(score, 4), example,
+                                  CLARIFY_NO_PREVIOUS)
         if intent == "polish" and state.has_previous_reply and not state.has_materials and not head and len(text) <= 30:
             # 有上一轮回答、本轮没给新正文的改写要求，是在改上一轮
             return IntentDecision("revise", 2, reason + "，本轮没有新正文，按调整上一轮处理", round(score, 4), example)
@@ -246,6 +250,10 @@ class IntentFunnel:
 
 
 # 处理器登记表中“直接回复”的意图：不调用模型。其余意图由助理按能力或知识检索处理。
+CLARIFY_REFERENCE = "没能确定你指的是什么。请说明具体对象，例如“差旅制度里的住宿标准”。"
+CLARIFY_NO_BODY = ("还没有可以处理的内容。请把要处理的文字贴在消息里，或用“添加文件 / 链接”“选择材料”附上文件；"
+                   "如果想查公司制度，请先在输入框上方选择知识库。")
+CLARIFY_NO_PREVIOUS = "目前还没有可以调整的回答。请先告诉我要处理什么，或把文字贴给我。"
 DIRECT_REPLIES = {
     "blocked": "这个请求涉及越过使用规则或索取内部信息，无法执行。可以直接说明你要处理的办公任务。",
     "clarify": "请补充你想了解的对象和具体问题，例如“差旅制度里住宿标准是多少”。",

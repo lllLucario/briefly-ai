@@ -300,7 +300,7 @@ class Agent:
     def _direct(self, decision: IntentDecision, text: str, kb_id: str | None) -> AIMessage | None:
         """处理器登记表：能直接回复的意图不进入智能体循环；返回 None 时交给智能体。"""
         if decision.intent in DIRECT_REPLIES:
-            return _intent_reply(DIRECT_REPLIES[decision.intent])
+            return _intent_reply(decision.reply or DIRECT_REPLIES[decision.intent])
         # 知识捷径只由知识库路由给出（已选库且库里有相关原文）；没选库的知识问题由助理提示选择
         if decision.intent not in {"knowledge", "locate"} or self.knowledge is None or not kb_id:
             return None

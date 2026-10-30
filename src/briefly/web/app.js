@@ -924,7 +924,9 @@ const INTENT_LAYERS = {1:"规则", 2:"语义", 3:"助理判断"};
 function intentMeta(intent) {
   if (!intent) return "";
   const score = intent.layer === 2 && intent.confidence != null ? ` ${Math.round(intent.confidence * 100)}%` : "";
-  return `<span class="intent-meta" title="${escapeHtml(intent.reason || "")}">识别：${escapeHtml(intent.label)} · ${INTENT_LAYERS[intent.layer] || ""}${score}</span>`;
+  // 第 2 层的知识问答/文档定位由知识库路由给出，百分比是与库内原文的相关度，不是示例句相似度
+  const layer = intent.layer === 2 && ["knowledge", "locate"].includes(intent.intent) ? "知识库相关度" : INTENT_LAYERS[intent.layer] || "";
+  return `<span class="intent-meta" title="${escapeHtml(intent.reason || "")}">识别：${escapeHtml(intent.label)} · ${layer}${score}</span>`;
 }
 
 async function loadSessions() {
