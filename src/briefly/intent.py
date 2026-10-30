@@ -126,6 +126,9 @@ EXAMPLES: dict[str, list[str]] = {
     "business_action": ["把这条加到待办里", "新建一个待办提醒我周五交报告", "把这段写进周报", "记一条进展：接口已联调完成"],
     "revise": ["再短一点", "换成表格", "不是这份，是另一份", "重新来一遍", "用英文再写一次", "语气再正式一些"],
     "out_of_scope": ["帮我写一首诗", "写一个Python快速排序", "讲个笑话", "推荐一部电影", "解释一下相对论"],
+    # 从零写作、办公软件操作：不属于五项能力，由助理按“通用办公帮助”回答；没有这组示例时“写个请假条”最接近润色
+    "office": ["帮我写个请假条", "写一份放假通知", "起草一封给客户的邮件", "Excel 怎么冻结首行", "Word 里怎么加页码",
+               "PPT 怎么统一换字体"],
 }
 _NEEDS_PREVIOUS = {"revise"}
 _STRICTER = {"out_of_scope": 0.04}  # 误拒办公请求代价更大，要求更高的相似度
@@ -166,6 +169,8 @@ class IntentFunnel:
 
     def _rules(self, text: str, state: TurnState) -> IntentDecision | None:
         if not text:
+            if state.has_materials:  # 只附材料、没说要做什么：助理按内容判断（会议记录→纪要等），不追问
+                return IntentDecision("agent", 1, "只附了材料、没有文字要求，交给助理按内容判断", 1.0)
             return IntentDecision("clarify", 1, "空请求", 1.0)
         if m := _BLOCKED.search(text):
             return IntentDecision("blocked", 1, "要求越过规则或索取内部信息", 1.0, m.group())
@@ -252,8 +257,9 @@ class IntentFunnel:
         if score < self.threshold + _STRICTER.get(intent, 0) or score - second < self.margin:
             return None
         reason = f"与示例“{example}”最接近"
-        if intent in {"knowledge", "locate"}:
-            # 知识问答只由知识库路由判断：没选库或库里没有相关原文时交给助理，不凭示例句走捷径
+        if intent in {"knowledge", "locate", "office"}:
+            # 知识问答只由知识库路由判断：没选库或库里没有相关原文时交给助理，不凭示例句走捷径；
+            # 通用办公请求没有对应能力，交给助理，不套五项能力的栏目
             return None
         if intent in _NEEDS_PREVIOUS and not state.has_previous_reply:
             # “再短一点”“换成表格”却没有可调整的回答：问清楚，而不是让助理猜；带了正文或材料时交给助理
@@ -285,11 +291,12 @@ CLARIFY_NO_BODY = ("还没有可以处理的内容。请把要处理的文字贴
                    "如果想查公司制度，请先在输入框上方选择知识库。")
 CLARIFY_NO_PREVIOUS = "目前还没有可以调整的回答。请先告诉我要处理什么，或把文字贴给我。"
 DIRECT_REPLIES = {
-    "blocked": "这个请求涉及越过使用规则或索取内部信息，无法执行。可以直接说明你要处理的办公任务。",
+    # 与助理提示词（base.md“安全与保密”）的约定同一句，模型兜底拦下时说法一致
+    "blocked": "这部分内容我无法提供。可以直接说明你要处理的办公任务。",
     "clarify": "请补充你想了解的对象和具体问题，例如“差旅制度里住宿标准是多少”。",
     "greeting": ("你好，我是 Briefly 办公助理，可以帮你：总结文档、整理会议纪要、起草周报、梳理待办、优化文字，"
                  "以及在选定的知识库里查找制度和资料并给出原文依据。直接用一句话告诉我要做什么即可。"),
     "realtime": "目前还不能查询天气、股价、新闻等实时数据。可以处理你提供的材料，或在知识库里查找已入库的资料。",
-    "out_of_scope": ("这个请求不在办公助理的范围内，我主要帮你处理文档总结、会议纪要、周报、待办、文字优化和知识库查询。"
-                     "如果和工作材料有关，可以把材料发给我。"),
+    "out_of_scope": ("这个请求不在办公助理的范围内。我可以帮你处理文档总结、会议纪要、周报、待办、文字优化和知识库查询，"
+                     "也能解答办公软件操作、帮你写邮件和通知。如果和工作有关，可以直接告诉我。"),
 }

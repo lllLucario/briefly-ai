@@ -9,7 +9,7 @@ from fakes import fake, text_msg, tool_msg
 from test_knowledge_index import indexed  # noqa: F401  夹具
 from test_knowledge_retrieval import add, setup
 
-KEYWORDS = ["年假", "润色", "短", "哪份", "诗"]
+KEYWORDS = ["年假", "润色", "短", "哪份", "诗", "请假条"]
 
 
 class KeywordEncoder:
@@ -20,7 +20,7 @@ class KeywordEncoder:
 
 
 EXAMPLES = {"knowledge": ["年假有几天"], "polish": ["润色这段话"], "revise": ["再短一点"],
-            "locate": ["哪份文件讲了它"], "out_of_scope": ["写一首诗"]}
+            "locate": ["哪份文件讲了它"], "out_of_scope": ["写一首诗"], "office": ["写个请假条"]}
 
 
 def funnel(kb_score=0.9):
@@ -84,6 +84,9 @@ def test_semantic_layer_uses_examples_threshold_margin_and_state():
     assert f.classify("那病假呢").layer == 3
     # 与示例都不像时不硬分类
     assert f.classify("下周的安排").layer == 3
+    # 从零写作、办公软件操作没有对应能力：交给助理，不套润色的栏目
+    assert f.classify("帮我写个请假条").intent == "agent"
+    assert f.classify("帮我写个请假条").semantic["intent"] == "office"
 
 
 def test_knowledge_routing_uses_selected_base_relevance_and_question_form():
@@ -134,6 +137,8 @@ def test_requests_without_anything_to_process_ask_for_clarification():
     assert "reply" not in IntentFunnel().classify("润色下").to_dict()
     # 选了知识库时“这里面讲了什么”可能指库，交给后续判断
     assert IntentFunnel().classify("这里面讲了什么", TurnState(kb_id="kb")).intent != "clarify"
+    # 只附材料、不写文字：交给助理按内容判断（会议记录→纪要），不当成空请求追问
+    assert IntentFunnel().classify("", TurnState(has_materials=True)).intent == "agent"
 
 
 def test_turn_state_reads_materials_and_revisable_replies_from_history():
