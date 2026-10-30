@@ -1,6 +1,13 @@
+import sys
+from pathlib import Path
+
 import pytest
 
-from briefly import config
+# .venv 里的 briefly 是指向主检出 src 的可编辑安装；在 .claude/worktrees 里跑测试时，先用本检出的 src，
+# 否则测的是主检出的代码，改动不生效、测试照样全过
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from briefly import config  # noqa: E402
 
 
 def pytest_addoption(parser):

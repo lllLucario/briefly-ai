@@ -17,6 +17,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))  # 用本检出的代码（见 tests/conftest.py）
 
 from cases import CASES, FIXTURES, REPO, Case  # noqa: E402
 
