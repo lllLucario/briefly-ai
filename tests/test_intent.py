@@ -110,6 +110,8 @@ def test_locate_phrasing_and_follow_ups_in_knowledge_routing():
     assert funnel().classify("那销售试用期提成怎么计算？", follow).intent == "agent"
     assert funnel().classify("那销售试用期提成怎么计算？", state).intent == "knowledge"
     assert funnel().classify("销售试用期提成怎么计算？", follow).intent == "knowledge"
+    # 要系统改业务数据的请求不是知识问答
+    assert funnel().classify("把负责人是甲同事的那几条加到我的待办，先给预览。", state).intent != "knowledge"
 
 
 def test_format_change_adjusts_previous_reply():
