@@ -155,13 +155,13 @@ def test_parse_cache_respects_input_parser_library_and_explicit_reparse(imports)
 def test_valid_parse_cached_even_when_slicing_fails_and_keeps_quality(imports):
     _, svc, kb = imports
     calls = []
-    text = "| A | B |\n|---|---|\n| " + "x" * 150 + " | b |\n"
+    text = "| " + "长列名" * 30 + " | B |\n|---|---|\n| " + "x" * 150 + " | b |\n"  # 列名本身超过预算
     def parser(filename, data):
         calls.append(data)
         return LoadedDocument(text, True, {"table_structure_status": "partial"})
     svc.parser, svc.parser_identity = parser, "fixture/v1"
     first, _ = svc.enqueue(kb.id, "a.md", b"source", request_key="one", tokens=64)
-    with pytest.raises(ValueError, match="表格单行"):
+    with pytest.raises(ValueError, match="行标识或列名"):
         svc.parse(kb.id, first.id)
     assert svc.get(kb.id, first.id).material_id
     second, _ = svc.enqueue(kb.id, "a.md", b"source", request_key="two", tokens=512)

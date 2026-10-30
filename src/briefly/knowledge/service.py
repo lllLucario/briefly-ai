@@ -207,7 +207,7 @@ class KnowledgeService:
             if any(c.start < 0 or c.end <= c.start or c.end > len(material.content)
                    or c.content != material.content[c.start:c.end] for c in slices):
                 raise KnowledgeConflict("预览原文范围已变化")
-            if chunk_config.get("strategy") != "title-token-offsets" or chunk_config.get("version") not in {1, 2, 3, 4}:
+            if chunk_config.get("strategy") != "title-token-offsets" or chunk_config.get("version") not in {1, 2, 3, 4, 5}:
                 raise ValueError("未知切片配置")
             doc = s.scalar(select(KnowledgeDocument).where(
                 KnowledgeDocument.kb_id == kb_id, KnowledgeDocument.source_key == source_key))

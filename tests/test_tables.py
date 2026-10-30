@@ -62,15 +62,87 @@ def test_xlsx_merged_cells_follow_the_same_rule_as_docx():
     ws = wb.active
     for row in [["工时", None, "任务", "负责人"], ["计划", "实际", None, None], [8, 10, "支付", "李经理"], [4, None, "压测", None], ["备注：按计划", None, None, None]]:
         ws.append(row)
-    ws.merge_cells("A1:B1")  # 表头横向：每列都填
+    ws.merge_cells("A1:B1")  # 表头横向：每列都填；下一行落在它下面的“计划/实际”是第二层表头
     ws.merge_cells("D3:D4")  # 纵向：向下填
     ws.merge_cells("A5:D5")  # 正文横向：只留第一格
     buf = BytesIO()
     wb.save(buf)
     lines = load_document("t.xlsx", buf.getvalue()).text.splitlines()
-    assert lines[2] == "| 工时 | 工时 | 任务 | 负责人 |"
-    assert lines[6] == "| 4 |  | 压测 | 李经理 |"
-    assert lines[7] == "| 备注：按计划 |  |  |  |"
+    assert lines[2] == "| 工时/计划 | 工时/实际 | 任务 | 负责人 |"
+    assert lines[5] == "| 4 |  | 压测 | 李经理 |"
+    assert lines[6] == "| 备注：按计划 |  |  |  |"
+
+
+def test_xlsx_caption_rows_and_multi_level_header_become_one_header_line():
+    wb = Workbook()
+    ws = wb.active
+    rows = [
+        [None, "薪酬结构总表", None, None, None],
+        [None, None, None, None, "单位:元"],
+        [None, "薪酬等级", "月工资", None, "备注"],
+        [None, None, "标准\n工资", "绩效 工资", None],
+        [None, "24级", 200000, 50000, "按月发放"],
+        [None, "薪酬等级", "月工资", None, "备注"],  # 分段子表重复的表头
+        [None, None, "标准\n工资", "绩效 工资", None],
+        [None, "23级", 140000, 50000, None],
+    ]
+    for row in rows:
+        ws.append(row)
+    for rng in ("B1:E1", "B3:B4", "C3:D3", "E3:E4", "B6:B7", "C6:D6", "E6:E7"):
+        ws.merge_cells(rng)
+    buf = BytesIO()
+    wb.save(buf)
+    text = load_document("t.xlsx", buf.getvalue()).text
+    assert text == (
+        "# Sheet\n\n薪酬结构总表\n单位:元\n\n"
+        "| 薪酬等级 | 月工资/标准工资 | 月工资/绩效工资 | 备注 |\n"
+        "|---|---|---|---|\n"
+        "| 24级 | 200000 | 50000 | 按月发放 |\n"
+        "| 23级 | 140000 | 50000 |  |"
+    )  # 空的 A 列去掉；表名不再当表头；“标准\n工资”的换行去掉
+
+
+def test_xlsx_schedule_columns_are_compressed_to_start_and_end():
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["序号", "任务"] + list(range(1, 11)))
+    ws.append([1, "寻址"] + [None, "■", "■", "■", None, None, None, None, "■", None])
+    ws.append([2, "装修"] + [None] * 10)
+    ws.append(["特别注意：网络平稳过渡"] + [None] * 11)
+    ws.append([None] * 12)
+    ws.merge_cells("A4:L5")  # 横跨整表的说明框：只出现一次，不向下填成多行
+    buf = BytesIO()
+    wb.save(buf)
+    assert load_document("t.xlsx", buf.getvalue()).text.splitlines()[2:] == [
+        "| 序号 | 任务 | 排期（1～10） |",
+        "|---|---|---|",
+        "| 1 | 寻址 | 2～4、9 |",
+        "| 2 | 装修 |  |",
+        "| 特别注意：网络平稳过渡 |  |  |",
+    ]
+
+
+def test_xlsx_month_ticks_under_a_group_header_are_compressed():
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["工作内容", "计划完成时间"] + [None] * 11 + ["输出"])
+    ws.append([None] + [f"{m}月" for m in range(1, 13)] + [None])
+    ws.append(["风险自查", "√"] + [None] * 5 + ["√"] + [None] * 5 + ["《自查表》"])
+    for rng in ("A1:A2", "B1:M1", "N1:N2"):
+        ws.merge_cells(rng)
+    buf = BytesIO()
+    wb.save(buf)
+    assert load_document("t.xlsx", buf.getvalue()).text.splitlines()[2:] == [
+        "| 工作内容 | 计划完成时间（1月～12月） | 输出 |",
+        "|---|---|---|",
+        "| 风险自查 | 1月、7月 | 《自查表》 |",
+    ]
+
+
+def test_xlsx_numeric_month_columns_are_not_compressed():
+    data = xlsx_bytes({"预算": [["部门"] + list(range(1, 13)), ["销售"] + [100 * i for i in range(1, 13)]]})
+    text = load_document("t.xlsx", data).text
+    assert "| 部门 | 1 | 2 |" in text and "| 销售 | 100 | 200 |" in text
 
 
 def test_xlsx_percent_is_shown_as_in_excel():

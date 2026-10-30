@@ -53,14 +53,47 @@ def test_table_rows_are_kept_and_headers_enter_each_continuation():
     assert "".join(c.content for c in chunks) == text
     assert all(c.content.startswith("|") and c.content.endswith("\n") for c in chunks)
     assert all("| 地点 | 上限 |" in c.embedding_text for c in chunks)
-    with pytest.raises(ValueError, match="表格单行"):
-        token_slices("| A | B |\n|---|---|\n| " + "x" * 200 + " | b |", "表", True, Encoder(), tokens=64)
+
+
+def test_wide_row_is_split_by_column_groups_with_row_and_column_labels():
+    names = ["职级", "档次"] + [f"项目{i:02d}" for i in range(12)]
+    header = "| " + " | ".join(names) + " |\n|" + "---|" * len(names) + "\n"
+    rows = "".join(f"| {grade}级 | {band} | " + " | ".join(f"{grade}{band}{i:02d}值" for i in range(12)) + " |\n"
+                   for grade in (24, 23) for band in "AB")
+    text = "# 薪酬\n\n" + header + rows
+    config, chunks = token_slices(text, "表", True, Encoder(), tokens=150)
+    assert config["version"] == 5
+    assert "".join(c.content for c in chunks) == text  # 各段首尾相接，没有截断或丢字
+    assert all(c.content == text[c.start:c.end] and len(c.embedding_text) <= 150 for c in chunks)
+    pieces = [c for c in chunks if "第1行" in c.section]
+    assert len(pieces) > 1 and all(c.content.startswith("|") for c in pieces)
+    assert all("职级：24级；档次：A" in c.section for c in pieces)  # 行标识取到能区分各行为止
+    cell = next(c for c in pieces if "24A07值" in c.content)
+    columns = cell.section.split("列：")[1].split(" | ")
+    values = [v.strip() for v in cell.content.strip().strip("|").split("|")]
+    assert columns[values.index("24A07值")] == "项目07"  # 列名与格按顺序一一对应，能还原到原表的行和列
+    # 编码文本写成“列名：值”，不再拼整串列名，免得语义向量被稀释
+    assert "项目07：24A07值" in cell.embedding_text and "列：" not in cell.embedding_text
+    assert any(c.section == "薪酬 > 表头" for c in chunks)
+
+
+def test_long_cell_is_split_inside_the_cell_and_keeps_row_and_column():
+    remark = "".join(f"第{i}条说明内容较长需要拆分。" for i in range(20))
+    text = "| 指标 | 定义 |\n|---|---|\n| 招聘达成率 | " + remark + " |\n| 存活率 | 短 |\n"
+    _, chunks = token_slices(text, "KPI", True, Encoder(), tokens=96)
+    assert "".join(c.content for c in chunks) == text
+    inside = [c for c in chunks if c.section == "第1行（指标：招聘达成率） > 列：定义"]
+    assert len(inside) > 1
+    assert all(c.content.endswith("。") for c in inside[:-1])  # 在句末切开
+    assert chunks[-1].content == "| 存活率 | 短 |\n" and chunks[-1].section == ""  # 装得下的行照旧带表头
+    with pytest.raises(ValueError, match="行标识或列名"):
+        token_slices("| " + "长列名" * 30 + " |\n|---|\n| " + "x" * 200 + " |\n", "表", True, Encoder(), tokens=64)
 
 
 def test_prose_default_overlap_keeps_offsets_and_total_budget():
     text = "# 范围\n\n" + "不同业务条件须结合适用对象判断。" * 100
     config, chunks = token_slices(text, "制度", True, Encoder(), context="适用版本待核对")
-    assert config["version"] == 4 and config["parameters"]["tokens"] == 512
+    assert config["version"] == 5 and config["parameters"]["tokens"] == 512
     assert config["parameters"]["overlap"] == 50
     assert chunks[0].start == 0 and chunks[-1].end == len(text)
     assert all(c.content == text[c.start:c.end] and len(c.embedding_text) <= 512 for c in chunks)
