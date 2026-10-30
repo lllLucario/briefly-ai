@@ -25,7 +25,9 @@ EXAMPLES = {"knowledge": ["年假有几天"], "polish": ["润色这段话"], "re
 
 def funnel(kb_score=0.9):
     """kb_score 为选定知识库中最相关片段的相似度（替代真实本地检索）。"""
-    return IntentFunnel(KeywordEncoder, EXAMPLES, threshold=0.8, margin=0.05, kb_probe=lambda kb_id, text: kb_score)
+    f = IntentFunnel(KeywordEncoder, EXAMPLES, threshold=0.8, margin=0.05, kb_probe=lambda kb_id, text: kb_score)
+    f.kb_threshold = 0.5  # 按模型指纹取下限的逻辑见 test_relevance_floor
+    return f
 
 
 @pytest.mark.parametrize("text,intent", [

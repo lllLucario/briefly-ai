@@ -292,6 +292,11 @@ def create_app(
             app.state.knowledge_imports.lifecycle.clean_removed()
         except Exception:
             logging.getLogger(__name__).warning("索引派生清理延后，逻辑删除约束继续生效")
+        try:
+            from .relevance_floor import check_indexes
+            check_indexes(app.state.store.engine)  # 已建索引的模型没有登记相关度下限时提示
+        except Exception:
+            log.warning("知识库相关度下限检查失败，不影响启动", exc_info=True)
         if tracking_scheduler:
             from .feishu.messages import register_channel
             from .weekly.schedule import BackgroundScheduler

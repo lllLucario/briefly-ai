@@ -14,6 +14,7 @@ from pathlib import Path
 from briefly import config
 from briefly.intent import LABELS, IntentFunnel, TurnState
 from briefly.llm import create_local_embeddings
+from briefly.relevance_floor import embedding_fingerprint, kb_floor
 
 # 走直接回复、不经模型的意图：误判到这里用户拿不到任何帮助，代价最高
 DIRECT = {"blocked", "clarify", "greeting", "realtime", "out_of_scope"}
@@ -27,6 +28,7 @@ class CachedEncoder:
 
     def __init__(self, encoder) -> None:
         self.encoder, self.cache = encoder, {}
+        self.identity = getattr(encoder, "identity", None)  # 知识库下限按模型指纹登记
 
     def embed_documents(self, texts):
         missing = [t for t in texts if t not in self.cache]
@@ -231,7 +233,9 @@ def main():
     if args.kb_root:
         kb_ids, probe, close = kb_probe(args.kb_root, lambda: encoder.encoder)
         try:
-            print("\n== 规则层＋知识库路由＋语义层 ==")
+            floor = kb_floor(encoder.identity)
+            print(f"\n== 规则层＋知识库路由＋语义层 ==\n模型指纹 {embedding_fingerprint(encoder.identity)}，"
+                  f"当前下限 {'未登记' if floor is None else f'{floor:.2f}'}（标定后登记到 relevance_floor.REGISTERED）")
             report(run(cases, IntentFunnel(lambda: encoder, kb_probe=probe), kb_ids), args.errors)
             if args.sweep:
                 kb_sweep(cases, encoder, kb_ids, probe)

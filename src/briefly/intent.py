@@ -6,11 +6,15 @@
 - 兜底层：交给助理智能体理解与拆解，不另建分类器。
 识别结果只决定走捷径、收窄能力或设置护栏；事实仍只来自材料与检索原文。
 """
+import logging
 import re
 from dataclasses import asdict, dataclass
 
 from . import config
+from .relevance_floor import kb_floor, missing_floor_message
 from .skills import SKILLS
+
+log = logging.getLogger(__name__)
 
 LABELS = {
     "summarize": "文档总结", "minutes": "会议纪要", "weekly": "周报起草", "todo": "待办梳理", "polish": "文本优化",
@@ -142,7 +146,8 @@ class IntentFunnel:
         """kb_probe(kb_id, text) 返回选定知识库中最相关片段的相似度（本地检索，不外发）。"""
         self.encoder_factory = encoder_factory
         self.kb_probe = kb_probe
-        self.kb_threshold = config.INTENT_KB_THRESHOLD
+        self.kb_threshold: float | None = None  # 不指定时按当前 Embedding 指纹取登记值（标定扫描时直接赋值）
+        self._kb_floor_checked = False
         self.examples = examples or EXAMPLES
         self.threshold = config.INTENT_THRESHOLD if threshold is None else threshold
         self.margin = config.INTENT_MARGIN if margin is None else margin
@@ -192,18 +197,34 @@ class IntentFunnel:
                 or re.match(r".{4,30}?[：:]", text) or (state.has_previous_reply and _FOLLOW_UP.match(text)):
             return None
         where, ask = _WHERE.search(text), _ASK.search(text)
-        if not (where or ask):
+        if not (where or ask) or (floor := self._kb_floor()) is None:
             return None
         try:
             score = self.kb_probe(state.kb_id, text)
         except Exception:  # 索引未就绪或检索失败时不影响对话
             return None
         signals["kb_score"] = None if score is None else round(score, 4)
-        if score is None or score < self.kb_threshold:
+        if score is None or score < floor:
             return None
         intent, cue = ("locate", where.group()) if where else ("knowledge", ask.group())
         return IntentDecision(intent, 2, f"选定知识库中有相关原文（相似度{score:.2f}），句式为{'找出处' if where else '提问'}",
                               round(score, 4), cue)
+
+    def _kb_floor(self) -> float | None:
+        """当前模型没有登记下限时跳过知识库路由、交给助理：只看句式会把库里无关的问题也送进知识捷径并外发依据，
+        而助理仍可按需检索知识库，代价只是多一次模型判断。"""
+        if self.kb_threshold is not None or self._kb_floor_checked:
+            return self.kb_threshold
+        try:
+            identity = getattr(self.encoder_factory(), "identity", None) if self.encoder_factory else None
+        except Exception:  # 本地 Embedding 未就绪时下次再取
+            return config.INTENT_KB_THRESHOLD
+        self._kb_floor_checked = True
+        self.kb_threshold = kb_floor(identity)
+        if self.kb_threshold is None:
+            log.warning(missing_floor_message(identity) if identity else
+                        "本地 Embedding 没有可核对的模型身份，无法确定知识库相关度下限，知识库路由已跳过")
+        return self.kb_threshold
 
     def _semantic(self, text: str, state: TurnState, signals: dict) -> IntentDecision | None:
         if _COMPLEX.search(text) or len(text) > 300:  # 多目标、追问与长输入交给兜底层
