@@ -30,6 +30,7 @@ from . import material_library as library
 from .materials import TRACKED, Material, MaterialNotFound, MaterialStore
 from .sessions import ChatSession, SessionStore
 from .skills import SKILLS
+from .turn_record import output_kinds
 from .weekly.service import WeeklyService
 
 log = logging.getLogger(__name__)
@@ -148,7 +149,7 @@ class MessageOut(BaseModel):
     message_id: str | None = None
     saved_todo_ids: list[int] = []
     warnings: list[str] = []
-    result_kinds: list[str] = []  # 只用于安排结果操作，不作为业务保存或事实依据
+    result_kinds: list[str] = []  # 轮次结果记录的 kinds；只用于安排结果操作，不作为业务保存或事实依据
     system_reply: bool = False
     intent: dict | None = None  # 用户消息：意图漏斗的判断
     knowledge: dict | None = None  # 知识回答：知识库、状态与可打开的原文引用
@@ -247,9 +248,9 @@ def visible_messages(messages: list[AnyMessage]) -> list[MessageOut]:
                     knowledge = dict(kb_id=searched["kb_id"], references=refs) if refs else None
                 # 意图漏斗的直接答复（问候、定位等）是正常结果，不按“未生成可用结果”提示
                 system = bool(m.response_metadata.get(SYSTEM_REPLY)) and not m.response_metadata.get("intent_reply")
-                # 仅识别栏目以安排界面动作；不从 Markdown 提取任务或保存业务事实。
-                markers = {"summarize": "一句话总结", "minutes": "会议信息|行动项", "weekly": "周报标题", "todo": "待办清单", "polish": "优化后"}
-                kinds = [k for k, marker in markers.items() if re.search(rf"(?m)^\s*(?:#{{1,6}}\s*)?(?:\*\*)?【(?:{marker})】", m.text)] if not system else []
+                # 读轮次结果记录安排界面动作；旧消息没有记录时才回退到栏目识别。不从 Markdown 提取任务或保存业务事实。
+                record = m.response_metadata.get("result")
+                kinds = [] if system else list(record["kinds"]) if record else output_kinds(m.text)
                 out.append(MessageOut(role="assistant", text=m.text, tools=tools, message_id=m.id,
                                       skill=skill, warnings=warnings, result_kinds=kinds, system_reply=system,
                                       knowledge=knowledge))

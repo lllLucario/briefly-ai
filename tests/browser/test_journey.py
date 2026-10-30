@@ -16,6 +16,20 @@ def test_candidate_separate_evidence_warns_before_explicit_selection(web_page):
     assert page.request.get(page.url.rstrip("/") + "/todos").json() == []
 
 
+def test_unmarked_todo_table_still_offers_preview_and_save(web_page):
+    """L：回复没写【待办清单】栏目时，按轮次结果记录仍给出“预览并保存待办”，并走完预览和勾选保存。"""
+    from .flows import send, preview, save_candidate
+    from .support import TASK
+    from playwright.sync_api import expect
+    page = web_page
+    page.locator('[data-tab="chat"]').click()
+    answer = send(page, f"把这条加到我的待办：{TASK}")
+    expect(answer).not_to_contain_text("【待办清单】")
+    expect(answer.locator("[data-todos]")).to_be_visible()  # 主操作，不收在“更多操作”里
+    expect(answer.locator("[data-save-state]")).to_contain_text("尚未保存到待办")
+    save_candidate(page, preview(page, answer))
+
+
 def test_failed_chat_history_is_visible_after_reload(web_page):
     from playwright.sync_api import expect
     page = web_page

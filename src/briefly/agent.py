@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import ModelRequest, ToolErrorMiddleware, before_model, dynamic_prompt
+from langchain.agents.middleware import ModelRequest, ToolErrorMiddleware, after_agent, before_model, dynamic_prompt
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
@@ -39,6 +39,7 @@ from .skills import SKILLS, read_prompt
 from .sources import conversation_material_ids
 from .tokens import TokenCounter
 from .tool_budget import ToolBudgetMiddleware, turn_key
+from .turn_record import turn_record
 from .feishu import configured as feishu_configured
 from .intent import DIRECT_REPLIES, IntentDecision, IntentFunnel, TurnState
 from .knowledge.assistant import KnowledgeAssistant, knowledge_tools
@@ -103,6 +104,29 @@ def _limit_tool_rounds(state, runtime):
     if rounds >= config.MAX_TOOL_ROUNDS:
         return {"jump_to": "end", "messages": [system_reply(TOOL_ROUNDS_EXCEEDED)]}
     return None
+
+
+@after_agent
+def _record_turn(state, runtime):
+    """轮次收尾：按本轮实际调用的工具和产出的结构写轮次结果记录（turn_record.py），提前结束的轮次也经过这里。"""
+    messages = state["messages"]
+    start = max((i for i, m in enumerate(messages) if isinstance(m, HumanMessage) and not m.additional_kwargs.get("internal")), default=-1)
+    reply = messages[-1]
+    if start < 0 or not isinstance(reply, AIMessage) or reply.tool_calls or "intent" not in messages[start].additional_kwargs:
+        return None
+    human, context = messages[start], runtime.context
+    tools = [c["name"] for m in messages[start + 1:] if isinstance(m, AIMessage) for c in m.tool_calls]
+    intent = human.additional_kwargs["intent"]
+    resolved, result = turn_record(reply.text, intent=intent, skill=context.skill if context else None, tools=tools,
+                                   user_text=human.additional_kwargs.get("display") or "", message_id=reply.id,
+                                   system=bool(reply.response_metadata.get(SYSTEM_REPLY)))
+    human = human.model_copy(update={"additional_kwargs": {**human.additional_kwargs, "intent": {**intent, "resolved": resolved}}})
+    reply = reply.model_copy(update={"response_metadata": {**reply.response_metadata, "result": result}})
+    return {"messages": [human, reply]}  # 按消息 ID 替换，不新增消息
+
+
+# 程序直接写入的轮次（直接回复、受限来源提示、失败收尾）以轮次收尾节点的身份写入，会话停在“已结束”
+TURN_END = f"{_record_turn.name}.after_agent"
 
 
 def _tool_error(error: Exception, request) -> str:
@@ -173,6 +197,7 @@ class Agent:
                 _limit_tool_rounds,
                 self.tool_budget,  # 包在报错回传外层，报错文字也计入预算
                 ToolErrorMiddleware(on_error=_tool_error),
+                _record_turn,
             ],
             context_schema=Context,
             checkpointer=self._checkpointer,
@@ -234,7 +259,8 @@ class Agent:
         """thread_id 不传时用当前会话（CLI）；网页后端多个会话共用一个 Agent，每次调用传入会话编号。
 
         用户的原始输入记在消息的 additional_kwargs["display"] 里，供网页显示历史（发给模型的是附了材料的全文）。
-        本轮意图记在 additional_kwargs["intent"]；kb_id 为用户选定的知识库。
+        本轮意图记在 additional_kwargs["intent"]（漏斗判断；轮次收尾补上实际能力 resolved，回复记 result，见 turn_record.py）；
+        kb_id 为用户选定的知识库。
         """
         thread_id = thread_id or self.thread_id
         display = text
@@ -249,7 +275,7 @@ class Agent:
                 message = HumanMessage(text, id=uuid.uuid4().hex, additional_kwargs=dict(
                     display=display, material_ids=material_ids or [], skill=skill, quality_notice=notice))
                 self.graph.update_state({"configurable": {"thread_id": thread_id}},
-                    {"messages": [message, system_reply(notice)]}, as_node="model")
+                    {"messages": [message, system_reply(notice)]}, as_node=TURN_END)
                 return notice
         history = self.history_of(thread_id)
         decision = self.funnel.classify(display, turn_state(history, material_ids, kb_id), skill)
@@ -258,9 +284,14 @@ class Agent:
             intent["kb_id"], intent["kb_name"] = kb_id, self.knowledge.base_name(kb_id)
         direct = self._direct(decision, display, kb_id)
         if direct is not None:
+            # 捷径和直接回复由处理器执行，实际能力就是漏斗的判断
+            _, direct.response_metadata["result"] = turn_record(
+                direct.text, intent=intent, skill=skill, tools=["search_knowledge"] if "knowledge" in direct.response_metadata else [],
+                message_id=direct.id, system=bool(direct.response_metadata.get(SYSTEM_REPLY)) and not direct.response_metadata.get("intent_reply"))
+            intent["resolved"] = decision.intent
             message = HumanMessage(display, id=uuid.uuid4().hex, additional_kwargs=dict(
                 display=display, material_ids=material_ids or [], skill=skill, intent=intent, kb_id=kb_id))
-            self.graph.update_state({"configurable": {"thread_id": thread_id}}, {"messages": [message, direct]}, as_node="model")
+            self.graph.update_state({"configurable": {"thread_id": thread_id}}, {"messages": [message, direct]}, as_node=TURN_END)
             return direct.text
         try:
             text, stored = self._preflight(text)
@@ -340,7 +371,7 @@ class Agent:
                 pending.pop(m.tool_call_id, None)
         closed = [ToolMessage("本轮调用失败，工具结果不可用，请重新提问后查询。", tool_call_id=cid, name=name, status="error") for cid, name in pending.items()]
         closed.append(system_reply("本轮调用失败，未生成回答。请修改要求或稍后重试。"))
-        self.graph.update_state({"configurable": {"thread_id": thread_id}}, {"messages": closed}, as_node="model")
+        self.graph.update_state({"configurable": {"thread_id": thread_id}}, {"messages": closed}, as_node=TURN_END)
 
     def _compact(self, thread_id: str, run_id: str) -> bool:
         """对话前按需压缩。失败不影响本次对话：Context Builder 会降级并提示有未纳入的历史。"""
@@ -466,9 +497,10 @@ def _revisable(m: AnyMessage) -> bool:
 
 
 def _last_intent(messages: list[AnyMessage]) -> str | None:
+    """上一轮实际能力（intent.resolved）；2026-10-30 之前的消息没有这个字段，按未知处理，不回退到漏斗当时的判断。"""
     for m in reversed(messages):
         if isinstance(m, HumanMessage) and not m.additional_kwargs.get("internal"):
-            return (m.additional_kwargs.get("intent") or {}).get("intent")
+            return (m.additional_kwargs.get("intent") or {}).get("resolved")
     return None
 
 

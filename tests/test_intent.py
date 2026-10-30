@@ -237,6 +237,9 @@ def test_follow_up_goes_to_agent_with_knowledge_tool_and_history(indexed):
     assert tool_result.artifact["knowledge"]["references"][0]["title"] == "休假制度"
     # 智能体回答也附上实际引用的原文
     assert visible_messages(agent.history)[-1].knowledge["references"][0]["label"] == "依据1"
+    # 轮次结果记录：捷径与助理调检索工具都记为 knowledge
+    asked = [m.additional_kwargs["intent"] for m in agent.history if isinstance(m, HumanMessage)]
+    assert [i["resolved"] for i in asked] == ["knowledge", "knowledge"]
 
 
 def test_instruction_before_colon_is_classified_without_pasted_body():
