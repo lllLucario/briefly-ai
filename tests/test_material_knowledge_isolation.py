@@ -125,6 +125,29 @@ def test_same_content_added_by_user_becomes_workspace_material(store):
     assert created and tracked.id == other.id and store.get(other.id).source == "tracked"
 
 
+def test_deleting_a_shared_record_in_the_workspace_keeps_the_knowledge_source(store):
+    from briefly.knowledge.service import KnowledgeService
+    mine, _ = store.add_text("我的制度稿", KB_TEXT, source="file", kind="md")
+    svc = KnowledgeService(store.engine)
+    kb = svc.create("库")
+    doc, version, _ = svc.attach(kb.id, mine.id)
+    ref = svc.chunk(kb.id, doc.id, version.id, 1)["reference"]
+    todos = TodoService(store.engine, store)
+    todo = todos.create("订酒店")
+    todos.link(todo.id, mine.id)
+    store.delete(mine.id, force=True)  # 在工作区删除：只是移出工作区
+    assert store.list_materials() == [] and "我的制度稿" not in invoke(store, "list_materials")
+    with pytest.raises(KnowledgeOnlyMaterial, match=HINT):
+        store.get(mine.id)
+    assert todos.materials(todo.id) == []  # 工作区的关联照常清掉
+    source = svc.resolve_reference(kb.id, ref)  # 知识库的来源正文与引用不受影响
+    assert source["status"] != "source_deleted" and "650" in source["content"]
+    assert store.get(mine.id, workspace=False).source == KNOWLEDGE
+    # 再上传同样内容又回到工作区
+    again, _ = store.add_text("重新上传", KB_TEXT, source="file", kind="md")
+    assert again.id == mine.id and [m.id for m in store.list_materials()] == [mine.id]
+
+
 def _old_import(s, kb_id, material_id, created_at, n):
     s.add(KnowledgeImport(kb_id=kb_id, request_key=f"r{n}", request_fingerprint="f", filename="a.md",
                           source_key=f"a{n}", expected_revision=0, tokens=512, status="ready",

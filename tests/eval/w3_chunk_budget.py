@@ -23,7 +23,7 @@ def compare_fixed_budget(imports, retrieval, kb_id, trial, cases, encoder):
         source = next(f for f in trial["files"] if case["source_hint"] in f["filename"])
         item = dict(question=case["question"],source=source["filename"],result="source_not_indexed")
         if source["status"] == "ready":
-            material = imports.store.get(imports.get(kb_id,source["job_id"]).material_id)
+            material = imports.store.get(imports.get(kb_id,source["job_id"]).material_id, workspace=False)
             if case["quote"] not in material.content:
                 raise ValueError("金标不在原文")
             found = retrieval.search(kb_id,case["question"],document_ids=selected,
@@ -113,7 +113,7 @@ def main():
                     from briefly.knowledge.models import KnowledgeChunk
                     with imports.knowledge._session() as session:
                         rows = list(session.scalars(select(KnowledgeChunk).where(KnowledgeChunk.version_id == ready.version_id)))
-                    material = imports.store.get(preview.material_id)
+                    material = imports.store.get(preview.material_id, workspace=False)
                     assert all(c.content == material.content[c.start:c.end] for c in rows)
                     lengths = [current.token_length(c.embedding_text) for c in rows]
                     assert max(lengths) <= tokens
@@ -132,7 +132,7 @@ def main():
                 expected = next(e for e in event["files"] if case["source_hint"] in e["filename"])
                 row = dict(question=case["question"], source=expected["filename"], result="source_not_indexed")
                 if expected["status"] == "ready":
-                    source = imports.store.get(imports.get(kb.id, expected["job_id"]).material_id)
+                    source = imports.store.get(imports.get(kb.id, expected["job_id"]).material_id, workspace=False)
                     if case["quote"] not in source.content:
                         raise ValueError("事实金标不在解析原文，不能计通过")
                     found = retrieval.search(kb.id, case["question"], document_ids=selected, include_document_context=True)

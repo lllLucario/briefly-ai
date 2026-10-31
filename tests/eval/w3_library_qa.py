@@ -107,7 +107,7 @@ def build(root: Path) -> None:
                 job, _ = imports.enqueue(kb.id, path.name, data, request_key=entry["id"], source_key=entry["id"])
                 preview = imports.parse(kb.id, job.id)
                 ready = imports.confirm(kb.id, job.id, preview.preview["digest"])
-                report = imports.store.get(ready.material_id).parse_report
+                report = imports.store.get(ready.material_id, workspace=False).parse_report
                 record.update(status=ready.status, chunks=len(preview.preview["chunks"]),
                               table_structure=report.get("table_structure_status"),
                               partial_ranges=len(report.get("table_partial_ranges") or []),
@@ -131,7 +131,7 @@ def export(imports, kb_id, entries, manifest) -> None:
     out.mkdir(parents=True, exist_ok=True)
     texts = {}
     for item in imports.knowledge.documents(kb_id):
-        texts[item.source_key] = imports.store.get(imports.knowledge.versions(kb_id, item.id)[1][-1].material_id).content
+        texts[item.source_key] = imports.store.get(imports.knowledge.versions(kb_id, item.id)[1][-1].material_id, workspace=False).content
     index = []
     for entry in entries:
         if entry["role"] != "target" or entry["id"] not in texts:
@@ -168,7 +168,7 @@ def check(root: Path) -> None:
     lines = [f"# 题集核对 {datetime.now():%Y%m%d-%H%M%S}", ""]
     try:
         kb_id = manifest["kb_id"]
-        texts = {item.source_key: imports.store.get(imports.knowledge.versions(kb_id, item.id)[1][-1].material_id).content
+        texts = {item.source_key: imports.store.get(imports.knowledge.versions(kb_id, item.id)[1][-1].material_id, workspace=False).content
                  for item in imports.knowledge.documents(kb_id)}
         retrieval = RetrievalService(imports)
         missing = [(c["id"], g["doc"], g["text"]) for c in cases for g in c["gold"]

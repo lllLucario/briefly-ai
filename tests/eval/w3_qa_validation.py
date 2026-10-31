@@ -44,7 +44,7 @@ def main():
         for item in documents:
             doc_id = mapping[item["id"]]
             version = imports.knowledge.versions(kb.id, doc_id)[1][-1]
-            if imports.store.get(version.material_id).content != item["text"].strip():
+            if imports.store.get(version.material_id, workspace=False).content != item["text"].strip():
                 raise ValueError("评测资料与原创fixture不一致，拒绝外发")
         qa = KnowledgeQA(RetrievalService(imports), lambda: create_chat_model(max_retries=0, timeout=45))
         for case in [c for c in cases if c["id"] in args.k]:

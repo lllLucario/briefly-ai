@@ -318,9 +318,17 @@ class MaterialStore:
                 if material_id in (report.material_ids or []):
                     report.material_ids = [i for i in report.material_ids if i != material_id]
                     report.removed_materials = [*(report.removed_materials or []), removed]
-            # 与知识库共用的同一条记录（用户先上传、或另行添加过）按原规则删除：知识版本的来源置空，
-            # 由知识库按“来源已删除”处理（不能再发布、引用不会重新绑定），不在这里改知识库的来源治理
-            s.delete(material)
+            if knowledge_referenced(s, [material_id]):
+                # 与知识库共用的同一条记录（用户先上传、或另行添加过）：在工作区删除只是移出工作区，
+                # 知识库的来源正文、版本与引用不受影响；记录转回知识库专属，追踪版本不再指向它
+                from .tracking.models import FileSnapshot
+
+                s.execute(update(FileSnapshot).where(FileSnapshot.material_id == material_id).values(material_id=None))
+                report = dict(material.parse_report or {})
+                report.pop(WORKSPACE_FLAG, None)
+                material.source, material.parse_report = KNOWLEDGE, report
+            else:
+                s.delete(material)
             s.commit()
 
     def chunks(

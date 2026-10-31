@@ -10,6 +10,7 @@ from briefly.knowledge.lifecycle import IndexLifecycle
 from briefly.knowledge.models import IndexGeneration
 from briefly.knowledge.service import KnowledgeConflict, KnowledgeService
 from briefly.materials import MaterialStore
+from test_knowledge import purge
 from test_knowledge_slicing import Encoder
 
 
@@ -69,7 +70,7 @@ def test_source_deleted_during_build_cannot_publish(indexed):
     doc, version, _ = svc.attach(kb.id, mat.id)
     class DeletesSource(Encoder):
         def embed_documents(self, texts):
-            store.delete(mat.id)
+            purge(store, mat.id)
             return super().embed_documents(texts)
     with pytest.raises(KnowledgeConflict):
         lifecycle.build(kb.id, doc.id, version.id, DeletesSource(), expected_revision=1)

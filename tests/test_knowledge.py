@@ -9,7 +9,14 @@ from sqlalchemy.orm import Session
 from briefly.db import Base, create_db_engine, foreign_key_problems
 from briefly.knowledge.models import IndexGeneration, KnowledgeDocument, KnowledgePublication, KnowledgeVersion
 from briefly.knowledge.service import KnowledgeConflict, KnowledgeNotFound, KnowledgeService, source_contract, fingerprint
-from briefly.materials import MaterialChunk, MaterialSection, MaterialStore
+from briefly.materials import Material, MaterialChunk, MaterialSection, MaterialStore
+
+
+def purge(store, material_id):
+    """来源正文从存储里消失（而不是在工作区删除：那只移出工作区，不动知识库来源）。"""
+    with Session(store.engine) as s:
+        s.delete(s.get(Material, material_id))
+        s.commit()
 
 
 @pytest.fixture
@@ -127,7 +134,7 @@ def test_deleted_material_and_reused_id_do_not_rebind_reference(resources):
     doc,ver,_=svc.attach(kb.id,mat.id)
     publish_fake(engine,ver)
     ref=svc.chunk(kb.id,doc.id,ver.id,1)["reference"]
-    store.delete(mat.id)
+    purge(store, mat.id)
     replacement,_=store.add_text("其他制度","新住宿999元")
     assert replacement.id == mat.id  # SQLite可重用末尾整数主键
     source=svc.resolve_reference(kb.id,ref)
@@ -292,7 +299,7 @@ def test_reimport_identical_content_creates_new_version_without_resurrecting_old
     kb=svc.create("库")
     doc,old,_=svc.attach(kb.id,mat.id)
     ref=svc.chunk(kb.id,doc.id,old.id,1)["reference"]
-    store.delete(mat.id)
+    purge(store, mat.id)
     again,_=store.add_text("重新上传","同样的制度原文")
     doc,new,created=svc.append_version(kb.id,doc.id,again.id,expected_revision=1)
     assert created and new.id != old.id and new.number==2

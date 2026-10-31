@@ -195,7 +195,7 @@ def library(imports, kb_id):
     """资料编号 → 入库标题（依据片段按标题对应资料），以及全部资料原文（核对数字出处）。"""
     titles, corpus = {}, []
     for item in imports.knowledge.documents(kb_id):
-        material = imports.store.get(imports.knowledge.versions(kb_id, item.id)[1][-1].material_id)
+        material = imports.store.get(imports.knowledge.versions(kb_id, item.id)[1][-1].material_id, workspace=False)
         titles[item.source_key] = material.title
         corpus.append(material.content)
     return titles, corpus

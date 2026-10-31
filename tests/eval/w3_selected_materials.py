@@ -53,7 +53,7 @@ def audit_existing(root, encoder, cases_path):
                 event["result"] = "source_not_indexed"
                 audit["facts"].append(event)
                 continue
-            material = imports.store.get(source["material_id"])
+            material = imports.store.get(source["material_id"], workspace=False)
             if case["quote"] not in material.content:
                 raise ValueError("金标摘录不在解析原文，不能计通过")
             result = retrieval.search(report["kb_id"], case["question"], include_document_context=True)
@@ -143,7 +143,7 @@ def main():
                 tick = perf_counter()
                 preview = imports.parse(kb.id, job.id)
                 event["parse_and_slice_seconds"] = round(perf_counter() - tick, 3)
-                material = imports.store.get(preview.material_id)
+                material = imports.store.get(preview.material_id, workspace=False)
                 event.update(material_id=material.id, characters=material.char_count,
                              non_whitespace_characters=sum(not c.isspace() for c in material.content),
                              parse_report=material.parse_report, chunks=len(preview.preview["chunks"]),
