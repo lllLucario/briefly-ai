@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from briefly.db import create_db_engine
 from briefly.knowledge.index import LocalIndex
 from briefly.knowledge.ingestion import ImportService
+from briefly.knowledge.evidence import restricted_answer
 from briefly.knowledge.service import KnowledgeService
 from briefly.llm import create_local_embeddings
 
@@ -62,10 +63,7 @@ def main():
                 item = svc.knowledge.chunk(kb.id, version.document_id, version.id, 1)
                 event.update(status=ready.status, content_hash=version.content_hash, constraints=item["constraints"])
                 if item["constraints"]:
-                    def forbidden():
-                        raise AssertionError("受限依据不能调用生成模型")
-                    answer = svc.knowledge.answer_from_references(kb.id, "这份文件说明什么？", [item["reference"]], forbidden)
-                    event["answer_status"] = answer["status"]
+                    event["answer_status"] = restricted_answer([item])["status"]
             except ValueError as exc:
                 event.update(status=svc.get(kb.id, job.id).status if job else "rejected", error=str(exc))
             event["seconds"] = round(perf_counter() - started, 3)

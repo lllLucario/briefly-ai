@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from briefly import legacy_word,loaders
 from briefly.api import create_app
 from briefly.db import create_db_engine
+from briefly.knowledge.evidence import restricted_answer
 from briefly.materials import MaterialStore
 
 
@@ -32,8 +33,7 @@ def main():
                 ]:
                     evidence=client.get(f'/knowledge-bases/{kb}/documents/{doc}/versions/{ver}/chunks/{chunk.index}').json()
                     if key=='unknown_section':assert evidence['section'] is None
-                    result=client.post(f'/knowledge-bases/{kb}/answer-from-references',json=dict(question=question,references=[evidence['reference']]))
-                    assert result.status_code==200,result.text;data=result.json()
+                    data=restricted_answer([evidence])
                     assert data['status']=='needs_review' and not data['model_called'] and capability in data['blocked_capabilities']
                     records.append(dict(repeat=repeat,case=key,passed=True,result=data))
             (out/'real-downstream.json').write_text(json.dumps(dict(source_sha256=source['sha256'],parse_report=report,cases=records,

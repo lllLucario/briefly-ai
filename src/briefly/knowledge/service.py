@@ -9,7 +9,7 @@ from sqlalchemy.orm import defer, sessionmaker
 from ..clock import now_local, system_naive
 from ..materials import Material, MaterialChunk
 from .models import IndexGeneration, KnowledgeBase, KnowledgeChunk, KnowledgeEgressGrant, KnowledgeDocument, KnowledgePublication, KnowledgeVersion
-from .evidence import constraints, quality_snapshot, restricted_answer
+from .evidence import constraints, quality_snapshot
 
 
 class KnowledgeNotFound(ValueError):
@@ -423,28 +423,6 @@ class KnowledgeService:
                 section=None if "section_attribution" in limits else original["section"],constraints=limits,
                 start=original["start"], end=original["end"], page=None, content=chunk.content if chunk and not reason else None,
                 table_header=_table_header(chunk) if chunk and not reason else None)
-
-    def answer_from_references(self,kb_id,question,references,model_factory):
-        """已召回稳定引用→核验→回答；不伪装为已交付向量召回。"""
-        evidence=[self.resolve_reference(kb_id,r) for r in dict.fromkeys(references)]
-        if any(e["status"] in {"source_deleted","source_changed","document_removed"} or e["content"] is None for e in evidence):
-            raise KnowledgeConflict("引用来源已删除、移除或变化，请重新选择依据")
-        if sum(len(e["content"]) for e in evidence)>24000:
-            raise KnowledgeConflict("引用内容过长，请缩小本次依据范围")
-        restricted=restricted_answer(evidence)
-        if restricted is not None:
-            return {**restricted,"evidence":evidence}
-        # Reuse the single-agent implementation and its one-rewrite checking chain.
-        from ..agent import Agent
-        from .. import config
-        from ..materials import wrap_material
-        body="\n\n".join(wrap_material(f"【依据《{e['source']['title']}》】",e["content"]) for e in evidence)
-        prompt="只依据以下已核验引用回答；引用没有的内容写未提及，不推断章节、上下级或单元格关系。\n问题："+question+"\n\n"+body
-        agent=Agent(model=model_factory(),tools=[])
-        if agent.counter.count_text(prompt)>config.INPUT_INLINE_TOKENS:
-            raise KnowledgeConflict("引用上下文超过本次问答预算，请缩小依据范围")
-        answer=agent.chat(prompt)
-        return dict(status="answered",answer=answer,evidence=evidence,model_called=True,blocked_capabilities=[])
 
     def resolve_reference(self, kb_id, reference):
         parts = reference.split(":")

@@ -31,11 +31,6 @@ class ScopeIn(BaseModel):
     kb_ids: list[str] = Field(max_length=100)
 
 
-class EvidenceAnswerIn(BaseModel):
-    question: str = Field(min_length=1,max_length=4000)
-    references: list[str] = Field(min_length=1,max_length=12)
-
-
 class SearchIn(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     document_ids: list[str] | None = Field(default=None, max_length=1000)
@@ -83,17 +78,6 @@ def register(app: FastAPI,model_factory):
     @app.post("/knowledge-bases/{kb_id}/search", tags=["知识库"])
     def search(kb_id: str, body: SearchIn):
         return retrieval.search(kb_id, body.question, document_ids=body.document_ids)
-
-    @app.post("/knowledge-bases/{kb_id}/answer-from-references", tags=["知识库"])
-    def answer_from_references(kb_id: str,body: EvidenceAnswerIn):
-        try:
-            return service.answer_from_references(kb_id,body.question,body.references,model_factory)
-        except (KnowledgeConflict,KnowledgeNotFound):
-            raise
-        except ValueError as exc:
-            raise HTTPException(status_code=400,detail=str(exc)) from exc
-        except Exception as exc:
-            raise HTTPException(status_code=502,detail="依据问答失败，请稍后重试") from exc
 
     @app.exception_handler(KnowledgeNotFound)
     def missing(request, exc):
