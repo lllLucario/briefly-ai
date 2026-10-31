@@ -13,7 +13,9 @@ from .service import KnowledgeConflict
 
 EGRESS_REQUIRED = ("该知识库尚未允许外发：回答需要把问题和检索到的片段经规则处理后发给已配置的外部生成服务。"
                    "请在知识库页面开启“允许外发”（一次设置，可随时关闭）后再提问。")
-LOW_RELEVANCE = "知识库里没有找到与问题直接相关的内容，本次没有调用模型，也没有外发。"
+KNOWLEDGE_WITHHELD = ("该知识库尚未允许外发：本次只依据你的工作区文件回答，知识库里的 {count} 条相关片段没有发送。"
+                      "需要结合知识库时，请在知识库页面开启“允许外发”。")
+LOW_RELEVANCE ="知识库里没有找到与问题直接相关的内容，本次没有调用模型，也没有外发。"
 EGRESS_POLICY = "常见邮箱/手机号/密钥/密码及用户指定字段；不保证识别所有企业敏感信息"
 MAX_SUB_QUESTIONS = 3
 _CITATION_GROUP = re.compile(r"[〔【]\s*依据((?:\d+|[\s、，,]|依据)+)[〕】]")
@@ -154,7 +156,8 @@ class KnowledgeQA:
         联合检索（材料库接了工作区索引时）：同时检索工作区，依据总额仍为 KNOWLEDGE_CONTEXT_TOKENS，知识库最多
         总额 − WORKSPACE_CONTEXT_TOKENS，工作区最多 WORKSPACE_CONTEXT_TOKENS，任一侧用不满时余量给另一侧；
         两侧各自按相关度下限过滤后交错合并，依据头标明出处。工作区片段同样经质量限制与规则处理，关联知识库未允许
-        外发的材料不进依据包；依据包里有知识库片段时整包仍须该库已授权外发，只有工作区片段时按个人材料规则。"""
+        外发的材料不进依据包。所选库未允许外发时：工作区有可用片段就只发工作区片段（知识库片段不发，警告说明），
+        没有工作区片段时照旧提示开启授权；只有工作区片段时按个人材料规则发送。"""
         questions = [q.strip() for q in questions if q and q.strip()][:MAX_SUB_QUESTIONS]
         if not questions:
             raise ValueError("请至少提供一个检索问题")
@@ -193,6 +196,10 @@ class KnowledgeQA:
             return dict(base, status="low_relevance", evidence=closest, warnings=warnings,
                         references=[reference_entry(f"出处{i}", e) for i, e in enumerate(closest, 1)],
                         answer=LOW_RELEVANCE + "\n最接近的出处（相关度低于下限，仅供自行核对）：\n" + "\n".join(lines))
+        if joint and not base["authorized"] and evidence and any(not w.get("constraints") for w in workspace or []):
+            # 所选知识库未允许外发、工作区有可用片段：只发工作区片段，知识库片段不发（2026-11-01 用户确定）
+            warnings.append(KNOWLEDGE_WITHHELD.format(count=len(evidence)))
+            evidence = []
         if joint:
             with knowledge._session() as s:
                 kb_name = knowledge._kb(s, kb_id).name
@@ -240,7 +247,8 @@ class KnowledgeQA:
                       history_sent=False, history_evidence=0, materials=0, redactions=redactor.counts, policy=EGRESS_POLICY)
         bundle = dict(base, evidence=evidence, warnings=warnings, payload_text=payload, egress=egress,
                       references=[reference_entry(f"依据{i}", e) for i, e in enumerate(evidence, start)])
-        # 只有工作区片段时按个人材料规则发送（关联知识库未允许外发的已在上面排除）
+        # 只有工作区片段时按个人材料规则发送（关联知识库未允许外发的已在上面排除）；
+        # 这里还有知识库片段，说明工作区没有可用片段，照旧提示开启授权
         if not base["authorized"] and knowledge_items:
             return dict(bundle, status="external_authorization_required", answer=EGRESS_REQUIRED)
         return dict(bundle, status="ready")

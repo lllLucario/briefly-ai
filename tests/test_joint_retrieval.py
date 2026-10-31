@@ -135,11 +135,18 @@ def test_unauthorized_library_copy_never_sent(world):
     assert any("人事制度（未授权）" in w and "尚未允许外发" in w for w in bundle["warnings"])
 
 
-def test_selected_library_not_authorized_withholds_whole_bundle_but_workspace_only_follows_personal_rules(world):
+def test_selected_library_not_authorized_sends_only_workspace(world):
     world.publish("门店值班制度", POLICY)
+    plain = KnowledgeQA(world.qa.retrieval, lambda: None, workspace=world.store)
+    assert plain.bundle(world.kb.id, ["值班主管客诉多久到场"])["status"] == "external_authorization_required"  # 工作区没东西：照旧提示授权
     world.store.add_text("我的值班笔记", NOTES)
     bundle = world.qa.bundle(world.kb.id, ["值班主管客诉多久到场"])
-    assert bundle["status"] == "external_authorization_required"  # 有知识库片段：整包须该库已授权
+    # 所选库未授权：只发工作区片段，知识库片段不发并说明
+    assert bundle["status"] == "ready" and bundle["evidence"]
+    assert all(e["origin"] == "workspace" for e in bundle["evidence"])
+    assert "十五分钟" not in bundle["payload_text"] and "出处：知识库·已发布" not in bundle["payload_text"]
+    assert bundle["egress"]["evidence_sent"] == 0 and bundle["egress"]["workspace_sent"] >= 1
+    assert any("尚未允许外发" in w and "只依据你的工作区文件" in w for w in bundle["warnings"])
     empty = world.svc.create("空库")
     only = world.qa.bundle(empty.id, ["值班主管客诉多久到场"])
     assert only["status"] == "ready" and only["egress"]["evidence_sent"] == 0 and only["egress"]["workspace_sent"] >= 1
