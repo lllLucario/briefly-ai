@@ -141,6 +141,18 @@ def _cosine(a, b) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
+def knowledge_question(text: str) -> bool:
+    """句式像在问资料内容（提问、找出处、承接上文的追问），不是处理或写作任务。
+
+    供已选知识库、交给助理的轮次判断：助理一次工具都没调用就作答时，是否必须先检索知识库（KnowledgeSearchGuard）。
+    """
+    text = text.strip()
+    if not text or _TASK_VERB.search(text):
+        return False
+    return bool(_ASK.search(text) or _WHERE.search(text) or _FOLLOW_UP.match(text)
+                or re.search(r"[？?]|呢[。！!？?\s]*$|哪[项条种类款]", text))
+
+
 class IntentFunnel:
     """encoder_factory 返回本地 Embedding（需有 embed_documents）；不传或加载失败时只用规则层。"""
 
