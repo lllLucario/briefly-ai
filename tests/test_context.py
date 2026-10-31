@@ -656,12 +656,13 @@ def test_large_docx_and_pdf_go_through_materials(store):
 
     model = FunctionModel(respond=answering())
     agent = Agent(model, tools=[], store=store)
-    assert "需核对原件" in agent.chat("总结", material_ids=[docx.id, pdf.id])
-    assert model.calls == []  # 文字行PDF的关系限制不能绕过旧聊天入口。
-    agent.reset()
     agent.chat("总结", material_ids=[docx.id])
     sent = model.calls[0][-1].content
     assert "【已选材料】" in sent and "第599段" not in sent
+    agent.reset()
+    calls = len(model.calls)
+    agent.chat("总结", material_ids=[docx.id, pdf.id])
+    assert len(model.calls) > calls  # 没有表格的文字版 PDF 不再整份受限，旧聊天入口正常交给模型
 
 
 # ---- Map-Reduce 隔离、缓存、恢复

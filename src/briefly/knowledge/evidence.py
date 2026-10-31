@@ -2,7 +2,8 @@
 from copy import deepcopy
 
 QUALITY_KEYS=("document_quality", "table_structure_status", "restored_source_paragraphs",
-              "unverified_table_segments", "object_anchors", "textbox_provenance", "textbox_markdown_range", "inherited_quality_constraints")
+              "unverified_table_segments", "object_anchors", "textbox_provenance", "textbox_markdown_range",
+              "table_partial_ranges", "inherited_quality_constraints")
 
 
 def quality_snapshot(report):
@@ -19,7 +20,10 @@ def constraints(report,start,end):
     if report.get("object_anchors",0)>0 or in_textbox and textbox.get("may_infer_org_chart_relationships") is False:
         result["organization_relationships"]="unverified"
     if report.get("table_structure_status")=="partial":
-        result["cell_attribution"]="unverified"
+        # 解析器给出了未确认表格的范围（PDF）时只限制这些范围；没有范围时整份受限
+        tables=report.get("table_partial_ranges")
+        if tables is None or any(start<r["end"] and end>r["start"] for r in tables):
+            result["cell_attribution"]="unverified"
     # partial is not assumed to mean only a table problem.
     for facet,state in report.get("document_quality",{}).get("facets",{}).items():
         if facet=="graphics" and state not in {"verified","not_present"}:

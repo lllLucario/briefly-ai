@@ -33,6 +33,8 @@ class Line:
     y: float = 0.0  # 页面纵坐标，越大越靠上
     page: int = 0  # 从 0 开始
     heading: int = 0  # 标题级别，0 表示正文
+    kind: str = ""  # "table"：已按行列还原的表格（Markdown）；"columnar"：分栏排列、疑似无框线表格的文字行
+    columns: tuple[float, ...] = ()  # 分栏行第二栏起各栏的起始横坐标
 
 
 def is_garbage_char(ch: str) -> bool:
@@ -141,7 +143,7 @@ def _typical_widths(pages: list[list[Line]]) -> dict[int, float]:
     """每页正常行宽。只有成段排版的页（相当一部分行都接近行宽）才有；诗歌、列表等行长参差的页没有，不做合并。"""
     widths = {}
     for page in pages:
-        lengths = sorted(len(l.text) for l in page if not l.heading)
+        lengths = sorted(len(l.text) for l in page if not l.heading and l.kind != "table")
         if len(lengths) < MIN_LINES_FOR_WIDTH:
             continue
         width = lengths[int(len(lengths) * 0.8)]
@@ -167,6 +169,8 @@ def merge_wrapped(pages: list[list[Line]]) -> list[Line]:
             and width
             and not prev.heading
             and not line.heading
+            and not prev.kind
+            and not line.kind
             and abs(prev.size - line.size) <= 0.5
             and tail_len >= width * WRAP_WIDTH_RATIO
             and not prev.text.endswith(_SENTENCE_END)
@@ -175,6 +179,6 @@ def merge_wrapped(pages: list[list[Line]]) -> list[Line]:
             prev.text = join_text(prev.text, line.text)
             prev.page = line.page
         else:
-            out.append(Line(line.text, line.size, line.y, line.page, line.heading))
+            out.append(Line(line.text, line.size, line.y, line.page, line.heading, line.kind, line.columns))
         tail_len = len(line.text)
     return out

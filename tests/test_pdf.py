@@ -6,6 +6,7 @@ from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from briefly.chunking import parse_sections
+from briefly.knowledge.evidence import constraints
 from briefly.loaders import load_document
 
 BODY = "This body line is long enough to look like a normal paragraph of text"
@@ -126,6 +127,91 @@ def test_repeated_body_is_not_erased_or_reported_as_scan():
     text = "Identical contractual provision repeated on every page with original meaning."
     doc = load(make_pdf([[(10, 700, text)]] * 3))
     assert doc.text.count(text) == 3
+    # 没有表格、也没有分栏排列的正文不再整份受限
+    assert doc.report["table_structure_status"] == "not_present"
+    assert constraints(doc.report, 0, len(doc.text)) == {}
+
+
+def grid_page(rows: list[list[str]], top: float = 600, widths=(90, 110, 280), height: float = 20,
+              merged: tuple[int, int] | None = None, before=(), after=()) -> list[str]:
+    """带框线表格的页面内容：每格画矩形并写字；merged=(行, 列) 时该格与右侧一格合并成一个矩形。"""
+    ops = []
+    for r, row in enumerate(rows):
+        y, x = top - height * (r + 1), 72
+        c = 0
+        while c < len(row):
+            span = 2 if merged == (r, c) else 1
+            width = sum(widths[c:c + span])
+            ops.append(f"{x} {y} {width} {height} re S")
+            if row[c]:
+                ops.append(f"BT /F1 10 Tf {x + 4} {y + 6} Td ({row[c]}) Tj ET")
+            x += width
+            c += span
+    text = [f"BT /F1 {s} Tf 72 {y} Td ({t}) Tj ET" for s, y, t in [*before, *after]]
+    return [*text, *ops]
+
+
+def make_raw_pdf(pages: list[list[str]]) -> bytes:
+    """pages: 每页的内容流指令。"""
+    writer = PdfWriter()
+    font = writer._add_object(DictionaryObject({NameObject("/Type"): NameObject("/Font"),
+                                                NameObject("/Subtype"): NameObject("/Type1"),
+                                                NameObject("/BaseFont"): NameObject("/Helvetica")}))
+    for ops in pages:
+        page = writer.add_blank_page(612, 792)
+        page[NameObject("/Resources")] = DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})})
+        stream = DecodedStreamObject()
+        stream.set_data("\n".join(ops).encode("latin-1"))
+        page[NameObject("/Contents")] = writer._add_object(stream)
+    buf = BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+TABLE = [["Plan", "Price", "Storage"], ["Basic", "0", "50GB"], ["Pro", "180", "1TB"]]
+
+
+def test_ruled_table_becomes_markdown_rows_and_prose_stays_unrestricted():
+    prose = [(10, 700, "The plan table below lists the yearly price and storage for each plan.")]
+    doc = load(make_raw_pdf([grid_page(TABLE, before=prose, after=[(10, 500, "Prices are per person per year.")])]))
+    assert "| Plan | Price | Storage |\n|---|---|---|\n| Basic | 0 | 50GB |\n| Pro | 180 | 1TB |" in doc.text
+    assert doc.text.index("plan table below") < doc.text.index("| Plan") < doc.text.index("Prices are per person")
+    assert doc.report["tables"] == 1 and doc.report["table_structure_status"] == "verified"
+    assert constraints(doc.report, 0, len(doc.text)) == {}
+
+
+def test_merged_cells_restrict_only_that_table():
+    rows = [["Item", "Q1", "Q2"], ["Sales", "Shared target", ""], ["Cost", "10", "12"]]
+    prose = [(10, 700, "Quarterly figures for the sales team are summarised in the following table.")]
+    doc = load(make_raw_pdf([grid_page(rows, merged=(1, 1), before=prose)]))
     assert doc.report["table_structure_status"] == "partial"
-    from briefly.knowledge.evidence import constraints
-    assert constraints(doc.report, 0, len(doc.text))["cell_attribution"] == "unverified"
+    (r,) = doc.report["table_partial_ranges"]
+    assert doc.text[r["start"]:r["end"]].startswith("| Item | Q1 | Q2 |")
+    assert constraints(doc.report, 0, 20) == {}  # 表格前的正文
+    assert constraints(doc.report, r["start"], r["end"])["cell_attribution"] == "unverified"
+
+
+def test_aligned_columns_without_rules_are_flagged_but_bullets_are_not():
+    form = [f"BT /F1 10 Tf 72 {y} Td ({a}) Tj ET BT /F1 10 Tf 300 {y} Td ({b}) Tj ET"
+            for y, a, b in [(700, "Name", "Phone"), (686, "Address", "Postcode"), (672, "Employer", "Start date")]]
+    bullets = [f"BT /F1 10 Tf 72 {y} Td (-) Tj ET BT /F1 10 Tf 110 {y} Td ({t}) Tj ET"
+               for y, t in [(600, "Check the incoming material every morning."), (586, "Record defects in the daily log.")]]
+    doc = load(make_raw_pdf([[*form, *bullets]]))
+    (r,) = doc.report["table_partial_ranges"]
+    flagged = doc.text[r["start"]:r["end"]]
+    assert "Name" in flagged and "Employer" in flagged and "Check the incoming" not in flagged
+
+
+def test_table_split_across_pages_is_joined_and_cut_row_completed():
+    first = [["Grade", "Title", "Duty"], ["P7", "Expert", "Leads complex work and improves the"]]
+    second = [["", "", "capability of the team."], ["P6", "Contributor", "Owns several modules."]]
+    doc = load(make_raw_pdf([grid_page(first, top=200), grid_page(second, top=760)]))
+    assert doc.report["tables"] == 1
+    assert "| P7 | Expert | Leads complex work and improves the capability of the team. |" in doc.text
+    assert doc.text.count("|---|---|---|") == 1 and "| P6 | Contributor | Owns several modules. |" in doc.text
+
+
+def test_overprinted_fake_bold_is_read_once():
+    bold = [f"BT /F1 16 Tf {72 + dx} 700 Td (Annual Leave Policy) Tj ET" for dx in (0, 0.2, 0.4)]
+    doc = load(make_raw_pdf([[*bold, *(f"BT /F1 10 Tf 72 {y} Td ({t}) Tj ET" for _, y, t in body(680))]]))
+    assert doc.text.count("Annual Leave Policy") == 1
