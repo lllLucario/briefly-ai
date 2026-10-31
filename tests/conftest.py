@@ -31,3 +31,9 @@ def _isolated_feishu_user(tmp_path, monkeypatch):
 def _no_local_embedding(monkeypatch):
     """单元测试不加载本机 .env 配置的真实 Embedding 模型：意图漏斗只用规则层，结果不随本机环境变化。"""
     monkeypatch.setattr(config, "EMBEDDING_DIR", "")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_workspace_index(tmp_path, monkeypatch):
+    """工作区语义索引文件放在每个测试自己的临时目录，不写进仓库的 data/。"""
+    monkeypatch.setattr(config, "WORKSPACE_INDEX_PATH", str(tmp_path / "workspace.sqlite"))

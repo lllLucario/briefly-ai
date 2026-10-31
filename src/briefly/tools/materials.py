@@ -154,37 +154,50 @@ def material_tools(
     def search_materials(
         keywords: str, runtime: ToolRuntime[Context], material_ids: list[int] | None = None, limit: int = 10
     ) -> tuple[str, dict]:
-        """在材料中按关键词检索，返回最相关的片段及所在材料编号、块号和章节。keywords 用空格分隔多个词，命中任意一个即算。
-        material_ids 可限定在某几份材料中检索，不填则检索全部可用材料；limit 是最多返回几条（不超过 10）。
-        需要定位某个主题在哪份材料、哪一块时调用，再用 read_material 读取完整的块。"""
+        """在材料中检索，返回最相关的片段及所在材料编号、块号和章节。keywords 可以是空格分隔的关键词，也可以是一句
+        完整的问题（按语义和关键词一起检索）。material_ids 可限定在某几份材料中检索，不填则检索全部可用材料；
+        limit 是最多返回几条（不超过 10）。需要定位某个主题在哪份材料、哪一块时调用，再用 read_material 读取完整的块。"""
         scope = _scope(runtime)
         if material_ids is not None:
             for material_id in material_ids:
                 _check_in_scope(material_id, scope)
             scope = material_ids
-        hits = store.search(keywords, scope)[: max(1, limit)]
+        limit = min(max(1, limit), 10)
+        hits = None
+        if store.workspace_index is not None:
+            if scope is not None:
+                store.require_workspace(scope)
+            hits = store.workspace_index.search(keywords, scope, limit=limit)
+        hybrid = hits is not None
+        if hits is None:  # 没有语义索引（未配置本地 Embedding 等）：原关键词检索
+            hits = store.search(keywords, scope)[:limit]
         if not hits:
-            return f"没有找到包含“{keywords}”的内容。", {}
+            return f"没有找到与“{keywords}”相关的内容。" if hybrid else f"没有找到包含“{keywords}”的内容。", {}
         parts, selected_ids, references, size, budget = [], [], [], 0, int((output_limit() - 200) * 1.5)
         for n, h in enumerate(hits):
-            part = wrap_material(
-                f"【材料 {h.material_id}《{h.title}》第 {h.chunk} 块{f'（{h.section}）' if h.section else ''}，"
-                f"命中 {h.hits} 次】",
-                h.snippet,
-            )
+            where = f"【材料 {h.material_id}《{h.title}》第 {h.chunk} 块{f'（{h.section}）' if h.section else ''}"
+            if not hybrid:
+                where += f"，命中 {h.hits} 次】"
+            elif h.keyword_only:
+                where += "，语义索引更新中，此条仅按关键词命中】"
+            else:
+                where += "】"
+            part = wrap_material(where, h.snippet) + "".join(f"\n解析提示：{n}" for n in h.notes)
             if parts and size + len(part) > budget:  # 按本次工具预算放，放不下的注明条数
                 parts.append(f"（另有 {len(hits) - n} 条结果因篇幅省略，请换更具体的关键词）")
                 break
             parts.append(part)
             selected_ids.append(h.material_id)
             from ..knowledge.evidence import material_reference_artifact
-            from sqlalchemy import select
-            from sqlalchemy.orm import Session
-            with Session(store.engine) as session:
-                bounds = session.execute(select(MaterialChunk.start, MaterialChunk.end).where(
-                    MaterialChunk.material_id == h.material_id, MaterialChunk.index == h.chunk)).one_or_none()
+            bounds = (h.start, h.end) if h.start is not None else None  # 混合检索给出片段在全文中的实际范围
+            if bounds is None:
+                from sqlalchemy import select
+                from sqlalchemy.orm import Session
+                with Session(store.engine) as session:
+                    bounds = session.execute(select(MaterialChunk.start, MaterialChunk.end).where(
+                        MaterialChunk.material_id == h.material_id, MaterialChunk.index == h.chunk)).one_or_none()
             if bounds:
-                references.extend(material_reference_artifact(store, h.material_id, bounds.start, bounds.end)["knowledge_references"])
+                references.extend(material_reference_artifact(store, h.material_id, *bounds)["knowledge_references"])
             size += len(part)
         # artifact只记录真正输出的来源，不能把可访问全库当成已读依据。
         from ..knowledge.evidence import material_quality_notice

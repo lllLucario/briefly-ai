@@ -89,6 +89,12 @@ class SearchHit:
     section: str
     hits: int
     snippet: str
+    # 混合检索（工作区索引）补充：片段在材料全文中的位置、语义相似度、向量未就绪仅按关键词命中、解析质量限制
+    start: int | None = None
+    end: int | None = None
+    similarity: float | None = None
+    keyword_only: bool = False
+    notes: tuple[str, ...] = ()
 
 
 def wrap_material(header: str, body: str) -> str:
@@ -155,6 +161,12 @@ class MaterialStore:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
         self._session = sessionmaker(engine, expire_on_commit=False)
+        self.workspace_index = None  # 工作区语义索引（workspace_index.WorkspaceIndex）；没有时检索只用关键词
+        self.listeners: list = []  # 工作区材料增删后的通知（无参数），用于后台更新索引
+
+    def notify_changed(self) -> None:
+        for listener in self.listeners:
+            listener()
 
     def add_text(
         self,
@@ -191,6 +203,7 @@ class MaterialStore:
                 # 追踪的文件与知识库专属材料内容相同：追踪版本是用户自己的工作区文件，转为追踪材料，知识版本仍引用同一条
                 existing.source = TRACKED
                 s.commit()
+                self.notify_changed()
                 return existing, True
             if existing and existing.source in (TRACKED, KNOWLEDGE) and source not in (TRACKED, KNOWLEDGE):
                 # 用户添加的内容恰好与某个追踪版本或知识库专属材料相同：转为用户材料（追踪版本、知识版本仍引用同一条），
@@ -201,6 +214,7 @@ class MaterialStore:
                 if report and report.get("feishu"):
                     existing.parse_report = {**existing.parse_report, "feishu": report["feishu"]}
                 s.commit()
+                self.notify_changed()
                 return existing, True
             if existing:
                 return existing, False
@@ -231,6 +245,8 @@ class MaterialStore:
             ]
             s.add(material)
             s.commit()
+            if source != KNOWLEDGE:
+                self.notify_changed()
             return material, True
 
     def add_file(self, filename: str, data: bytes) -> tuple[Material, bool]:
@@ -330,6 +346,7 @@ class MaterialStore:
             else:
                 s.delete(material)
             s.commit()
+        self.notify_changed()
 
     def chunks(
         self, material_id: int, *, first: int | None = None, last: int | None = None, content: bool = True

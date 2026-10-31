@@ -309,6 +309,7 @@ def create_app(
         yield
         if scheduler is not None:
             scheduler.stop()
+        app.state.store.workspace_index.wait(10)
         from .feishu.client import close_shared
 
         close_shared()  # 关闭共用飞书客户端的连接池
@@ -571,6 +572,10 @@ def create_app(
     register_weekly(app)  # 周报：一周一份，审核清单 → 生成；定时、设置、提醒
     register_todos(app)  # 待办：父子结构、材料关联、活动；进展进入周报的审核清单
     register_knowledge(app,model_factory)  # 知识库入库/索引、范围召回与引用问答
+    from .workspace_index import attach
+    # 工作区语义索引：与知识库共用本地 Embedding（取用时再读 encoder_factory，测试替换的假编码器同样生效）；
+    # 材料增删后后台同步，检索前再对齐一次
+    attach(app.state.store, lambda: app.state.knowledge_imports.encoder_factory())
     from .handoffs import register as register_handoffs
     register_handoffs(app, get_agent, thread_locks, model_factory)
 

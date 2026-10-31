@@ -355,6 +355,7 @@ class Scanner:
             return ScanResult(run.id, FAILED, stats)
         self._finish(run.id, DONE, stats, "")
         self._release()
+        self.store.notify_changed()  # 最新版本可能换成了已有材料（改回旧内容），材料本身不变，也要更新工作区索引
         return ScanResult(run.id, DONE, stats)
 
     def _finish(self, run_id: int, status: str, stats: dict, error: str) -> None:

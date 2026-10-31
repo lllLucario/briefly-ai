@@ -33,6 +33,9 @@ MAX_UPLOAD_MB = int(os.getenv("BRIEFLY_MAX_UPLOAD_MB", "10"))
 PARSE_TIMEOUT_S = max(1, int(os.getenv("BRIEFLY_PARSE_TIMEOUT_S", "120")))
 KNOWLEDGE_DIR = os.getenv("BRIEFLY_KNOWLEDGE_DIR", "data/knowledge")
 EMBEDDING_DIR = os.getenv("BRIEFLY_EMBEDDING_DIR", "")
+# 工作区（材料库）语义索引文件，不填时放在知识库目录下 workspace.sqlite；检索前对齐时最多当场计算几条新向量，其余交给后台
+WORKSPACE_INDEX_PATH = os.getenv("BRIEFLY_WORKSPACE_INDEX_PATH", "")
+WORKSPACE_INLINE_EMBED = int(os.getenv("BRIEFLY_WORKSPACE_INLINE_EMBED", "64"))
 # 知识问答：发给生成模型的依据包总额（按本地 Embedding 分词器计）及整个回答提示的上限（按生成模型计）
 KNOWLEDGE_CONTEXT_TOKENS = int(os.getenv("BRIEFLY_KNOWLEDGE_CONTEXT_TOKENS", "8000"))
 KNOWLEDGE_PROMPT_TOKENS = int(os.getenv("BRIEFLY_KNOWLEDGE_PROMPT_TOKENS", "12000"))
