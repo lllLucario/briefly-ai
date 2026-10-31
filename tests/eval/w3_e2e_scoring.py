@@ -26,8 +26,13 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", "", text).lower()
 
 
+# 回答常在中文词后括注双语表格里的英文原词，如“机密（confidential）级信息”；去掉括注后也算命中
+GLOSS = re.compile(r"\([a-z][a-z .\-]*\)")
+
+
 def contains(text: str, needle: str) -> bool:
-    return normalize(needle) in normalize(text)
+    needle, text = normalize(needle), normalize(text)
+    return needle in text or needle in GLOSS.sub("", text)
 
 
 def abstained(answer: str, status: str | None) -> bool:
