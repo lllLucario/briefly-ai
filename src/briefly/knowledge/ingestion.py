@@ -10,7 +10,7 @@ from uuid import uuid4
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
-from ..materials import MaterialStore
+from ..materials import KNOWLEDGE, MaterialStore
 from ..parse_process import ParseFailure, load_isolated
 from .lifecycle import IndexLifecycle
 from .models import KnowledgeImport, KnowledgeVersion, KnowledgeParseCache, KnowledgeImportMetrics
@@ -183,7 +183,7 @@ class ImportService:
                 raise ParseFailure("empty_document", "未提取到正文，未纳入知识库")
             metrics["executed_parse_timings"] = {} if metrics["cache_hit"] else doc.report.get("timings", {})
             tick = perf_counter()
-            material, _ = self.store.add_text(job.filename, doc.text, source="file",
+            material, _ = self.store.add_text(job.filename, doc.text, source=KNOWLEDGE,
                 kind=Path(job.filename).suffix.lstrip(".").lower(), markdown=doc.markdown, report=doc.report)
             if hashlib.sha256(material.content.encode()).hexdigest() != material.content_hash:
                 raise KnowledgeConflict("已保存正文与指纹不一致，不能复用或覆盖来源，请核对存储")
@@ -231,7 +231,7 @@ class ImportService:
             raise KnowledgeConflict("任务尚无有效预览")
         if offset < 0 or not 1 <= limit <= 50:
             raise ValueError("预览分页无效")
-        material = self.store.get(job.material_id)
+        material = self.store.get(job.material_id, workspace=False)
         if material.content_hash != job.preview["content_hash"]:
             raise KnowledgeConflict("预览源材料已变化")
         from .evidence import constraints
@@ -248,7 +248,7 @@ class ImportService:
         with self._lease(kb_id, job_id, "preview", "indexing") as token:
             job = self.get(kb_id, job_id)
             metrics = self.processing(kb_id, job_id)
-            material = self.store.get(job.material_id)
+            material = self.store.get(job.material_id, workspace=False)
             encoder = self.encoder_factory()
             tick = perf_counter()
             config, slices = token_slices(material.content, job.filename, job.preview["markdown"], encoder,

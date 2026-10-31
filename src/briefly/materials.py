@@ -13,11 +13,23 @@ from .loaders import file_type, load_document
 
 SNIPPET_RADIUS = 100
 TRACKED = "tracked"  # 文件追踪保存的版本：材料列表和检索只用每个文件的最新版本，旧版本只供追踪模块使用
+# 知识库入库解析出的正文：只属于知识库（企业受管控参考资料），材料库（个人工作区）的所有入口都不列出、
+# 不检索、不读取，内容只经知识库检索读取（才有外发授权、质量限制与引用）。用户另行添加同样内容时转为工作区材料。
+KNOWLEDGE = "knowledge"
+WORKSPACE_FLAG = "workspace_added"  # 知识库专属材料被用户另行添加过：旧库迁移不再把它标回知识库专属
 MAX_SEARCH_HITS = 10
 
 
 class MaterialNotFound(ValueError):
     """材料不存在。继承 ValueError，工具里仍按普通错误回传给模型。"""
+
+
+class KnowledgeOnlyMaterial(MaterialNotFound):
+    """材料只属于知识库：对材料库的各入口等同不存在，但说明去知识库中提问。"""
+
+    def __init__(self, material_id: int, title: str = "") -> None:
+        name = f"《{title}》" if title else ""
+        super().__init__(f"材料 {material_id}{name}属于知识库，不在材料库中，请在知识库中提问")
 
 
 class Material(Base):
@@ -85,11 +97,58 @@ def wrap_material(header: str, body: str) -> str:
 
 
 def visible():
-    """默认可见的材料：用户添加的，加上追踪中文件的最新版本。"""
+    """默认可见的材料：用户添加的，加上追踪中文件的最新版本；不含知识库专属材料。"""
     from .tracking.models import latest_versions
 
     latest = latest_versions().subquery()
-    return or_(Material.source != TRACKED, Material.id.in_(select(latest.c.material_id)))
+    return or_(Material.source.not_in([TRACKED, KNOWLEDGE]), Material.id.in_(select(latest.c.material_id)))
+
+
+def knowledge_referenced(s, material_ids) -> set[int]:
+    """被知识版本、导入任务或解析缓存引用的材料。"""
+    from .knowledge.models import KnowledgeImport, KnowledgeParseCache, KnowledgeVersion
+
+    ids = list(material_ids)
+    found: set[int] = set()
+    for model in (KnowledgeVersion, KnowledgeImport, KnowledgeParseCache):
+        found.update(s.scalars(select(model.material_id).where(model.material_id.in_(ids))))
+    return found
+
+
+def mark_knowledge_only(engine: Engine) -> int:
+    """旧库迁移：此前知识库入库按 source=file 存材料，与用户上传混在材料库里。
+
+    由导入任务创建（材料不早于引用它的最早导入任务）、且没有作为工作区材料使用过（待办关联、周报本周材料、
+    追踪版本、用户另行添加）的，标为知识库专属。早于导入任务就存在的是用户先上传、知识库复用的，保持可见。
+    幂等：已标记的不再处理，被用户另行添加过的（WORKSPACE_FLAG）不会被标回。返回本次标记的条数。
+    """
+    from .knowledge.models import KnowledgeImport
+    from .todos.models import TodoMaterial
+    from .tracking.models import FileSnapshot
+    from .weekly.models import WeeklyReport
+
+    with sessionmaker(engine)() as s:
+        first_import = dict(s.execute(
+            select(KnowledgeImport.material_id, func.min(KnowledgeImport.created_at))
+            .where(KnowledgeImport.material_id.is_not(None)).group_by(KnowledgeImport.material_id)
+        ).all())
+        if not first_import:
+            return 0
+        used = set(s.scalars(select(TodoMaterial.material_id).where(TodoMaterial.material_id.in_(first_import))))
+        used.update(s.scalars(select(FileSnapshot.material_id).where(FileSnapshot.material_id.in_(first_import))))
+        for ids in s.scalars(select(WeeklyReport.material_ids)):
+            used.update(ids or [])
+        marked = 0
+        query = select(Material).options(defer(Material.content, raiseload=True)).where(
+            Material.id.in_(first_import), Material.source == "file")
+        for material in s.scalars(query):
+            if material.id in used or (material.parse_report or {}).get(WORKSPACE_FLAG):
+                continue
+            if material.created_at >= first_import[material.id]:
+                material.source = KNOWLEDGE
+                marked += 1
+        s.commit()
+    return marked
 
 
 class MaterialStore:
@@ -128,8 +187,16 @@ class MaterialStore:
                     previous['warnings']=list(dict.fromkeys([*previous.get('warnings',[]),*(NOTES[k] for k in limits)]))
                     existing.parse_report=previous
                     s.commit()
-            if existing and existing.source == TRACKED and source != TRACKED:
-                # 用户添加的内容恰好与某个追踪版本相同：转为用户材料（追踪版本仍引用同一条），算作新建
+            if existing and existing.source == KNOWLEDGE and source == TRACKED:
+                # 追踪的文件与知识库专属材料内容相同：追踪版本是用户自己的工作区文件，转为追踪材料，知识版本仍引用同一条
+                existing.source = TRACKED
+                s.commit()
+                return existing, True
+            if existing and existing.source in (TRACKED, KNOWLEDGE) and source not in (TRACKED, KNOWLEDGE):
+                # 用户添加的内容恰好与某个追踪版本或知识库专属材料相同：转为用户材料（追踪版本、知识版本仍引用同一条），
+                # 算作新建。知识库检索、引用与外发授权不受影响；在材料库删除它按原规则处理（见 delete）
+                if existing.source == KNOWLEDGE:
+                    existing.parse_report = {**(existing.parse_report or {}), WORKSPACE_FLAG: True}
                 existing.source, existing.title = source, (title.strip() or existing.title)[:200]
                 if report and report.get("feishu"):
                     existing.parse_report = {**existing.parse_report, "feishu": report["feishu"]}
@@ -177,18 +244,33 @@ class MaterialStore:
         return self.add_text(filename, doc.text, source="file", kind=kind, markdown=doc.markdown, report=doc.report)
 
     def list_materials(self, ids: list[int] | None = None, content: bool = True) -> list[Material]:
-        """不指定 ids 时列用户添加的材料和追踪中文件的最新版本（不含旧版本）。content=False 不读正文（列表摘要用）。"""
+        """不指定 ids 时列用户添加的材料和追踪中文件的最新版本（不含旧版本和知识库专属材料）。
+        content=False 不读正文（列表摘要用）。指定的 ids 里有知识库专属材料时拒绝（KnowledgeOnlyMaterial）。"""
         query = select(Material).order_by(Material.id)
         if not content:
             query = query.options(defer(Material.content, raiseload=True))
         if ids is not None:
+            self.require_workspace(ids)
             query = query.where(Material.id.in_(ids))
         else:
             query = query.where(visible())
         with self._session() as s:
             return list(s.scalars(query))
 
-    def get(self, material_id: int, *, content: bool = True) -> Material:
+    def require_workspace(self, material_ids) -> None:
+        """显式指定的材料里有知识库专属材料时拒绝，不静默放行；不存在的编号由各入口按原样处理。"""
+        ids = list(material_ids)
+        if not ids:
+            return
+        query = select(Material.id, Material.title).where(Material.id.in_(ids), Material.source == KNOWLEDGE)
+        with self._session() as s:
+            row = s.execute(query.order_by(Material.id).limit(1)).one_or_none()
+        if row is not None:
+            raise KnowledgeOnlyMaterial(row.id, row.title)
+
+    def get(self, material_id: int, *, content: bool = True, workspace: bool = True) -> Material:
+        """workspace=True（默认，材料库各入口）时知识库专属材料按不存在处理并说明属于知识库；
+        只有知识库自身（入库预览、质量与引用核对）传 False。"""
         query = select(Material).where(Material.id == material_id)
         if not content:
             query = query.options(defer(Material.content, raiseload=True))
@@ -196,6 +278,8 @@ class MaterialStore:
             material = s.scalar(query)
         if material is None:
             raise MaterialNotFound(f"材料 {material_id} 不存在")
+        if workspace and material.source == KNOWLEDGE:
+            raise KnowledgeOnlyMaterial(material.id, material.title)
         return material
 
     def delete(self, material_id: int, force: bool = False) -> None:
@@ -215,6 +299,8 @@ class MaterialStore:
             material = s.get(Material, material_id)
             if material is None:
                 raise MaterialNotFound(f"材料 {material_id} 不存在")
+            if material.source == KNOWLEDGE:
+                raise KnowledgeOnlyMaterial(material.id, material.title)
             links = list(s.scalars(select(TodoMaterial).where(TodoMaterial.material_id == material_id)))
             todo_ids = list(dict.fromkeys(x.todo_id for x in links))
             if todo_ids and not force:
@@ -232,6 +318,8 @@ class MaterialStore:
                 if material_id in (report.material_ids or []):
                     report.material_ids = [i for i in report.material_ids if i != material_id]
                     report.removed_materials = [*(report.removed_materials or []), removed]
+            # 与知识库共用的同一条记录（用户先上传、或另行添加过）按原规则删除：知识版本的来源置空，
+            # 由知识库按“来源已删除”处理（不能再发布、引用不会重新绑定），不在这里改知识库的来源治理
             s.delete(material)
             s.commit()
 
@@ -255,7 +343,7 @@ class MaterialStore:
         count = select(func.count()).select_from(MaterialChunk).where(
             MaterialChunk.material_id == material_id
         ).correlate(None).scalar_subquery()
-        query = select(Material.title, count, MaterialChunk).outerjoin(
+        query = select(Material.title, count, MaterialChunk, Material.source).outerjoin(
             MaterialChunk,
             (MaterialChunk.material_id == Material.id) & (MaterialChunk.index == index),
         ).where(Material.id == material_id)
@@ -263,6 +351,8 @@ class MaterialStore:
             row = s.execute(query).one_or_none()
         if row is None:
             raise MaterialNotFound(f"材料 {material_id} 不存在")
+        if row[3] == KNOWLEDGE:
+            raise KnowledgeOnlyMaterial(material_id, row[0])
         return row[0], row[1], row[2]
 
     def sections(self, material_id: int) -> list[MaterialSection]:
@@ -276,9 +366,11 @@ class MaterialStore:
     def _require_exists(self, material_id: int) -> None:
         # 存在性检查仅查主键，不为验证存在再加载一份材料元数据。
         with self._session() as s:
-            found = s.scalar(select(Material.id).where(Material.id == material_id))
+            found = s.execute(select(Material.source, Material.title).where(Material.id == material_id)).one_or_none()
         if found is None:
             raise MaterialNotFound(f"材料 {material_id} 不存在")
+        if found.source == KNOWLEDGE:
+            raise KnowledgeOnlyMaterial(material_id, found.title)
 
     def chunk_range(self, material_id: int, start: int, end: int) -> tuple[int, int]:
         """与正文 [start, end) 重叠的块号范围；只查询块位置。"""
@@ -363,6 +455,7 @@ class MaterialStore:
             raise ValueError("关键词为空")
         query = select(MaterialChunk, Material.title).join(Material).order_by(Material.id, MaterialChunk.index)
         if material_ids is not None:
+            self.require_workspace(material_ids)
             query = query.where(Material.id.in_(material_ids))
         else:
             query = query.where(visible())

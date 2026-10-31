@@ -13,7 +13,7 @@ from sqlalchemy import Engine, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
-from ..materials import TRACKED, Material, MaterialNotFound, MaterialStore
+from ..materials import KNOWLEDGE, TRACKED, KnowledgeOnlyMaterial, Material, MaterialNotFound, MaterialStore
 from .models import (
     ARCHIVED,
     CHILD_ADDED,
@@ -418,6 +418,8 @@ class TodoService:
             material = s.get(Material, material_id)
             if material is None:
                 raise MaterialNotFound(f"材料 {material_id} 不存在")
+            if material.source == KNOWLEDGE:
+                raise KnowledgeOnlyMaterial(material.id, material.title)
             self._active(s, todo_id)
             key = track_key_of(s, material)
             existing = s.scalar(select(TodoMaterial).where(TodoMaterial.todo_id == todo_id, TodoMaterial.relation == DIRECT, _same_material(material_id, key)))

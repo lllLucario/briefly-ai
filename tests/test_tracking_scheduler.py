@@ -216,3 +216,29 @@ def test_prune_never_deletes_user_materials(env):
     assert [s.version for s in env.svc.snapshots(f.id)] == [2, 3]  # v1 被清理
     assert report["snapshots"] == 1 and report["materials"] == 0
     assert env.store.get(m.id).content == "# A"  # 用户自己的材料不删
+
+
+def test_prune_returns_knowledge_source_instead_of_deleting(env):
+    from briefly.knowledge.models import KnowledgeBase, KnowledgeImport
+    from briefly.materials import KNOWLEDGE
+
+    m, _ = env.store.add_text("制度.md", "# A", source=KNOWLEDGE)  # 知识库专属材料，与追踪文件内容相同
+    with sessionmaker(env.svc.engine)() as s:
+        kb = KnowledgeBase(name="库")
+        s.add(kb)
+        s.flush()
+        s.add(KnowledgeImport(kb_id=kb.id, request_key="r", request_fingerprint="f", filename="制度.md",
+                              source_key="制度", expected_revision=0, tokens=512, status="ready", material_id=m.id))
+        s.commit()
+    tracked(env)
+    f = env.file("a.md")
+    assert env.svc.snapshots(f.id)[0].material_id == m.id and env.store.get(m.id).source == "tracked"
+    for i in (2, 3):
+        env.write("a.md", f"# A 第 {i} 版")
+        env.svc.scan()
+        with sessionmaker(env.svc.engine)() as s:
+            s.execute(update(FileSnapshot).where(FileSnapshot.version < i).values(captured_at=datetime.now() - timedelta(days=90)))
+            s.commit()
+    report = prune(env.svc.engine, env.svc.blobs, keep_days=30)
+    assert [s.version for s in env.svc.snapshots(f.id)] == [2, 3] and report["materials"] == 0
+    assert env.store.get(m.id, workspace=False).source == KNOWLEDGE  # 知识库仍引用：退回知识库专属，不删
