@@ -19,6 +19,8 @@ dependencies = [
     "python-multipart>=0.0.32,<1",
     "pypdf>=4.0",
     "pdfplumber>=0.11.10,<0.12",  # PDF 文字行按字符坐标提取、带框线表格识别
+    "pypdfium2>=5.9,<6",  # PDF 页面渲染：判断表格边上的文字是否可见、从图片里找表格框线
+    "numpy>=2.0,<3",  # 渲染图的像素运算
     "tzdata>=2024.1",  # Windows 下 zoneinfo 需要（每日扫描的时区）
     "httpx>=0.28,<1",  # 飞书开放平台 REST
 ]

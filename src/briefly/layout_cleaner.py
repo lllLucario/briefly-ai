@@ -5,7 +5,7 @@
 """
 import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 EDGE_LINES = 2  # 每页顶部、底部各看几行
 EDGE_REPEAT_RATIO = 0.5  # 页面边缘的行，出现在这个比例以上的页面即视为页眉页脚
@@ -179,6 +179,6 @@ def merge_wrapped(pages: list[list[Line]]) -> list[Line]:
             prev.text = join_text(prev.text, line.text)
             prev.page = line.page
         else:
-            out.append(Line(line.text, line.size, line.y, line.page, line.heading, line.kind, line.columns))
+            out.append(replace(line))  # 保留子类（如 PDF 表格）的附加字段
         tail_len = len(line.text)
     return out

@@ -19,7 +19,8 @@ def parser_identity():
                "tables.py", "chunking.py", "layout_cleaner.py", "materials.py", "parse_process.py",
                "parse_worker.py", "knowledge/parse_cache.py", "java/legacy-doc-parser.jar"]
     packages = {}
-    for name in ("docling", "docling-slim", "docling-core", "python-docx", "python-pptx", "pypdf", "pdfplumber", "pdfminer.six", "openpyxl"):
+    for name in ("docling", "docling-slim", "docling-core", "python-docx", "python-pptx", "pypdf", "pdfplumber", "pdfminer.six",
+                 "pypdfium2", "numpy", "openpyxl"):
         try:
             packages[name] = version(name)
         except PackageNotFoundError:
