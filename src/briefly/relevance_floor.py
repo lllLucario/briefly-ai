@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 # Embedding 指纹（knowledge.service.fingerprint(identity)，与索引代次里的 embedding_fingerprint 相同）→ 下限
 REGISTERED: dict[str, float] = {
     # BAAI/bge-small-zh-v1.5，revision 46fbe35，512 维，CLS，max_tokens 512；
-    # 在 v3 切片的 W3-selected 库上用 intent_eval.py --sweep 标定（2026-10）
+    # 在 W3-selected 四库上用 intent_eval.py --sweep 标定：v3 切片定初值，v4、v5 切片重建后复标仍取 0.50（2026-10-31）
     "7087fad7875417206de4edee788efe164bdaa69f2e8884b2ab6adf763be5fb07": 0.50,
 }
 
