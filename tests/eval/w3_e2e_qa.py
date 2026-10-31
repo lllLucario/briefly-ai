@@ -108,11 +108,7 @@ def build(root: Path) -> None:
 
 
 def run(root: Path, args) -> None:
-    from briefly.agent import Agent
-    from briefly.intent import IntentFunnel
-    from briefly.knowledge.assistant import KnowledgeAssistant
-    from briefly.knowledge.retrieval import RetrievalService
-    from briefly.llm import create_chat_model, create_local_embeddings
+    from briefly.llm import create_local_embeddings
 
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     documents = {d["id"]: d for d in load_documents()}
@@ -120,57 +116,72 @@ def run(root: Path, args) -> None:
     encoder = create_local_embeddings(config.EMBEDDING_DIR)
     engine, imports = open_imports(root, encoder)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    out = Path(args.output) / f"{stamp}-{args.path}"
-    out.mkdir(parents=True, exist_ok=False)
-    rows, events = [], []
     try:
         kb_id = manifest["kb_id"]
         bases = imports.knowledge.list_bases()
         if [b.name for b in bases] != [KB_NAME]:
             raise SystemExit("不是本脚本建的虚构资料库，拒绝外发")
         imports.knowledge.set_egress(kb_id, True)  # 已核对为专用虚构资料库，按库授权外发
-        titles, corpus = library(imports, kb_id)
-        retrieval = RetrievalService(imports)
-        model_factory = lambda: create_chat_model(max_retries=1, timeout=90)
-        knowledge = KnowledgeAssistant(retrieval, model_factory)
-        if args.path == "assistant":
-            agent = Agent(model_factory(), store=imports.store)
-            agent.enable_knowledge(knowledge, IntentFunnel(lambda: encoder, kb_probe=knowledge.relevance))
-        for case in cases:
-            evidence = local_evidence(retrieval, kb_id, case["question"])
-            doc_format = case_format(case, documents)
-            for repeat in range(args.n):
-                started = perf_counter()
-                event = dict(id=case["id"], category=case["category"], split=case["split"], repeat=repeat)
-                try:
-                    if args.path == "assistant":
-                        thread = f"e2e-{case['id']}-{repeat}-{stamp}"
-                        answer = agent.chat(case["question"], thread_id=thread, kb_id=kb_id)
-                        history = agent.history_of(thread)
-                        human = next(m for m in reversed(history) if m.type == "human")
-                        reply = history[-1]
-                        meta = reply.response_metadata.get("knowledge") or {}
-                        intent = human.additional_kwargs.get("intent") or {}
-                        status = meta.get("status")
-                        event.update(intent=intent.get("intent"), layer=intent.get("layer"), resolved=intent.get("resolved"),
-                                     tools=[c["name"] for m in history if m.type == "ai" for c in getattr(m, "tool_calls", [])])
-                    else:
-                        result = knowledge.qa.answer(kb_id, case["question"])
-                        answer, status = result["answer"], result["status"]
-                    event.update(status=status, answer=answer)
-                    scored = judge(case, answer, status, evidence, titles, corpus)
-                except Exception as exc:  # 记录后继续，失败单独统计
-                    event.update(status="error", error=f"{type(exc).__name__}: {exc}"[:300])
-                    scored = dict(passed=False, problems=["error"], must=[], abstained=False, retrieval_hit=None,
-                                  unsupported_numbers=[], length=0, gold_withheld=None)
-                event.update(scored, seconds=round(perf_counter() - started, 1))
-                events.append(event)
-                rows.append(dict(scored, category=case["category"], split=case["split"], doc_format=doc_format))
-                print(case["id"], repeat, "PASS" if scored["passed"] else ",".join(scored["problems"]), flush=True)
+        rows, events = answer_cases(imports, encoder, kb_id, cases, lambda c: case_format(c, documents), args, stamp)
     finally:
         engine.dispose()
+    write_report(Path(args.output) / f"{stamp}-{args.path}", args, root, manifest["documents"], rows, events, stamp)
+
+
+def answer_cases(imports, encoder, kb_id, cases, doc_format_of, args, stamp):
+    """逐题按 args.path 指定的链路回答 args.n 次并判分，返回（汇总行, 逐次明细）。外发授权由调用方核对。"""
+    from briefly.agent import Agent
+    from briefly.intent import IntentFunnel
+    from briefly.knowledge.assistant import KnowledgeAssistant
+    from briefly.knowledge.retrieval import RetrievalService
+    from briefly.llm import create_chat_model
+
+    rows, events = [], []
+    titles, corpus = library(imports, kb_id)
+    retrieval = RetrievalService(imports)
+    model_factory = lambda: create_chat_model(max_retries=1, timeout=90)
+    knowledge = KnowledgeAssistant(retrieval, model_factory)
+    if args.path == "assistant":
+        agent = Agent(model_factory(), store=imports.store)
+        agent.enable_knowledge(knowledge, IntentFunnel(lambda: encoder, kb_probe=knowledge.relevance))
+    for case in cases:
+        evidence = local_evidence(retrieval, kb_id, case["question"])
+        doc_format = doc_format_of(case)
+        for repeat in range(args.n):
+            started = perf_counter()
+            event = dict(id=case["id"], category=case["category"], split=case["split"], repeat=repeat)
+            try:
+                if args.path == "assistant":
+                    thread = f"e2e-{case['id']}-{repeat}-{stamp}"
+                    answer = agent.chat(case["question"], thread_id=thread, kb_id=kb_id)
+                    history = agent.history_of(thread)
+                    human = next(m for m in reversed(history) if m.type == "human")
+                    reply = history[-1]
+                    meta = reply.response_metadata.get("knowledge") or {}
+                    intent = human.additional_kwargs.get("intent") or {}
+                    status = meta.get("status")
+                    event.update(intent=intent.get("intent"), layer=intent.get("layer"), resolved=intent.get("resolved"),
+                                 tools=[c["name"] for m in history if m.type == "ai" for c in getattr(m, "tool_calls", [])])
+                else:
+                    result = knowledge.qa.answer(kb_id, case["question"])
+                    answer, status = result["answer"], result["status"]
+                event.update(status=status, answer=answer)
+                scored = judge(case, answer, status, evidence, titles, corpus)
+            except Exception as exc:  # 记录后继续，失败单独统计
+                event.update(status="error", error=f"{type(exc).__name__}: {exc}"[:300])
+                scored = dict(passed=False, problems=["error"], must=[], abstained=False, retrieval_hit=None,
+                              unsupported_numbers=[], length=0, gold_withheld=None)
+            event.update(scored, seconds=round(perf_counter() - started, 1))
+            events.append(event)
+            rows.append(dict(scored, category=case["category"], split=case["split"], doc_format=doc_format))
+            print(case["id"], repeat, "PASS" if scored["passed"] else ",".join(scored["problems"]), flush=True)
+    return rows, events
+
+
+def write_report(out: Path, args, root: Path, documents: dict, rows, events, stamp) -> None:
+    out.mkdir(parents=True, exist_ok=False)
     report = dict(path=args.path, n=args.n, split=args.split, model=config.MODEL, created=stamp, kb_root=str(root),
-                  documents=manifest["documents"],
+                  documents=documents,
                   summary={split: summarize([r for r in rows if split == "all" or r["split"] == split])
                            for split in ("all", "dev", "holdout")},
                   errors=sum(e["status"] == "error" for e in events))
