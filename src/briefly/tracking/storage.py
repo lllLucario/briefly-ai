@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import Engine, delete, select, update
 from sqlalchemy.orm import sessionmaker
 
-from ..materials import TRACKED, Material
+from ..materials import KNOWLEDGE, TRACKED, Material, knowledge_referenced
 from ..weekly.models import WorkEvidence
 from .blobs import BlobStore
 from .models import FileChange, FileSnapshot, SnapshotDiff
@@ -63,7 +63,11 @@ def prune(engine: Engine, blobs: BlobStore, keep_days: int = 60) -> dict:
         still_used = set(s.scalars(select(FileSnapshot.material_id).where(FileSnapshot.material_id.in_(material_ids))))
         orphan = [m for m in material_ids - still_used]
         removed_materials = 0
+        in_knowledge = knowledge_referenced(s, orphan)
         for m in s.scalars(select(Material).where(Material.id.in_(orphan), Material.source == TRACKED)):
+            if m.id in in_knowledge:  # 知识版本仍引用同一条：退回知识库专属，不删来源正文
+                m.source = KNOWLEDGE
+                continue
             s.delete(m)  # 用户自己的材料（source 不是 tracked）不删
             removed_materials += 1
         s.commit()

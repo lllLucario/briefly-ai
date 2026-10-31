@@ -40,6 +40,10 @@ def create_db_engine(url: str | None = None) -> Engine:
     for index in materials.MaterialChunk.__table__.indexes:
         if index.name == "ix_material_chunks_material_index":
             index.create(engine, checkfirst=True)
+    # 旧库里知识库入库的材料与用户上传混存：幂等标为知识库专属，材料库入口不再暴露
+    marked = materials.mark_knowledge_only(engine)
+    if marked:
+        log.info("已将 %d 份知识库入库材料移出材料库（只经知识库检索读取）", marked)
     if engine.dialect.name == "sqlite":
         orphans = foreign_key_problems(engine)
         if orphans:  # 打开约束之前写进去的失效引用：只报告，不自动删（由人判断怎么处理）

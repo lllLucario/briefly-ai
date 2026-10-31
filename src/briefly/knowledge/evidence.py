@@ -42,7 +42,7 @@ def material_quality_notice(store, material_ids):
     blocked = set()
     for material_id in dict.fromkeys(material_ids):
         try:
-            material = store.get(material_id, content=False)
+            material = store.get(material_id, content=False, workspace=False)
         except ValueError:
             continue
         blocked.update(constraints(material.parse_report, 0, material.char_count))
@@ -65,7 +65,7 @@ def material_reference_artifact(store, material_id, start, end):
     from sqlalchemy import select
     from sqlalchemy.orm import Session
     from .models import KnowledgeDocument, KnowledgeVersion
-    material = store.get(material_id, content=False)
+    material = store.get(material_id, content=False, workspace=False)
     references = []
     with Session(store.engine) as session:
         rows = session.execute(select(KnowledgeVersion, KnowledgeDocument)
