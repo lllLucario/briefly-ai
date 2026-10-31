@@ -31,3 +31,9 @@ def _isolated_feishu_user(tmp_path, monkeypatch):
 def _no_local_embedding(monkeypatch):
     """单元测试不加载本机 .env 配置的真实 Embedding 模型：意图漏斗只用规则层，结果不随本机环境变化。"""
     monkeypatch.setattr(config, "EMBEDDING_DIR", "")
+
+
+@pytest.fixture(autouse=True)
+def _no_office_profile_template(monkeypatch):
+    """转换用替身时不建 LibreOffice 配置模板（模板初始化会多一次 soffice 调用）；模板逻辑在专门的测试里开。"""
+    monkeypatch.setattr(config, "OFFICE_PROFILE_TEMPLATE", False)

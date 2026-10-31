@@ -22,6 +22,7 @@ from .loaders import LoadedDocument
 MAX_HEADER_DEPTH = 4
 SCHEDULE_MIN_COLUMNS = 7  # 连续这么多个按序的日期/编号列才算排期
 _SCHEDULE_LABEL = re.compile(r"(第?)(\d{1,4})(月|日|号|周|天)?")
+_CONTROL = re.compile(r"[\x00-\x08\x0e-\x1b]")  # 不算空白的控制字符
 _CJK_GAP = re.compile(r"(?<=[一-鿿])\s+(?=[一-鿿])")  # 表头里“标准\n工资”的换行
 
 
@@ -49,9 +50,12 @@ def merged_value(value, row: int, col: int, first_row: int, first_col: int, head
 
 
 def _display(cell):
+    return _formatted(cell.value, cell.number_format)
+
+
+def _formatted(value, fmt):
     """按单元格的显示格式取值：百分比按 Excel 里看到的样子输出（0.15 → 15%），避免误读。"""
-    value = cell.value
-    fmt = cell.number_format or ""
+    fmt = fmt or ""
     if isinstance(value, (int, float)) and not isinstance(value, bool) and "%" in fmt:
         decimals = len(fmt.split(".")[1].split("%")[0]) if "." in fmt else 0
         return f"{value * 100:.{decimals}f}%"
@@ -87,10 +91,7 @@ def load_xlsx(data: bytes) -> LoadedDocument:
                 missing += sum(
                     v is None and isinstance(f, str) and f.startswith("=") for v, f in zip(row, formula_row)
                 )
-            ranges = sheet.merged_cells.ranges
-            captions, header = _header_rows(rows, ranges)
-            _apply_merges(rows, ranges, header)
-            if table := _sheet_table(rows, captions, header):
+            if table := _sheet_markdown(rows, sheet.merged_cells.ranges):
                 parts.append(f"# {sheet.title}\n\n{table}")
     finally:
         values.close()
@@ -100,6 +101,82 @@ def load_xlsx(data: bytes) -> LoadedDocument:
     )
     report = {"parser": "openpyxl", "structure": "sheets", "warnings": warnings}
     return LoadedDocument("\n\n".join(parts), markdown=True, report=report)
+
+
+class XlsUnsupported(ValueError):
+    """xlrd 读不了或读不准的 .xls；调用方改走 LibreOffice 转换。"""
+
+
+class _Range:
+    """xlrd 的合并区域 (行起, 行止, 列起, 列止)（0 起、不含止）换成 openpyxl 的 1 起闭区间写法。"""
+
+    def __init__(self, rlo, rhi, clo, chi):
+        self.min_row, self.max_row, self.min_col, self.max_col = rlo + 1, rhi, clo + 1, chi
+
+
+def load_xls(data: bytes) -> LoadedDocument:
+    """旧版 .xls 用 xlrd 直接读，取值、合并单元格与表头规则和 load_xlsx 相同。
+
+    日期与时间按 openpyxl 读 xlsx 的同一规则判断和换算，与“转成 xlsx 再读”的结果一致；
+    .xls 每个公式都存有计算结果，不会出现 xlsx 那种公式没有结果的情况。
+    """
+    import xlrd
+    from openpyxl.styles.numbers import is_date_format, is_timedelta_format
+    from openpyxl.utils.datetime import CALENDAR_MAC_1904, CALENDAR_WINDOWS_1900, from_excel
+
+    try:
+        # xlrd 默认把诊断信息打印到标准输出，这里丢弃
+        book = xlrd.open_workbook(file_contents=data, formatting_info=True, on_demand=True, logfile=StringIO())
+    except Exception as exc:  # 加密、BIFF5 以前的格式、结构损坏都交给转换路径
+        raise XlsUnsupported(f"直接读取失败（{type(exc).__name__}）") from exc
+    epoch = CALENDAR_MAC_1904 if book.datemode else CALENDAR_WINDOWS_1900
+    errors = xlrd.error_text_from_code
+
+    def value(cell):
+        kind = cell.ctype
+        if kind in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK):
+            return None
+        if kind == xlrd.XL_CELL_TEXT:
+            return _CONTROL.sub("", cell.value)  # 损坏的文本记录里会有 NUL 等控制字符
+        if kind == xlrd.XL_CELL_BOOLEAN:
+            return bool(cell.value)
+        if kind == xlrd.XL_CELL_ERROR:
+            return errors.get(cell.value, "#ERR")
+        fmt = book.format_map[book.xf_list[cell.xf_index].format_key].format_str or ""
+        # 内置的区域日期格式（如中文“年月日”）没有格式串，只能用 xlrd 的分类
+        if kind == xlrd.XL_CELL_DATE or is_date_format(fmt):
+            try:
+                return from_excel(cell.value, epoch, timedelta=is_timedelta_format(fmt))
+            except (OverflowError, ValueError):
+                return cell.value  # openpyxl 读到越界日期时也保留原数值
+        # 按 Excel 的 15 位有效数字取值（1994.9999999999998 → 1995），与 Excel/LibreOffice 保存的值一致
+        return _formatted(float(f"{cell.value:.15g}"), fmt)
+
+    parts = []
+    try:
+        for index in range(book.nsheets):
+            sheet = book.sheet_by_index(index)
+            merged = [_Range(*m) for m in sheet.merged_cells]
+            # 合并区域可能伸出最后一个有记录的单元格，表格范围按两者取大（与 xlsx 的工作表尺寸一致）
+            height = max([sheet.nrows, *(m.max_row for m in merged)])
+            width = max([sheet.ncols, *(m.max_col for m in merged)])
+            rows = [[value(sheet.cell(r, c)) if r < sheet.nrows and c < sheet.row_len(r) else None
+                     for c in range(width)] for r in range(height)]
+            if table := _sheet_markdown(rows, merged):
+                parts.append(f"# {sheet.name}\n\n{table}")
+            book.unload_sheet(index)
+    except Exception as exc:
+        raise XlsUnsupported(f"直接读取失败（{type(exc).__name__}）") from exc
+    finally:
+        book.release_resources()
+    report = {"parser": "xlrd", "structure": "sheets", "warnings": []}
+    return LoadedDocument("\n\n".join(parts), markdown=True, report=report)
+
+
+def _sheet_markdown(rows: list[list], ranges) -> str:
+    captions, header = _header_rows(rows, ranges)
+    _apply_merges(rows, ranges, header)
+    return _sheet_table(rows, captions, header)
 
 
 def _filled(row) -> list[int]:

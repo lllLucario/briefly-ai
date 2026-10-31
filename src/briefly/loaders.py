@@ -99,8 +99,10 @@ def _load(kind: str, data: bytes) -> LoadedDocument:
         doc = _load_pptx(data)
         doc.report = {**doc.report, "timings": {"document_parse_seconds": round(perf_counter() - tick, 6)}}
         return doc
-    if kind in ("xls", "ppt"):
-        return _load_converted(kind, data)
+    if kind == "xls":
+        return _load_xls(data)
+    if kind == "ppt":
+        return _load_ppt(data)
     if kind == "csv":
         from .tables import load_csv
 
@@ -158,6 +160,58 @@ def _load_docx(data: bytes) -> LoadedDocument:
     return LoadedDocument(text, markdown=True, report=report)
 
 
+def _load_xls(data: bytes) -> LoadedDocument:
+    """旧版 .xls 先用 xlrd 直接读；读不了（加密、早期格式、结构损坏）再走 LibreOffice 转换。"""
+    from .legacy_word import OLE_HEADER
+    from .tables import XlsUnsupported, load_xls
+
+    if not data.startswith(OLE_HEADER):
+        raise ValueError("文件不是可识别的旧版 Excel .xls 文档；仅更改后缀不能转换文件格式")
+    tick = perf_counter()
+    try:
+        doc = load_xls(data)
+    except XlsUnsupported as exc:
+        attempt = round(perf_counter() - tick, 6)
+        doc = _load_converted("xls", data)
+        doc.report = {**doc.report, "timings": {"direct_attempt_seconds": attempt, **doc.report["timings"]},
+                      "warnings": [*doc.report["warnings"], f"旧版 .xls {exc}，已使用本地转换路径"]}
+        return doc
+    doc.report = {**doc.report, "original_format": "xls", "conversion": None,
+                  "timings": {"direct_seconds": round(perf_counter() - tick, 6)}}
+    return doc
+
+
+def _load_ppt(data: bytes) -> LoadedDocument:
+    """旧版 .ppt：本地 Java 可用时用 POI HSLF 直接读，读不了（加密、早期格式、损坏）再走 LibreOffice 转换。"""
+    from . import config
+    from .direct_ppt import ADAPTER_VERSION, DirectSlidesUnsupported, parse_ppt
+    from .direct_word import direct_available
+    from .legacy_word import OLE_HEADER
+
+    if config.PPT_PARSER not in {"auto", "convert"}:
+        raise ValueError("BRIEFLY_PPT_PARSER须为auto或convert")
+    if not data.startswith(OLE_HEADER):
+        raise ValueError("文件不是可识别的旧版 PowerPoint .ppt 文档；仅更改后缀不能转换文件格式")
+    if config.PPT_PARSER == "convert" or not direct_available():
+        return _load_converted("ppt", data)
+    tick = perf_counter()
+    try:
+        slides = parse_ppt(data)
+    except DirectSlidesUnsupported as exc:
+        attempt = round(perf_counter() - tick, 6)
+        doc = _load_converted("ppt", data)
+        doc.report = {**doc.report, "timings": {"direct_attempt_seconds": attempt, **doc.report["timings"]},
+                      "warnings": [*doc.report["warnings"], f"旧版 .ppt {exc}，已使用本地转换路径"]}
+        return doc
+    direct = round(perf_counter() - tick, 6)
+    tick = perf_counter()
+    doc = _slides_markdown(slides)
+    doc.report = {**doc.report, "parser": "poi-hslf", "original_format": "ppt", "conversion": None,
+                  "adapter_version": ADAPTER_VERSION,
+                  "timings": {"direct_seconds": direct, "document_parse_seconds": round(perf_counter() - tick, 6)}}
+    return doc
+
+
 def _load_converted(kind: str, data: bytes) -> LoadedDocument:
     """旧版 .xls/.ppt：本地 LibreOffice 转成 .xlsx/.pptx 后按新格式解析。"""
     from .legacy_word import LEGACY, convert_legacy
@@ -183,23 +237,39 @@ def _load_converted(kind: str, data: bytes) -> LoadedDocument:
 def _load_pptx(data: bytes) -> LoadedDocument:
     """用 docling 读幻灯片：每页一节，标题写成“第N页 标题”，便于引用定位；
     每页都重复的页脚、日期和单独的页码行去掉；演讲者备注并入对应页；图片里的文字不识别。"""
+    from docling.datamodel.base_models import DocumentStream
+
+    doc = _docling_converter("pptx").convert(DocumentStream(name="a.pptx", stream=BytesIO(data))).document
+    return _slides_markdown(doc)
+
+
+def _slides_markdown(source) -> LoadedDocument:
+    """幻灯片 → 按页 Markdown，pptx 与旧版 .ppt 直读共用。
+
+    source 是整篇 DoclingDocument（pptx，每页一个页码）或每页一份的文档列表（.ppt 直读：
+    整篇按页导出每页都要遍历全文，页数多时是平方级耗时）。
+    """
     import re
     from collections import Counter
 
-    from docling.datamodel.base_models import DocumentStream
     from docling_core.types.doc import ContentLayer, PictureItem, SectionHeaderItem, TextItem, TitleItem
 
-    doc = _docling_converter("pptx").convert(DocumentStream(name="a.pptx", stream=BytesIO(data))).document
-    for item, _ in doc.iterate_items():
-        if isinstance(item, TextItem) and not isinstance(item, (SectionHeaderItem, TitleItem)):
-            item.text = escape_heading_marks(item.text)
-    # 按每项的页码逐页导出；整篇导出的分页标记在没有占位框的空白版式页上会错位
-    slides = [doc.export_to_markdown(page_no=n, escape_html=False, escape_underscores=False, image_placeholder="",
-                                     compact_tables=True).strip("\n") for n in sorted(doc.pages)]
-    notes: dict[int, list[str]] = {}
-    for item in doc.texts:
-        if item.content_layer == ContentLayer.NOTES and item.text.strip() and item.prov:
-            notes.setdefault(item.prov[0].page_no, []).append(item.text.strip())
+    options = dict(escape_html=False, escape_underscores=False, image_placeholder="", compact_tables=True)
+    slides, notes, pictures = [], {}, 0
+    for doc in source if isinstance(source, list) else [source]:
+        for item, _ in doc.iterate_items():
+            if isinstance(item, TextItem) and not isinstance(item, (SectionHeaderItem, TitleItem)):
+                item.text = escape_heading_marks(item.text)
+        pictures += sum(1 for item, _ in doc.iterate_items() if isinstance(item, PictureItem))
+        offset = len(slides)
+        if isinstance(source, list):
+            slides.append(doc.export_to_markdown(**options).strip("\n"))
+        else:
+            # 按每项的页码逐页导出；整篇导出的分页标记在没有占位框的空白版式页上会错位
+            slides += [doc.export_to_markdown(page_no=n, **options).strip("\n") for n in sorted(doc.pages)]
+        for item in doc.texts:
+            if item.content_layer == ContentLayer.NOTES and item.text.strip() and item.prov:
+                notes.setdefault(offset + item.prov[0].page_no, []).append(item.text.strip())
     # 至少 3 页、半数以上页面都出现的同一行（页脚、公司名、日期）是版式装饰
     seen = Counter(line.strip() for s in slides for line in {l for l in s.splitlines() if l.strip()}
                    if not line.lstrip().startswith(("#", "|")))
@@ -216,7 +286,6 @@ def _load_pptx(data: bytes) -> LoadedDocument:
             lines += ["", "备注：" + "\n".join(notes[n])]
         blocks.append("\n".join(lines).strip())
     text = re.sub(r"\n{3,}", "\n\n", "\n\n".join(blocks)).replace("&#124;", "\\|")
-    pictures = sum(1 for item, _ in doc.iterate_items() if isinstance(item, PictureItem))
     report = {"parser": "docling", "structure": "pptx_slides", "slides": len(slides),
               "notes": sum(len(v) for v in notes.values()), "pictures": pictures}
     if pictures:
