@@ -161,7 +161,8 @@ def answer_cases(imports, encoder, kb_id, cases, doc_format_of, args, stamp):
                     intent = human.additional_kwargs.get("intent") or {}
                     status = meta.get("status")
                     event.update(intent=intent.get("intent"), layer=intent.get("layer"), resolved=intent.get("resolved"),
-                                 tools=[c["name"] for m in history if m.type == "ai" for c in getattr(m, "tool_calls", [])])
+                                 tools=[c["name"] for m in history if m.type == "ai" for c in getattr(m, "tool_calls", [])],
+                                 forced_search=any(m.type == "ai" and m.response_metadata.get("forced_search") for m in history))
                 else:
                     result = knowledge.qa.answer(kb_id, case["question"])
                     answer, status = result["answer"], result["status"]

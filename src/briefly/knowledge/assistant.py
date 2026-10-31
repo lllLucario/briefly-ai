@@ -4,17 +4,23 @@
 单问捷径和 search_knowledge 都用 KnowledgeQA.bundle 产出本轮依据包；助理路径的引用与外发计数
 由轮次收尾的 record_knowledge_turn 按本轮实际检索和实际发给模型的内容写进回复元数据。
 """
-from langchain.agents.middleware import after_agent
+import logging
+import uuid
+
+from langchain.agents.middleware import AgentMiddleware, ModelResponse, after_agent
 from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
 from ..context import Context
 from ..context_builder import SYSTEM_REPLY
+from ..intent import _FOLLOW_UP, knowledge_question
 from .qa import EGRESS_POLICY, EGRESS_REQUIRED, MAX_SUB_QUESTIONS, KnowledgeQA, cited_numbers
 from .retrieval import both_routes, relevance_floor, relevant, similarity
 
-__all__ = ["KnowledgeAssistant", "MAX_SUB_QUESTIONS", "knowledge_tools", "record_knowledge_turn"]
+__all__ = ["KnowledgeAssistant", "KnowledgeSearchGuard", "MAX_SUB_QUESTIONS", "knowledge_tools", "record_knowledge_turn"]
+
+log = logging.getLogger(__name__)
 
 
 class KnowledgeAssistant:
@@ -103,6 +109,66 @@ def knowledge_tools(assistant: KnowledgeAssistant) -> list:
         return result["answer"], artifact
 
     return [search_knowledge]
+
+
+class KnowledgeSearchGuard(AgentMiddleware):
+    """已选知识库、用户在问资料，模型却一次工具都没调用就直接作答时，由程序补一次检索。
+
+    提示词要求“先 search_knowledge 再回答”，但模型偶尔凭通用知识直接回答（素材库评测 C09：中文问英文标准条款，
+    语义相似度低于知识库路由下限而交给助理，助理未检索就按“通行条款结构”作答）。知识问答的事实只能来自本轮
+    检索到的原文，这一点不能只靠提示词：丢弃这份未检索的草稿，换成一次以用户原话为检索问题的 search_knowledge
+    调用，模型拿到依据后重新作答，回答检查照常对重新作答的那次进行（不占检查重写次数）。
+
+    不介入：指定了能力或附了材料、意图是业务查询/调整上一轮等非知识类、句式不像提问（闲聊、写作任务），
+    或本轮已调用过任何工具（检索过、读过材料或查过业务数据）。每轮最多补一次：补检索后本轮已有工具结果。
+    """
+
+    def wrap_model_call(self, request, handler):
+        response = handler(request)
+        result = response.result if isinstance(response, ModelResponse) else [response]
+        answer = next((m for m in reversed(result) if isinstance(m, AIMessage)), None)
+        if answer is None or answer.tool_calls or answer.response_metadata.get(SYSTEM_REPLY):
+            return response
+        questions = self._questions(request)
+        if not questions:
+            return response
+        log.warning("已选知识库的资料提问未检索就作答，丢弃草稿，补检索：%s", questions)
+        call = dict(name="search_knowledge", args=dict(questions=questions), id=f"call_guard_{uuid.uuid4().hex[:12]}", type="tool_call")
+        forced = AIMessage("", id=answer.id, tool_calls=[call],
+                           response_metadata={**answer.response_metadata, "forced_search": True})
+        return ModelResponse(result=[forced if m is answer else m for m in result],
+                             structured_response=getattr(response, "structured_response", None))
+
+    @staticmethod
+    def _questions(request) -> list[str]:
+        """需要补检索时返回检索问题（用户原话；简短追问另加上一问拼接的补全句），否则返回空列表。"""
+        context = getattr(getattr(request, "runtime", None), "context", None)
+        if context is None or not context.kb_id or context.skill or context.material_ids:
+            return []
+        if (context.intent or {}).get("intent") not in _KNOWLEDGE_INTENTS:
+            return []
+        if "search_knowledge" not in {getattr(t, "name", None) or (t.get("name") if isinstance(t, dict) else None)
+                                      for t in request.tools or []}:
+            return []
+        messages = request.messages
+        start = _turn_start(messages)
+        if start < 0 or any(isinstance(m, ToolMessage) for m in messages[start + 1:]):
+            return []
+        text = (messages[start].additional_kwargs.get("display") or messages[start].text).strip()
+        if not knowledge_question(text):
+            return []
+        questions = [text[:200]]
+        previous = next((m for m in reversed(messages[:start]) if isinstance(m, HumanMessage)
+                         and not m.additional_kwargs.get("internal")), None)
+        if previous is not None and (len(text) <= 15 or _FOLLOW_UP.match(text)):
+            # 只有原话的追问（“那病假呢”）检索不到东西：按上一问补全，与工具说明要求模型做的补全一致
+            earlier = (previous.additional_kwargs.get("display") or previous.text).strip()[:100]
+            questions.append(f"{earlier} {text}")
+        return questions[:MAX_SUB_QUESTIONS]
+
+
+# 交给助理的资料类轮次：漏斗没把握（agent），或知识/定位捷径不处理而转给助理的
+_KNOWLEDGE_INTENTS = {"agent", "knowledge", "locate"}
 
 
 @after_agent

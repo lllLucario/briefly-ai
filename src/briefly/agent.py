@@ -43,7 +43,7 @@ from .turn_record import turn_record
 from .feishu import configured as feishu_configured
 from .intent import DIRECT_REPLIES, IntentDecision, IntentFunnel, TurnState
 from .intent_log import IntentLog
-from .knowledge.assistant import KnowledgeAssistant, knowledge_tools, record_knowledge_turn
+from .knowledge.assistant import KnowledgeAssistant, KnowledgeSearchGuard, knowledge_tools, record_knowledge_turn
 from .feishu.client import default_client
 from .clock import RequestTime, request_time
 from .tools import DEFAULT_TOOLS
@@ -194,6 +194,7 @@ class Agent:
             middleware=[  # 列表中靠前的包在外层：先定提示词，再由 Context Builder 组装上下文并检查预算
                 _system_prompt,
                 InternalTermCheck(self._check_sources, self._reply_limit),  # 在 Context Builder 外层：重试也经过预算检查
+                KnowledgeSearchGuard(),  # 在回答检查内层：未检索的草稿换成补检索，检查只看拿到依据后的回答
                 self.builder,
                 self._quality_middleware(),
                 _limit_tool_rounds,
