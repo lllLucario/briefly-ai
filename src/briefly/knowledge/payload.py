@@ -9,8 +9,10 @@ def evidence_payload(question, evidence, start=1):
         key = (item["document_id"], item["version_id"])
         documents.setdefault(key, f"文档{len(documents) + 1}")
         table = item.get("table_header")
+        # 业务版本标签只在有时给出；每条都写“未提供”会引得模型逐题评论版本
+        version = f"业务版本标签：{item['business_version']}；" if item["business_version"] else ""
         header = (f"【依据{i}；同源标识：{documents[key]}；标题《{item['source']['title']}》；"
-                  f"业务版本标签：{item['business_version'] or '未提供'}；章节：{item['section'] or '未确定'}"
+                  f"{version}章节：{item['section'] or '未确定'}"
                   + ("；续表：正文最前面的表格行是原表表头，供对应列名" if table else "") + "】")
         blocks.append(wrap_material(header, (table or "") + item["content"]))
     return "问题：" + question + "\n\n" + "\n\n".join(blocks)
