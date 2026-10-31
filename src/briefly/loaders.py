@@ -246,8 +246,9 @@ def _load_pptx(data: bytes) -> LoadedDocument:
 def _slides_markdown(source) -> LoadedDocument:
     """幻灯片 → 按页 Markdown，pptx 与旧版 .ppt 直读共用。
 
-    source 是整篇 DoclingDocument（pptx，每页一个页码）或每页一份的文档列表（.ppt 直读：
-    整篇按页导出每页都要遍历全文，页数多时是平方级耗时）。
+    source 是整篇 DoclingDocument（pptx，每页一个页码）或每页一份的文档列表（.ppt 直读）。
+    Docling 的 export_to_markdown(page_no=n) 每次都遍历全文，逐页导出是页数平方级耗时
+    （202 页约 110 秒），所以整篇先按页拆成独立文档再各自整篇导出。
     """
     import re
     from collections import Counter
@@ -255,21 +256,28 @@ def _slides_markdown(source) -> LoadedDocument:
     from docling_core.types.doc import ContentLayer, PictureItem, SectionHeaderItem, TextItem, TitleItem
 
     options = dict(escape_html=False, escape_underscores=False, image_placeholder="", compact_tables=True)
-    slides, notes, pictures = [], {}, 0
     for doc in source if isinstance(source, list) else [source]:
         for item, _ in doc.iterate_items():
             if isinstance(item, TextItem) and not isinstance(item, (SectionHeaderItem, TitleItem)):
                 item.text = escape_heading_marks(item.text)
-        pictures += sum(1 for item, _ in doc.iterate_items() if isinstance(item, PictureItem))
-        offset = len(slides)
-        if isinstance(source, list):
-            slides.append(doc.export_to_markdown(**options).strip("\n"))
-        else:
-            # 按每项的页码逐页导出；整篇导出的分页标记在没有占位框的空白版式页上会错位
-            slides += [doc.export_to_markdown(page_no=n, **options).strip("\n") for n in sorted(doc.pages)]
-        for item in doc.texts:
+    slides, notes, pictures = [], {}, 0
+    if not isinstance(source, list):
+        numbers = sorted(source.pages)
+        parts = _split_slides(source) or [None] * len(numbers)
+        # 拆不出的页按页码导出（原做法，慢但不依赖结构）
+        slides = [(part.export_to_markdown(**options) if part is not None
+                   else source.export_to_markdown(page_no=n, **options)).strip("\n") for n, part in zip(numbers, parts)]
+        pictures = sum(1 for item, _ in source.iterate_items() if isinstance(item, PictureItem))
+        for item in source.texts:
             if item.content_layer == ContentLayer.NOTES and item.text.strip() and item.prov:
-                notes.setdefault(offset + item.prov[0].page_no, []).append(item.text.strip())
+                notes.setdefault(item.prov[0].page_no, []).append(item.text.strip())
+    else:
+        for n, doc in enumerate(source, start=1):
+            slides.append(doc.export_to_markdown(**options).strip("\n"))
+            pictures += sum(1 for item, _ in doc.iterate_items() if isinstance(item, PictureItem))
+            for item in doc.texts:
+                if item.content_layer == ContentLayer.NOTES and item.text.strip() and item.prov:
+                    notes.setdefault(n, []).append(item.text.strip())
     # 至少 3 页、半数以上页面都出现的同一行（页脚、公司名、日期）是版式装饰
     seen = Counter(line.strip() for s in slides for line in {l for l in s.splitlines() if l.strip()}
                    if not line.lstrip().startswith(("#", "|")))
@@ -291,6 +299,31 @@ def _slides_markdown(source) -> LoadedDocument:
     if pictures:
         report["warnings"] = [f"幻灯片中有 {pictures} 张图片，未识别图片里的文字，请核对原文件"]
     return LoadedDocument(text, markdown=True, report=report)
+
+
+def _split_slides(doc):
+    """Docling pptx 文档按页拆成独立文档：正文的每个直接子节点是一页的分组，且组内每一项都只标着这一页。
+
+    返回与 sorted(doc.pages) 对应的列表；某页含跨项引用（图表标题等 caption、脚注、富文本表格单元格）时
+    该页为 None——extract_items_range 不改写这类引用，由调用方对这一页按页码导出。整体结构不符
+    （分组数与页数不符、有项没有页码或跨页）时返回 None，全部按页码逐页导出。两种退回输出都不变。
+    """
+    from docling_core.types.doc import ContentLayer, DocItem, GroupItem, RichTableCell, TableItem
+
+    groups = [ref.resolve(doc) for ref in doc.body.children]
+    numbers = sorted(doc.pages)
+    if len(groups) != len(numbers) or not all(isinstance(g, GroupItem) for g in groups):
+        return None
+    layers, pages = set(ContentLayer), []
+    for group, number in zip(groups, numbers):
+        linked = False
+        for item, _ in doc.iterate_items(root=group, included_content_layers=layers):
+            if isinstance(item, DocItem) and (not item.prov or any(p.page_no != number for p in item.prov)):
+                return None
+            linked = linked or any(getattr(item, name, None) for name in ("captions", "references", "footnotes")) or (
+                isinstance(item, TableItem) and any(isinstance(c, RichTableCell) for c in item.data.table_cells))
+        pages.append(None if linked else doc.extract_items_range(start=group, end=group))
+    return pages
 
 
 def _unmerge(cells):

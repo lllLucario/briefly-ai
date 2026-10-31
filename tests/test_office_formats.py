@@ -232,3 +232,44 @@ def test_ppt_that_cannot_be_read_directly_falls_back_to_conversion(java_bridge, 
     assert doc.report["conversion"] == "libreoffice-to-pptx" and "# 第1页 虚构差旅制度" in doc.text
     assert any("已使用本地转换路径" in w for w in doc.report["warnings"]) and len(converter) == 1
     assert "direct_attempt_seconds" in doc.report["timings"]
+
+
+def test_pptx_split_by_slide_matches_page_by_page_export(monkeypatch):
+    from briefly import loaders
+
+    calls = []
+    split = loaders._split_slides
+    monkeypatch.setattr(loaders, "_split_slides", lambda doc: calls.append(split(doc)) or calls[-1])
+    fast = load_document("制度.pptx", pptx_bytes())
+    assert calls and calls[0] is not None and len(calls[0]) == 3  # 走了按页拆分
+    monkeypatch.setattr(loaders, "_split_slides", lambda doc: None)  # 结构核对不过时退回逐页导出
+    slow = load_document("制度.pptx", pptx_bytes())
+    assert fast.text == slow.text and fast.report["notes"] == slow.report["notes"] == 1
+
+
+def test_pptx_slide_with_chart_caption_is_exported_by_page(monkeypatch):
+    """图表标题是图片的 caption 引用，按页拆分复制不改写引用：这一页退回按页码导出，其余页照常拆分。"""
+    from pptx.chart.data import CategoryChartData
+    from pptx.enum.chart import XL_CHART_TYPE
+
+    from briefly import loaders
+
+    deck = Presentation(BytesIO(pptx_bytes()))
+    slide = deck.slides.add_slide(deck.slide_layouts[5])
+    slide.shapes.title.text = "季度费用"
+    data = CategoryChartData()
+    data.categories = ["一季度", "二季度"]
+    data.add_series("差旅", (120, 95))
+    chart = slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(1), Inches(2), Inches(6), Inches(3), data).chart
+    chart.has_title = True
+    chart.chart_title.text_frame.text = "虚构差旅费用"
+    stream = BytesIO()
+    deck.save(stream)
+    calls = []
+    split = loaders._split_slides
+    monkeypatch.setattr(loaders, "_split_slides", lambda doc: calls.append(split(doc)) or calls[-1])
+    fast = load_document("费用.pptx", stream.getvalue())
+    assert [part is None for part in calls[0]] == [False, False, False, True]
+    monkeypatch.setattr(loaders, "_split_slides", lambda doc: None)
+    assert fast.text == load_document("费用.pptx", stream.getvalue()).text
+    assert "# 第4页 季度费用" in fast.text
