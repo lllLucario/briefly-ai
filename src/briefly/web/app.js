@@ -371,6 +371,7 @@ async function showMaterialDetail(id) {
       <details class="meta"><summary>技术信息</summary>编号 ${m.id} · ${m.char_count} 字 · ${m.chunk_count} 块 · ${m.section_count} 个章节 · 结构来源：${escapeHtml(m.structure || "-")}</details>
       ${warnings}
       <p class="muted small">${escapeHtml(sourceLabel(m))} · ${m.source === "tracked" ? "追踪最新版本 · 随追踪更新" : m.tracking_state && m.tracking_state !== "fixed" ? "固定副本 · 已开启追踪（这份内容不变，新版本另存为材料）" : "固定副本 · 原文件后续修改不会自动更新"}${m.tracking_note ? ` · ${escapeHtml(m.tracking_note)}` : ""} · 添加时间 ${fmtTime(m.created_at)}${m.warnings.length ? ` · ${m.warnings.length} 项解析提示，请先核对` : " · 未报告解析警告（不代表所有内容均已完整识别）"}</p>
+      ${materialLinks(m.links || [])}
       <div class="detail-todos"><b>关联待办</b>${relatedCell({ ...m, id: `detail-${m.id}` })}</div>
       <div class="material-extras">
       <details class="meta" data-disclosure="material:${m.id}:outline" ${disclosureOpen(`material:${m.id}:outline`)}><summary>文档大纲（${m.sections.length} 个章节）</summary><div class="outline">${outline}</div></details>
@@ -381,6 +382,13 @@ async function showMaterialDetail(id) {
         <button type="button" data-preview="rich" aria-pressed="false">排版</button><button type="button" data-preview="raw" aria-pressed="false">原文</button></div>` : ""}</div>
       <div id="material-body" class="content-box material-preview" tabindex="0" aria-label="正文"></div>`;
     box.querySelectorAll("[data-lib-todo]").forEach((b) => b.onclick = () => openTodoFromLibrary(Number(b.dataset.libTodo)));
+    box.querySelectorAll("[data-link-decide]").forEach((b) => b.onclick = async () => {
+      b.disabled = true;
+      try {
+        await api(`/links/${b.dataset.linkId}/${b.dataset.linkDecide}`, { method: "POST" });
+        await showMaterialDetail(id);
+      } catch (err) { b.disabled = false; uiAlert(err.message); }
+    });
     const showBody = (mode) => {
       const rich = RICH_TYPES.has(m.file_type) && mode === "rich";
       const body = $("#material-body");
@@ -404,6 +412,21 @@ async function showMaterialDetail(id) {
   } catch (err) {
     box.innerHTML = `<div class="notice error">${escapeHtml(err.message)}</div>`;
   }
+}
+
+// 与知识库文档的关联：疑似重复请用户确认或否认；已关联的说明外发限制（随所关联知识库的授权）
+function materialLinks(links) {
+  if (!links.length) return "";
+  return links.map((l) => {
+    const doc = `知识库“${escapeHtml(l.kb_name)}”中的《${escapeHtml(l.document_title)}》${l.version ? `（第 ${l.version} 版）` : ""}`;
+    if (l.kind === "suggested") {
+      return `<div class="notice warn" data-link="${l.id}">看起来是${doc}的改稿，要关联吗？关联后，这份文件随该知识库的外发授权${l.egress_allowed ? "" : "（该库目前未允许外发，关联后内容不会发给模型）"}；未确认前不受限制。
+        <div class="row gap"><button class="ghost small" data-link-id="${l.id}" data-link-decide="confirm">是同一份，关联</button><button class="ghost small" data-link-id="${l.id}" data-link-decide="dismiss">不是</button></div></div>`;
+    }
+    const egress = l.egress_allowed ? "该库已允许外发" : "该库未允许外发，这份文件的内容不会发给模型；可在知识库页面开启“允许外发”";
+    return `<div class="notice" data-link="${l.id}">已关联${doc}。${egress}。
+      <button class="ghost small" data-link-id="${l.id}" data-link-decide="dismiss">解除关联</button></div>`;
+  }).join("");
 }
 
 $("#material-close").addEventListener("click", () => $("#material-panel").close());

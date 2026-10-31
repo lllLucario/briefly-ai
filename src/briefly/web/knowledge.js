@@ -46,7 +46,8 @@
     $("#kb-documents").innerHTML = documents.length ? documents.map(doc => `<div class="knowledge-row" data-kb-doc="${escapeHtml(doc.id)}">
       <label><input type="checkbox" data-kb-scope="${escapeHtml(doc.id)}" ${d.all || d.selected.has(doc.id) ? "checked" : ""} ${d.all ? "disabled" : ""}> ${escapeHtml(doc.title)}</label>
       <span class="muted small">修订 ${doc.revision} · ${doc.index_status === "ready" ? "已有有效索引" : "尚无有效索引"}</span>
-      <button class="ghost small" data-kb-update="${escapeHtml(doc.id)}">更新</button><button class="ghost small" data-kb-remove="${escapeHtml(doc.id)}">移出知识库</button></div>`).join("") : '<p class="muted">当前库暂无文档，请先上传并核对切片。</p>';
+      <button class="ghost small" data-kb-update="${escapeHtml(doc.id)}">更新</button>${doc.index_status === "ready" ? `<button class="ghost small" data-kb-copy="${escapeHtml(doc.id)}">复制到工作区</button>` : ""}<button class="ghost small" data-kb-remove="${escapeHtml(doc.id)}">移出知识库</button>
+      ${doc.workspace_update ? `<p class="notice warn small" data-kb-workspace-update="${escapeHtml(doc.id)}">工作区有更新（${escapeHtml(fmtTime(doc.workspace_update.updated_at))}，《${escapeHtml(doc.workspace_update.title)}》），知识库仍为第 ${doc.workspace_update.version} 版。需要时请用“更新”导入新版本并核对切片，不会自动发布。</p>` : ""}</div>`).join("") : '<p class="muted">当前库暂无文档，请先上传并核对切片。</p>';
   }
   function renderJobs(jobs) {
     draft().jobs = jobs;
@@ -134,8 +135,19 @@
   });
   $("#kb-documents").addEventListener("change", event => { const id = event.target.dataset.kbScope; if (id) { event.target.checked ? draft().selected.add(id) : draft().selected.delete(id); invalidate(); } });
   $("#kb-documents").addEventListener("click", async event => {
-    const update = event.target.closest("[data-kb-update]"), remove = event.target.closest("[data-kb-remove]");
+    const update = event.target.closest("[data-kb-update]"), remove = event.target.closest("[data-kb-remove]"), copy = event.target.closest("[data-kb-copy]");
     if (update) { draft().target = draft().documents.find(doc => doc.id === update.dataset.kbUpdate); restore(); return; }
+    if (copy) {
+      const id = current;
+      copy.disabled = true;
+      try {
+        const r = await api(`/knowledge-bases/${id}/documents/${copy.dataset.kbCopy}/copy-to-workspace`, {method:"POST"});
+        message(`已把《${r.title}》复制到工作区（材料库），并记为与本文档关联；工作区副本随本库的外发授权。`, id);
+        if (typeof refreshLibrary === "function") refreshLibrary();
+      } catch (error) { message(error.message, id); }
+      finally { copy.disabled = false; }
+      return;
+    }
     if (!remove) return;
     const id = current, doc = draft().documents.find(item => item.id === remove.dataset.kbRemove);
     if (!await uiConfirm(`从当前知识库移出《${doc.title}》？原材料及待办、周报引用会保留。`)) return;

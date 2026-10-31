@@ -33,7 +33,7 @@ from .context_builder import CONTEXT_OVERFLOW, SYSTEM_REPLY, ContextBuilder, sys
 from .context_store import ContextStore
 from .db import create_db_engine
 from .llm import create_chat_model
-from .materials import MaterialStore, wrap_material
+from .materials import EgressRestricted, MaterialStore, wrap_material
 from .output_check import INTERNAL_PATTERNS, PROGRAM_MATERIAL_REF, InternalTermCheck, reply_char_limit
 from .skills import SKILLS, read_prompt
 from .sources import conversation_material_ids
@@ -314,7 +314,10 @@ class Agent:
         except ValueError as e:
             return str(e)
         if material_ids:
-            text = self._attach_materials(text, material_ids)
+            try:
+                text = self._attach_materials(text, material_ids)
+            except EgressRestricted as e:  # 关联的知识库未允许外发：不调用模型，直接说明
+                return str(e)
         scope = [*material_ids, *stored] if material_ids else None
         material_ids = [*(material_ids or []), *stored]  # 转存的长输入只给引用，不再全文附回
         compacted = self._compact(thread_id, run_id)
@@ -439,6 +442,7 @@ class Agent:
         if self.store is None:
             raise ValueError("未配置材料库，无法使用材料")
         materials = [self.store.get(i) for i in dict.fromkeys(material_ids)]
+        self.store.require_egress(material_ids)
         if sum(self.counter.count_text(m.content) for m in materials) <= config.INLINE_MATERIAL_TOKENS:
             blocks = [wrap_material(f"【材料 {m.id}《{m.title}》】", m.content) for m in materials]
             return "\n\n".join([text, *blocks])

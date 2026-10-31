@@ -3,7 +3,7 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Engine, ForeignKey, Index, Integer, String, Text, func, or_, select, update
+from sqlalchemy import JSON, DateTime, Engine, ForeignKey, Index, Integer, String, Text, delete, func, or_, select, update
 from sqlalchemy.orm import Mapped, defer, mapped_column, relationship, sessionmaker
 
 from . import config
@@ -30,6 +30,10 @@ class KnowledgeOnlyMaterial(MaterialNotFound):
     def __init__(self, material_id: int, title: str = "") -> None:
         name = f"《{title}》" if title else ""
         super().__init__(f"材料 {material_id}{name}属于知识库，不在材料库中，请在知识库中提问")
+
+
+class EgressRestricted(ValueError):
+    """材料关联的知识库未允许外发：内容不发给模型（本地查看不受影响）。"""
 
 
 class Material(Base):
@@ -284,6 +288,22 @@ class MaterialStore:
         if row is not None:
             raise KnowledgeOnlyMaterial(row.id, row.title)
 
+    def require_egress(self, material_ids) -> None:
+        """要把材料内容发给模型的入口调用：显式或已确认关联的知识库未允许外发时拒绝（EgressRestricted），
+        说明可在知识库开启授权或解除关联。疑似关联（未确认）不继承。"""
+        blocked = self.egress_blocked(material_ids)
+        if blocked:
+            raise EgressRestricted(next(iter(blocked.values())))
+
+    def egress_blocked(self, material_ids) -> dict[int, str]:
+        from .links import egress_restrictions
+
+        ids = list(material_ids)
+        if not ids:
+            return {}
+        with self._session() as s:
+            return egress_restrictions(s, ids)
+
     def get(self, material_id: int, *, content: bool = True, workspace: bool = True) -> Material:
         """workspace=True（默认，材料库各入口）时知识库专属材料按不存在处理并说明属于知识库；
         只有知识库自身（入库预览、质量与引用核对）传 False。"""
@@ -334,6 +354,10 @@ class MaterialStore:
                 if material_id in (report.material_ids or []):
                     report.material_ids = [i for i in report.material_ids if i != material_id]
                     report.removed_materials = [*(report.removed_materials or []), removed]
+            from .links import DocumentLink
+
+            # 按材料记的关联随材料离开工作区一并去掉（追踪文件的关联跟着文件走）
+            s.execute(delete(DocumentLink).where(DocumentLink.material_id == material_id))
             if knowledge_referenced(s, [material_id]):
                 # 与知识库共用的同一条记录（用户先上传、或另行添加过）：在工作区删除只是移出工作区，
                 # 知识库的来源正文、版本与引用不受影响；记录转回知识库专属，追踪版本不再指向它

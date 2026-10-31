@@ -79,9 +79,11 @@ def material_tools(
         if not materials:
             return "当前没有可用的材料。"
         sections = store.section_counts(scope)
+        blocked = store.egress_blocked([m.id for m in materials])
         return f"{RETRIEVAL_INFO}：\n" + "\n".join(
             f"- 材料 {m.id}《{m.title}》：{m.file_type or '粘贴文本'}，"
             f"{'有章节大纲' if sections.get(m.id) else '没有识别出章节'}，{m.created_at:%Y-%m-%d}"
+            + ("（关联的知识库未允许外发，内容不可读取）" if m.id in blocked else "")
             for m in materials
         )
 
@@ -91,6 +93,7 @@ def material_tools(
         材料较长、需要了解结构或只读其中某几章时先调用，再用 read_material 的 section 参数按章节读取。"""
         _check_in_scope(material_id, _scope(runtime))
         material = store.get(material_id, content=False)
+        store.require_egress([material_id])
         sections = store.sections(material_id)
         name = f"材料 {material_id}《{material.title}》"
         notes = material.parse_report.get("warnings", [])
@@ -115,6 +118,8 @@ def material_tools(
         if chunk is not None and section is not None:
             raise ValueError("chunk 和 section 只能填一个")
         _check_in_scope(material_id, _scope(runtime))
+        store.require_workspace([material_id])
+        store.require_egress([material_id])
 
         if section is None:
             chunk = chunk or 1
@@ -171,7 +176,13 @@ def material_tools(
         hybrid = hits is not None
         if hits is None:  # 没有语义索引（未配置本地 Embedding 等）：原关键词检索
             hits = store.search(keywords, scope)[:limit]
+        blocked = store.egress_blocked(list(dict.fromkeys(h.material_id for h in hits)))
+        withheld = [h for h in hits if h.material_id in blocked]
+        hits = [h for h in hits if h.material_id not in blocked]  # 关联的知识库未允许外发：命中也不发给模型
+        notice = "\n".join(dict.fromkeys(blocked[h.material_id] for h in withheld))
         if not hits:
+            if withheld:
+                return notice, {"egress_withheld": sorted(blocked)}
             return f"没有找到与“{keywords}”相关的内容。" if hybrid else f"没有找到包含“{keywords}”的内容。", {}
         parts, selected_ids, references, size, budget = [], [], [], 0, int((output_limit() - 200) * 1.5)
         for n, h in enumerate(hits):
@@ -202,6 +213,8 @@ def material_tools(
         # artifact只记录真正输出的来源，不能把可访问全库当成已读依据。
         from ..knowledge.evidence import material_quality_notice
         selected_ids = list(dict.fromkeys(selected_ids))
+        if withheld:
+            parts.append(notice)
         return "\n\n".join(parts), {"material_ids": selected_ids,
             "knowledge_references": references,
             "quality_notice": material_quality_notice(store, selected_ids)}
@@ -221,6 +234,7 @@ def material_tools(
             scope = material_ids
         from ..knowledge.evidence import material_quality_notice
         selected = [m.id for m in store.list_materials(scope, content=False)]
+        store.require_egress(selected)
         notice = material_quality_notice(store, selected)
         if notice:
             return notice, {"material_ids": selected, "quality_blocked": True, "quality_notice": notice}

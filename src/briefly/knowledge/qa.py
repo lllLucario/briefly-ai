@@ -119,6 +119,11 @@ class KnowledgeQA:
                 raise KnowledgeConflict("规则处理后的依据包超过固定检索预算，请缩小范围")
             evidence = evidence[:-1]
         warnings = ["仅依据当前可用部分回答，范围内还有未完成索引的资料。"] if unavailable else []
+        from ..links import document_updates, update_notice
+        with knowledge._session() as s:  # 改稿提醒：关联的工作区文件比知识库发布版新（不自动发布）
+            updates = document_updates(s, [e["document_id"] for e in evidence])
+        titles = {e["document_id"]: e["source"]["title"] for e in evidence}
+        warnings += [update_notice(titles[doc_id], update) for doc_id, update in updates.items()]
         if withheld:
             titles = "、".join(dict.fromkeys(f"《{e['source']['title']}》" for e in withheld))
             warnings.append(f"另有 {len(withheld)} 条依据的结构仍有未确认部分（{titles}），未用于回答，请自行核对原文。")

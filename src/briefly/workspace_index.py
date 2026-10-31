@@ -60,6 +60,7 @@ class WorkspaceIndex:
         self._dirty = False
         self._worker: threading.Thread | None = None
         self._unavailable_logged = False
+        self.hooks: list = []  # 每次后台同步之后调用（无参数），不依赖编码器是否可用，如疑似重复检测
 
     # —— 编码器与存储 ——
 
@@ -130,6 +131,11 @@ class WorkspaceIndex:
                     self.sync(encoder)
             except Exception:
                 log.warning("工作区索引后台同步失败，检索前会再次对齐", exc_info=True)
+            for hook in self.hooks:
+                try:
+                    hook()
+                except Exception:
+                    log.warning("工作区同步后的处理失败", exc_info=True)
 
     def wait(self, timeout: float = 30) -> None:
         """等后台同步结束（关闭服务、测试用）。"""

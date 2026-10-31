@@ -111,8 +111,17 @@ def register(app: FastAPI,model_factory):
 
     @app.get("/knowledge-bases/{kb_id}/documents", tags=["知识库"])
     def documents(kb_id: str):
-        return [dict(**document_out(d), active_version_id=version_id, index_status=index_status)
-                for d, version_id, index_status in service.document_states(kb_id)]
+        states = service.document_states(kb_id)
+        updates = app.state.links.document_updates([d.id for d, _, _ in states])  # 关联的工作区文件有更新（改稿提醒）
+        return [dict(**document_out(d), active_version_id=version_id, index_status=index_status,
+                     workspace_update=updates.get(d.id))
+                for d, version_id, index_status in states]
+
+    @app.post("/knowledge-bases/{kb_id}/documents/{doc_id}/copy-to-workspace", tags=["知识库"],
+              summary="把文档当前发布版复制到工作区（材料库），并记显式关联")
+    def copy_to_workspace(kb_id: str, doc_id: str):
+        material, added = app.state.links.copy_to_workspace(app.state.store, kb_id, doc_id)
+        return dict(material_id=material.id, title=material.title, added=added)
 
     @app.post("/knowledge-bases/{kb_id}/documents", tags=["知识库"])
     def attach(kb_id: str, body: AttachIn, response: Response):
@@ -122,6 +131,9 @@ def register(app: FastAPI,model_factory):
             raise
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        from ..materials import KNOWLEDGE
+        if app.state.store.get(body.material_id, content=False, workspace=False).source != KNOWLEDGE:
+            app.state.links.link_explicit(body.material_id, kb_id, doc.id)  # 工作区材料加入知识库：系统记下是同一份
         response.status_code = 201 if created else 200
         return dict(document=document_out(doc), version=version_out(ver), created=created, index_status="not_indexed")
 
