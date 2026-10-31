@@ -25,7 +25,13 @@ def cited_numbers(text: str) -> list[int]:
 
 
 def reference_entry(label: str, item: dict) -> dict:
-    return dict(label=label, reference=item["reference"], title=item["source"]["title"], section=item.get("section"))
+    entry = dict(label=label, reference=item["reference"], title=item["source"]["title"], section=item.get("section"))
+    if item.get("origin") == "workspace":  # 工作区片段：网页按材料编号打开材料，不走知识库引用接口
+        entry.update(origin="workspace", material_id=item["material_id"],
+                     updated_at=item["updated_at"].isoformat(timespec="minutes") if item.get("updated_at") else None)
+    elif item.get("origin") == "knowledge":
+        entry.update(origin="knowledge", kb_name=item.get("kb_name"), version=item.get("number"))
+    return entry
 
 
 class Redactor:
@@ -57,8 +63,84 @@ class Redactor:
 
 
 class KnowledgeQA:
-    def __init__(self, retrieval, model_factory):
-        self.retrieval, self.model_factory = retrieval, model_factory
+    def __init__(self, retrieval, model_factory, workspace=None):
+        """workspace：材料库（MaterialStore）。它接了工作区索引时，选了知识库的提问同时检索工作区（联合检索）。"""
+        self.retrieval, self.model_factory, self.workspace = retrieval, model_factory, workspace
+
+    def _workspace(self, questions):
+        """联合检索的工作区一侧：各子问题的候选按名次交错合并、去重；关联知识库未允许外发的材料不进依据包（警告说明）。
+        返回 (候选, 警告)；没有工作区索引或索引不可用时候选为 None。"""
+        index = getattr(self.workspace, "workspace_index", None)
+        if index is None:
+            return None, []
+        per = [index.evidence(q) for q in questions]
+        if all(items is None for items in per):
+            return None, []
+        merged, seen = [], set()
+        for rank in range(max(len(items or []) for items in per)):
+            for items in per:
+                if items and rank < len(items) and items[rank]["reference"] not in seen:
+                    seen.add(items[rank]["reference"])
+                    merged.append(items[rank])
+        blocked = self.workspace.egress_blocked(list(dict.fromkeys(item["material_id"] for item in merged)))
+        warnings = list(dict.fromkeys(blocked[item["material_id"]] for item in merged if item["material_id"] in blocked))
+        return [item for item in merged if item["material_id"] not in blocked], warnings
+
+    def _compare(self, knowledge, kb_items, ws_items):
+        """关联文档（显式/确认/疑似，或与知识库共用同一份内容）的对照：工作区片段的句子都在知识库发布版里、且依据包里
+        已有那一段的知识库片段时，只保留知识库那条并注明“工作区版本此处一致”；句子不全在时两条都给，工作区那条注明
+        写法不同。返回保留的工作区片段。"""
+        from sqlalchemy import select
+
+        from ..links import DISMISSED, _NOISE, _links_of, _published, sentence_keys
+        from ..materials import Material
+        from .models import KnowledgeVersion
+
+        def flat(text):
+            return _NOISE.sub("", text).lower()
+
+        def covers(text, keys, norm):
+            # 句子都在里面；片段太短没有可比的句子（只有标题）时看去掉标点后的文字是否包含在内
+            return keys.keys() <= sentence_keys(text).keys() if keys else bool(norm) and norm in flat(text)
+
+        def shares(text, keys, norm):
+            return bool(keys.keys() & sentence_keys(text).keys()) if keys else bool(norm) and norm in flat(text)
+
+        kept = []
+        with knowledge._session() as s:
+            versions = {e["document_id"]: s.get(KnowledgeVersion, e["version_id"]) for e in kb_items}
+            full = {}
+            for w in ws_items:
+                docs = {link.document_id for link in _links_of(s, w["material_id"]) if link.kind != DISMISSED}
+                docs |= {doc for doc, version in versions.items() if version is not None and version.content_hash == w["version_id"]}
+                keys, norm = sentence_keys(w["content"]), flat(w["content"])
+                drop = False
+                for doc_id in sorted(docs):
+                    version, material = _published(s, doc_id)
+                    if version is None or material is None or not (keys or norm):
+                        continue
+                    if doc_id not in full:
+                        full[doc_id] = s.scalar(select(Material.content).where(Material.id == material.id)) or ""
+                    title = version.source_snapshot.get("title") or w["source"]["title"]
+                    if covers(full[doc_id], keys, norm):
+                        same = [e for e in kb_items if e["document_id"] == doc_id and shares(e["content"], keys, norm)]
+                        if same:
+                            for e in same:
+                                e["comparison"] = "工作区版本此处一致"
+                            drop = True
+                            break
+                        w["comparison"] = f"与知识库《{title}》第{version.number}版此处一致"
+                    else:
+                        w["comparison"] = f"与知识库《{title}》第{version.number}版此处写法不同"
+                if not drop:
+                    kept.append(w)
+        return kept
+
+    @staticmethod
+    def _merge(kb_items, ws_items):
+        """两侧各自已按相关度排好：按各自名次的 RRF 分数交错合并（同名次知识库在前）。"""
+        ranked = [(1 / (60 + i), 0, i, e) for i, e in enumerate(kb_items, 1)] + [(1 / (60 + i), 1, i, e) for i, e in enumerate(ws_items, 1)]
+        return [e for *_, e in sorted(ranked, key=lambda row: (-row[0], row[1], row[2]))]
 
     def bundle(self, kb_id, questions, *, document_ids=None, allow_partial=False, private_values=(), start=1):
         """本轮依据包。返回 status 及 evidence、references、warnings、authorized；status 为 ready 或
@@ -67,12 +149,24 @@ class KnowledgeQA:
 
         顺序：检索（本地）→ 相关度判断（retrieval.relevant；不相关不外发、不调模型）→ 质量限制 → 范围完整性 →
         脱敏与预算 → 外发授权。
-        多个子问题各自检索，每个保底同样的额度，合并去重；start 为首条依据编号，同一轮多次检索时接续。"""
+        多个子问题各自检索，每个保底同样的额度，合并去重；start 为首条依据编号，同一轮多次检索时接续。
+
+        联合检索（材料库接了工作区索引时）：同时检索工作区，依据总额仍为 KNOWLEDGE_CONTEXT_TOKENS，知识库最多
+        总额 − WORKSPACE_CONTEXT_TOKENS，工作区最多 WORKSPACE_CONTEXT_TOKENS，任一侧用不满时余量给另一侧；
+        两侧各自按相关度下限过滤后交错合并，依据头标明出处。工作区片段同样经质量限制与规则处理，关联知识库未允许
+        外发的材料不进依据包；依据包里有知识库片段时整包仍须该库已授权外发，只有工作区片段时按个人材料规则。"""
         questions = [q.strip() for q in questions if q and q.strip()][:MAX_SUB_QUESTIONS]
         if not questions:
             raise ValueError("请至少提供一个检索问题")
         knowledge = self.retrieval.imports.knowledge
-        share = config.KNOWLEDGE_CONTEXT_TOKENS // len(questions)
+        workspace, warnings = self._workspace(questions)
+        joint = workspace is not None
+        total, ws_need = config.KNOWLEDGE_CONTEXT_TOKENS, 0
+        if workspace:
+            encoder = self.retrieval.imports.encoder_factory()
+            empty = encoder.token_length(evidence_payload("；".join(questions), []))
+            ws_need = encoder.token_length(evidence_payload("；".join(questions), workspace)) - empty
+        share = (total - min(config.WORKSPACE_CONTEXT_TOKENS, ws_need)) // len(questions)
         floor, floor_known = None, False  # 有检索结果时才取：取下限要加载编码器，空库不加载模型
         evidence, seen, unavailable, statuses, nearby = [], set(), [], [], []
         for question in questions:
@@ -89,49 +183,65 @@ class KnowledgeQA:
                     seen.add(item["reference"])
                     target.append({**item, "similarity": similarity(item)})
         base = dict(evidence=evidence, references=[], warnings=[], authorized=knowledge.egress_allowed(kb_id))
-        if not evidence and not nearby:
+        if not evidence and not nearby and not workspace:
             status = next((x for x in statuses if x not in {"no_candidates", "candidates", "partial"}), "no_candidates")
-            return dict(base, status=status, answer="当前范围资料尚未完成索引，请先处理入库状态。" if status == "not_ready"
+            return dict(base, status=status, warnings=warnings, answer="当前范围资料尚未完成索引，请先处理入库状态。" if status == "not_ready"
                         else "当前范围没有可用依据。")
-        if not evidence:
+        if not evidence and not workspace:
             closest = sorted((e for e in nearby if e["similarity"] is not None), key=lambda e: -e["similarity"])[:3]
             lines = [f"- 《{e['source']['title']}》" + (f"：{e['section'].split(' > ')[-1]}" if e.get("section") else "") for e in closest]
-            return dict(base, status="low_relevance", evidence=closest,
+            return dict(base, status="low_relevance", evidence=closest, warnings=warnings,
                         references=[reference_entry(f"出处{i}", e) for i, e in enumerate(closest, 1)],
                         answer=LOW_RELEVANCE + "\n最接近的出处（相关度低于下限，仅供自行核对）：\n" + "\n".join(lines))
+        if joint:
+            with knowledge._session() as s:
+                kb_name = knowledge._kb(s, kb_id).name
+            evidence = [{**e, "origin": "knowledge", "kb_name": kb_name} for e in evidence]
+            workspace = self._compare(knowledge, evidence, workspace or [])
         # 结构未确认的依据不进外发包、不生成归属结论。还有可用依据时只剔除它们并提示核对，而不是整题拒答：
         # 同库任何一份带组织图的 Word 混进依据，原先会让与它无关的问题也无法回答（2026-10-31 真实模型问答发现）
-        withheld = [e for e in evidence if e.get("constraints")]
-        if len(withheld) < len(evidence):
+        combined = [*evidence, *(workspace or [])]
+        withheld = [e for e in combined if e.get("constraints")]
+        if len(withheld) < len(combined):
             evidence = [e for e in evidence if not e.get("constraints")]
-        elif restricted := restricted_answer(evidence):
+            workspace = [e for e in workspace or [] if not e.get("constraints")]
+        elif restricted := restricted_answer(combined):
             return {**base, **restricted}
-        if unavailable and not allow_partial:
+        if unavailable and not allow_partial and evidence:
             return dict(base, status="incomplete_scope", answer="范围内仍有资料未就绪；请完成索引，或明确选择只依据当前可用部分回答。")
         # 整个外发包（问题、标题、原文）一起处理；不发送原始引用ID或聊天历史。合并后超额时从末尾去掉补充片段。
         encoder = self.retrieval.imports.encoder_factory()
+        question = "；".join(questions)
+        selected = []
+        for item in workspace or []:  # 工作区片段：知识库用剩的额度都可以用（至少保底额度）
+            if encoder.token_length(evidence_payload(question, self._merge(evidence, [*selected, item]), start)) <= total:
+                selected.append(item)
+        evidence = self._merge(evidence, selected)
         while True:
             redactor = Redactor(private_values)
-            payload = redactor.text(evidence_payload("；".join(questions), evidence, start))
+            payload = redactor.text(evidence_payload(question, evidence, start))
             if encoder.token_length(payload) <= config.KNOWLEDGE_CONTEXT_TOKENS:
                 break
             if len(evidence) == 1:
                 raise KnowledgeConflict("规则处理后的依据包超过固定检索预算，请缩小范围")
             evidence = evidence[:-1]
-        warnings = ["仅依据当前可用部分回答，范围内还有未完成索引的资料。"] if unavailable else []
+        if unavailable:
+            warnings.append("仅依据当前可用部分回答，范围内还有未完成索引的资料。")
         from ..links import document_updates, update_notice
+        knowledge_items = [e for e in evidence if e.get("origin") != "workspace"]
         with knowledge._session() as s:  # 改稿提醒：关联的工作区文件比知识库发布版新（不自动发布）
-            updates = document_updates(s, [e["document_id"] for e in evidence])
-        titles = {e["document_id"]: e["source"]["title"] for e in evidence}
+            updates = document_updates(s, [e["document_id"] for e in knowledge_items])
+        titles = {e["document_id"]: e["source"]["title"] for e in knowledge_items}
         warnings += [update_notice(titles[doc_id], update) for doc_id, update in updates.items()]
         if withheld:
             titles = "、".join(dict.fromkeys(f"《{e['source']['title']}》" for e in withheld))
             warnings.append(f"另有 {len(withheld)} 条依据的结构仍有未确认部分（{titles}），未用于回答，请自行核对原文。")
-        egress = dict(evidence_sent=len(evidence), history_sent=False, history_evidence=0, materials=0,
-                      redactions=redactor.counts, policy=EGRESS_POLICY)
+        egress = dict(evidence_sent=len(knowledge_items), workspace_sent=len(evidence) - len(knowledge_items),
+                      history_sent=False, history_evidence=0, materials=0, redactions=redactor.counts, policy=EGRESS_POLICY)
         bundle = dict(base, evidence=evidence, warnings=warnings, payload_text=payload, egress=egress,
                       references=[reference_entry(f"依据{i}", e) for i, e in enumerate(evidence, start)])
-        if not base["authorized"]:
+        # 只有工作区片段时按个人材料规则发送（关联知识库未允许外发的已在上面排除）
+        if not base["authorized"] and knowledge_items:
             return dict(bundle, status="external_authorization_required", answer=EGRESS_REQUIRED)
         return dict(bundle, status="ready")
 

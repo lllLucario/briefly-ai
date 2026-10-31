@@ -336,7 +336,7 @@ def create_app(
                 from .intent import IntentFunnel
                 from .knowledge.assistant import KnowledgeAssistant
                 # 知识能力与语义层（本地 Embedding、知识库路由）在知识库服务就绪后接入；未配置 Embedding 时语义层自动跳过
-                knowledge = KnowledgeAssistant(app.state.knowledge_retrieval, model_factory)
+                knowledge = KnowledgeAssistant(app.state.knowledge_retrieval, model_factory, workspace=app.state.store)
                 agent.enable_knowledge(knowledge, IntentFunnel(app.state.knowledge_imports.encoder_factory,
                                                                kb_probe=knowledge.relevance))
                 app.state.agent = agent

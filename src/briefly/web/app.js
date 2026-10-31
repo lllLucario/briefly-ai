@@ -1098,22 +1098,33 @@ function appendMessage(m) {
   return el;
 }
 
+// 外发片段按出处分开计数：知识库片段与工作区（你的文件）片段。
+function egressParts(egress) {
+  const kb = egress?.evidence_sent || 0, ws = egress?.workspace_sent || 0;
+  if (!ws) return `${kb} 个片段`;
+  return kb ? `${kb} 个知识库片段和 ${ws} 个工作区片段` : `${ws} 个工作区片段`;
+}
+
 // 本次实际外发：本轮片段、历史中残留的片段、附带的材料分开说明（助理路径还会带上对话历史）。
 function egressText(egress) {
-  if (!egress?.evidence_sent) return "";
+  if (!egress?.evidence_sent && !egress?.workspace_sent) return "";
   const extra = [egress.history_evidence ? `历史中的 ${egress.history_evidence} 个片段` : "", egress.materials ? `${egress.materials} 份材料内容` : ""].filter(Boolean);
   const history = egress.history_sent ? `，连同对话历史${extra.length ? "及" + extra.join("、") : ""}` : "";
-  return `<span class="muted small" data-egress>已将本轮 ${egress.evidence_sent} 个片段经规则处理后发给外部生成服务${history} · </span>`;
+  return `<span class="muted small" data-egress>已将本轮 ${egressParts(egress)}经规则处理后发给外部生成服务${history} · </span>`;
 }
 
 // 知识回答的原文依据：按稳定引用打开当时的版本，不把模型回答当事实。
 function knowledgeReferences(el, knowledge) {
-  if (!knowledge?.references?.length && !knowledge?.egress?.evidence_sent) return;
+  if (!knowledge?.references?.length && !knowledge?.egress?.evidence_sent && !knowledge?.egress?.workspace_sent) return;
   const box = document.createElement("div");
   box.className = "knowledge-refs";
   box.innerHTML = egressText(knowledge.egress) + (knowledge.references?.length ? `<span class="muted small">核对原文：</span>` : "") + (knowledge.references || []).map((r) =>
-    `<button type="button" class="ghost small" data-chat-reference="${escapeHtml(r.reference)}">${escapeHtml(r.label)} · ${escapeHtml(r.title)}</button>`).join("");
+    r.origin === "workspace"
+      ? `<button type="button" class="ghost small" data-chat-material="${r.material_id}">${escapeHtml(r.label)} · 工作区 · ${escapeHtml(r.title)}</button>`
+      : `<button type="button" class="ghost small" data-chat-reference="${escapeHtml(r.reference)}">${escapeHtml(r.label)} · ${r.origin ? "知识库 · " : ""}${escapeHtml(r.title)}</button>`).join("");
   box.addEventListener("click", async (e) => {
+    const material = e.target.closest("[data-chat-material]");
+    if (material) { showMaterialDetail(Number(material.dataset.chatMaterial)); return; }  // 工作区依据：打开材料
     const button = e.target.closest("[data-chat-reference]");
     if (!button) return;
     try {

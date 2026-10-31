@@ -222,6 +222,53 @@ class WorkspaceIndex:
         query = query.strip()
         if not query:
             raise ValueError("关键词为空")
+        found = self._rank(query, material_ids)
+        if found is None:
+            return None
+        ranked, rows, pending, failed = found
+        hits = self._hits(ranked[:limit], rows, pending)
+        if failed:
+            from .materials import MaterialStore
+            hits += [replace(h, keyword_only=True) for h in MaterialStore(self.engine).search(query, sorted(failed))]
+        return hits[:limit]
+
+    def evidence(self, query: str, *, limit: int = 5) -> list[dict] | None:
+        """联合检索（三期）用：工作区里与问题相关的原文片段，形状与知识库依据一致（标题、章节、原文、续表表头、
+        质量限制），另带 origin="workspace"、材料编号、更新时间与稳定引用 wsref。索引不可用时返回 None。
+        切片失败的材料不参与（联合检索只用有位置的片段）。"""
+        query = query.strip()
+        found = self._rank(query, None) if query else None
+        if found is None:
+            return None
+        ranked, rows, pending, _ = found
+        ranked = ranked[:limit]
+        ids = {rows[e["slice"]][1] for e in ranked}
+        with Session(self.engine) as s:
+            materials = {m.id: m for m in s.scalars(select(Material).where(Material.id.in_(ids)))}
+        with self.connect() as db:
+            texts = dict(db.execute(f"SELECT id, embedding_text FROM slices WHERE id IN ({','.join('?' * len(ranked))})",
+                                    [e["slice"] for e in ranked])) if ranked else {}
+        from types import SimpleNamespace
+        from .knowledge.service import _table_header
+        out = []
+        for e in ranked:
+            _, material_id, number, section, start, end = rows[e["slice"]]
+            material = materials.get(material_id)
+            if material is None:
+                continue
+            content = material.content[start:end]
+            out.append(dict(origin="workspace", reference=f"wsref:{material_id}:{start}:{end}:{sha256(content)[:16]}",
+                            material_id=material_id, document_id=f"ws:{material_id}", version_id=material.content_hash,
+                            number=None, business_version=None, source=dict(title=material.title), section=section or None,
+                            start=start, end=end, content=content, updated_at=material.created_at,
+                            table_header=_table_header(SimpleNamespace(content=content, embedding_text=texts.get(e["slice"]))),
+                            constraints=constraints(material.parse_report or {}, start, end),
+                            keyword_only=material_id in pending and similarity(e) is None,
+                            similarity=similarity(e), retrieval=e["retrieval"]))
+        return out
+
+    def _rank(self, query: str, material_ids: list[int] | None):
+        """(排序后的候选, 切片行, 向量未就绪的材料, 切片失败的材料)；索引不可用或范围不在索引里时返回 None。"""
         encoder = self.encoder()
         if encoder is None:
             return None
@@ -234,7 +281,7 @@ class WorkspaceIndex:
                 return None
             eligible = set(material_ids)
         if not eligible:
-            return []
+            return [], {}, set(), set()
         vector = vector_blob(encoder.embed_query(query), encoder.identity["dimension"])
         with self.connect() as db:
             db.execute("CREATE TEMP TABLE scope (material_id INTEGER PRIMARY KEY)")
@@ -268,11 +315,7 @@ class WorkspaceIndex:
                 ranked = [e for e in ranked if any(r["route"] == "lexical" for r in e["retrieval"]["routes"])]
             else:
                 ranked = [e for e in ranked if (x := similarity(e)) is None or x >= floor or both_routes(e)]
-        hits = self._hits(ranked[:limit], rows, pending)
-        if failed:
-            from .materials import MaterialStore
-            hits += [replace(h, keyword_only=True) for h in MaterialStore(self.engine).search(query, sorted(failed))]
-        return hits[:limit]
+        return ranked, rows, pending, failed
 
     def _hits(self, ranked, rows, pending) -> list[SearchHit]:
         ids = {rows[e["slice"]][1] for e in ranked}

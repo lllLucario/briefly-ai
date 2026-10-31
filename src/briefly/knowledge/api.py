@@ -63,7 +63,7 @@ def register(app: FastAPI,model_factory):
     retrieval = RetrievalService(app.state.knowledge_imports)
     app.state.knowledge_retrieval = retrieval
     from .qa import KnowledgeQA
-    qa = KnowledgeQA(retrieval, model_factory)
+    qa = KnowledgeQA(retrieval, model_factory, workspace=app.state.store)  # 联合检索：同时检索工作区
 
     @app.post("/knowledge-bases/{kb_id}/answer", tags=["知识库"])
     def answer(kb_id: str, body: AnswerIn):

@@ -57,3 +57,23 @@ def test_copy_suggest_confirm_and_document_update_hint(web_page):
     open_knowledge(page)
     expect(page.locator("[data-kb-workspace-update]")).to_contain_text("《值班制度修订稿》），知识库仍为第 1 版")
     expect(page.locator("#kb-documents")).to_contain_text("修订 1")
+
+
+def test_joint_answer_labels_workspace_evidence_and_counts_egress_by_origin(web_page):
+    page = web_page
+    saved = page.request.post(base(page) + "/materials", data={"title": "我的值班笔记", "content": "周三客诉两起，值班主管都在十分钟左右到场，加班餐须预订前审批。"})
+    assert saved.ok
+    open_knowledge(page)
+    create(page, "运营制度")
+    import_file(page, POLICY)
+    page.locator("#kb-external").check()
+    expect(page.locator("#kb-message")).to_contain_text("已允许本知识库外发")
+    page.locator("#kb-question").fill("值班主管客诉多久到场？")
+    page.locator("#kb-ask").click()
+    result = page.locator("#kb-result")
+    expect(result).to_contain_text("草稿回答")
+    expect(result).to_contain_text("个知识库片段和 1 个工作区片段")
+    expect(result.locator("[data-ws-material]")).to_contain_text("工作区 · 我的值班笔记")
+    expect(result.locator("[data-kb-reference]").first).to_contain_text("知识库 · 制度.md")
+    result.locator("[data-ws-material]").click()
+    expect(page.locator("#material-title")).to_have_text("我的值班笔记")

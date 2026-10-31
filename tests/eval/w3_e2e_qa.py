@@ -6,6 +6,11 @@
 用法（仓库根目录）：
     python tests/eval/w3_e2e_qa.py build .tmp/e2e-kb             # 生成 docx/PDF 并本地入库，不外发
     python tests/eval/w3_e2e_qa.py run .tmp/e2e-kb --allow-external-fictional -n 3 [--split dev] [--path assistant|qa] [-k R01 C02]
+    python tests/eval/w3_e2e_qa.py workspace .tmp/e2e-kb         # 把虚构工作区文件加入同一库的材料库并建工作区索引，不外发
+    python tests/eval/w3_e2e_qa.py run .tmp/e2e-kb --mixed --allow-external-fictional -n 3   # “工作区＋知识库”混合题（联合检索）
+
+--mixed：题集换成 cases_mixed.jsonl，助理与知识问答都接上工作区索引（选了知识库时同时检索工作区）；外发前核对
+材料库里只有 workspace.json 的虚构文件，否则拒绝。
 
 --path assistant（默认）走网页助理同一链路：意图漏斗 → 知识捷径或智能体调用 search_knowledge → 回答；
 --path qa 直接调用知识问答接口同一函数（KnowledgeQA.answer）。
@@ -31,12 +36,38 @@ FIXTURES = Path(__file__).parent / "fixtures" / "w3_e2e"
 KB_NAME = "端到端评测虚构资料库"
 
 
+def load_workspace() -> list[dict]:
+    return json.loads((FIXTURES / "workspace.json").read_text(encoding="utf-8"))["files"]
+
+
+def attach_workspace(root: Path, engine, store, encoder):
+    """给评测库的材料库接上工作区索引（与网页后端相同的 WorkspaceIndex），并同步一次。"""
+    from briefly.workspace_index import WorkspaceIndex
+    store.workspace_index = WorkspaceIndex(engine, root / "workspace.sqlite", lambda: encoder)
+    return store.workspace_index.sync(encoder)
+
+
+def add_workspace(root: Path) -> None:
+    """把虚构工作区文件加入评测库的材料库（按内容去重，可重复执行）并建工作区索引；只在本地，不外发。"""
+    from briefly.llm import create_local_embeddings
+    encoder = create_local_embeddings(config.EMBEDDING_DIR)
+    engine, imports = open_imports(root, encoder)
+    try:
+        for item in load_workspace():
+            material, created = imports.store.add_text(item["title"], item["content"], markdown=True)
+            print(item["id"], material.id, "新加入" if created else "已存在", flush=True)
+        print("工作区索引：", attach_workspace(root, engine, imports.store, encoder))
+    finally:
+        engine.dispose()
+
+
 def load_documents() -> list[dict]:
     return json.loads((FIXTURES / "documents.json").read_text(encoding="utf-8"))["documents"]
 
 
-def load_cases(split: str, keys: list[str]) -> list[dict]:
-    cases = [json.loads(line) for line in (FIXTURES / "cases.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+def load_cases(split: str, keys: list[str], mixed: bool = False) -> list[dict]:
+    name = "cases_mixed.jsonl" if mixed else "cases.jsonl"
+    cases = [json.loads(line) for line in (FIXTURES / name).read_text(encoding="utf-8").splitlines() if line.strip()]
     if keys:
         return [c for c in cases if c["id"] in keys]
     return [c for c in cases if split == "all" or c["split"] == split]
@@ -112,7 +143,7 @@ def run(root: Path, args) -> None:
 
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     documents = {d["id"]: d for d in load_documents()}
-    cases = load_cases(args.split, args.k)
+    cases = load_cases(args.split, args.k, args.mixed)
     encoder = create_local_embeddings(config.EMBEDDING_DIR)
     engine, imports = open_imports(root, encoder)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -121,6 +152,13 @@ def run(root: Path, args) -> None:
         bases = imports.knowledge.list_bases()
         if [b.name for b in bases] != [KB_NAME]:
             raise SystemExit("不是本脚本建的虚构资料库，拒绝外发")
+        if args.mixed:
+            # 联合检索会把工作区片段发给模型：材料库里只能有虚构工作区文件
+            fixtures = {item["title"] for item in load_workspace()}
+            titles = {m.title for m in imports.store.list_materials(content=False)}
+            if not titles or not titles <= fixtures:
+                raise SystemExit(f"材料库里有非虚构工作区文件或尚未加入（先运行 workspace 子命令）：{sorted(titles - fixtures)}，拒绝外发")
+            attach_workspace(root, engine, imports.store, encoder)
         imports.knowledge.set_egress(kb_id, True)  # 已核对为专用虚构资料库，按库授权外发
         rows, events = answer_cases(imports, encoder, kb_id, cases, lambda c: case_format(c, documents), args, stamp)
     finally:
@@ -138,14 +176,19 @@ def answer_cases(imports, encoder, kb_id, cases, doc_format_of, args, stamp):
 
     rows, events = [], []
     titles, corpus = library(imports, kb_id)
+    mixed = getattr(args, "mixed", False)
+    if mixed:  # 工作区文件也是判分依据：编号 → 材料标题，原文计入数字出处
+        for item in load_workspace():
+            titles[item["id"]] = item["title"]
+            corpus.append(item["content"])
     retrieval = RetrievalService(imports)
     model_factory = lambda: create_chat_model(max_retries=1, timeout=90)
-    knowledge = KnowledgeAssistant(retrieval, model_factory)
+    knowledge = KnowledgeAssistant(retrieval, model_factory, workspace=imports.store if mixed else None)
     if args.path == "assistant":
         agent = Agent(model_factory(), store=imports.store)
         agent.enable_knowledge(knowledge, IntentFunnel(lambda: encoder, kb_probe=knowledge.relevance))
     for case in cases:
-        evidence = local_evidence(retrieval, kb_id, case["question"])
+        evidence = joint_evidence(knowledge.qa, kb_id, case["question"]) if mixed else local_evidence(retrieval, kb_id, case["question"])
         doc_format = doc_format_of(case)
         for repeat in range(args.n):
             started = perf_counter()
@@ -180,8 +223,10 @@ def answer_cases(imports, encoder, kb_id, cases, doc_format_of, args, stamp):
 
 
 def write_report(out: Path, args, root: Path, documents: dict, rows, events, stamp) -> None:
+    if getattr(args, "mixed", False):
+        out = out.with_name(out.name + "-mixed")
     out.mkdir(parents=True, exist_ok=False)
-    report = dict(path=args.path, n=args.n, split=args.split, model=config.MODEL, created=stamp, kb_root=str(root),
+    report = dict(path=args.path, n=args.n, split=args.split, mixed=getattr(args, "mixed", False), model=config.MODEL, created=stamp, kb_root=str(root),
                   documents=documents,
                   summary={split: summarize([r for r in rows if split == "all" or r["split"] == split])
                            for split in ("all", "dev", "holdout")},
@@ -210,8 +255,14 @@ def local_evidence(retrieval, kb_id, question):
             for e in result["evidence"]]
 
 
+def joint_evidence(qa, kb_id, question):
+    """混合题：本轮联合依据包（本地组装，不调用模型）里两类片段，按标题对应资料；质量限制剔除的另记。"""
+    bundle = qa.bundle(kb_id, [question], allow_partial=True)
+    return [dict(title=e["source"]["title"], content=e["content"], withheld=False) for e in bundle["evidence"]]
+
+
 def case_format(case, documents):
-    formats = {documents[g["doc"]]["format"] for g in case["gold"]}
+    formats = {documents[g["doc"]]["format"] if g["doc"] in documents else "workspace" for g in case["gold"]}
     return "pdf" if "pdf" in formats else "docx" if formats else "none"
 
 
@@ -261,7 +312,8 @@ def rescore(results: Path) -> None:
 
 def render(report: dict, events: list[dict]) -> str:
     lines = [f"# 端到端问答评测 {report['created']}", "",
-             f"- 链路：{report['path']}；模型：{report['model']}；每题 {report['n']} 次；题集：{report['split']}；出错 {report['errors']} 次",
+             f"- 链路：{report['path']}；模型：{report['model']}；每题 {report['n']} 次；题集：{report['split']}"
+             + ("（工作区＋知识库混合题，联合检索）" if report.get("mixed") else "") + f"；出错 {report['errors']} 次",
              "- 判分为规则核对（要点串、拒答写法、无出处数字、字数），不是人工或模型评审；失败明细需人工复核。",
              "- 检索命中按质量限制剔除前的本地检索结果计；“命中但依据被剔除”指命中的片段全部带结构未确认限制、不会交给模型。", ""]
     for split, groups in report["summary"].items():
@@ -285,9 +337,12 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     b = sub.add_parser("build")
     b.add_argument("root", type=Path)
+    w = sub.add_parser("workspace", help="把虚构工作区文件加入评测库并建工作区索引（不外发）")
+    w.add_argument("root", type=Path)
     r = sub.add_parser("run")
     r.add_argument("root", type=Path)
     r.add_argument("--allow-external-fictional", action="store_true")
+    r.add_argument("--mixed", action="store_true", help="工作区＋知识库混合题（联合检索）")
     r.add_argument("--path", choices=["assistant", "qa"], default="assistant")
     r.add_argument("--split", choices=["dev", "holdout", "all"], default="all")
     r.add_argument("-n", type=int, default=3)
@@ -300,6 +355,8 @@ def main():
         parser.error("需要本地 Embedding 目录（.env 的 BRIEFLY_EMBEDDING_DIR）")
     if args.command == "build":
         build(args.root)
+    elif args.command == "workspace":
+        add_workspace(args.root)
     elif args.command == "rescore":
         rescore(args.results)
     else:

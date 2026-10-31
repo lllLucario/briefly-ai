@@ -197,9 +197,11 @@
     $("#kb-result").innerHTML = `<h4>${escapeHtml(statuses[result.status] || result.status)}</h4><div class="markdown">${renderMaterialMarkdown(result.answer || "")}</div>
       ${result.stale ? '<p class="danger small">引用所对应的文档已更新或移出，请重新检索；旧引用仍可核对原版本。</p>' : ""}
       ${(result.warnings || []).map(note => `<p class="danger small">${escapeHtml(note)}</p>`).join("")}
-      ${result.model_called && result.egress ? `<p class="muted small">本次已将问题与 ${result.egress.evidence_sent} 个片段经规则处理后发送给外部生成服务。</p>` : ""}
+      ${result.model_called && result.egress ? `<p class="muted small">本次已将问题与 ${egressParts(result.egress)}经规则处理后发送给外部生成服务。</p>` : ""}
       ${(result.evidence || []).length ? '<h4>核对原文与版本</h4>' : ""}
-      ${(result.evidence || []).map((item, i) => `<button class="ghost small" data-kb-reference="${escapeHtml(item.reference)}">依据${i+1} · ${escapeHtml(item.source.title)}</button>`).join("")}`;
+      ${(result.evidence || []).map((item, i) => item.origin === "workspace"
+        ? `<button class="ghost small" data-ws-material="${item.material_id}">依据${i+1} · 工作区 · ${escapeHtml(item.source.title)}</button>`
+        : `<button class="ghost small" data-kb-reference="${escapeHtml(item.reference)}">依据${i+1} · ${item.origin ? "知识库 · " : ""}${escapeHtml(item.source.title)}</button>`).join("")}`;
   }
   $("#kb-ask").addEventListener("click", async () => {
     const id = current, d = draft(id), seq = ++d.seq;
@@ -212,6 +214,8 @@
     finally { d.asking = false; if (current === id) { $("#kb-ask").disabled = false; message(d.message === "正在核验当前范围的依据。" ? "核验已完成，请核对回答与原文。" : d.message, id); } }
   });
   $("#kb-result").addEventListener("click", async event => {
+    const material = event.target.closest("[data-ws-material]");
+    if (material) { showMaterialDetail(Number(material.dataset.wsMaterial)); return; }  // 工作区依据：打开材料
     const button = event.target.closest("[data-kb-reference]"); if (!button) return;
     const id = current, rev = revision;
     try {
