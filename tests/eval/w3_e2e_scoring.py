@@ -23,7 +23,8 @@ def normalize(text: str) -> str:
     text = unicodedata.normalize("NFKC", text or "")
     text = re.sub(r"(?<=\d),(?=\d{3})", "", text)
     text = re.sub(r"[—–‐‑−~～]", "-", text)  # 区间连接号写法不同算同一个
-    return re.sub(r"\s+", "", text).lower()
+    # 表格还原成 Markdown 后单元格之间多了竖线：gold“岗位定员 1 人”应能对上“| 岗位定员 | 1 人 |”
+    return re.sub(r"[\s|]+", "", text).lower()
 
 
 # 回答常在中文词后括注双语表格里的英文原词，如“机密（confidential）级信息”；去掉括注后也算命中

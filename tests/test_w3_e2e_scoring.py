@@ -1,5 +1,5 @@
 """端到端问答评测判分规则（tests/eval/w3_e2e_scoring.py）；不调用模型。"""
-from tests.eval.w3_e2e_scoring import abstained, normalize, retrieval_hit, score, summarize
+from tests.eval.w3_e2e_scoring import abstained, contains, normalize, retrieval_hit, score, summarize
 
 TITLES = {"D1": "差旅与费用报销管理办法.docx", "D6": "云笺协同办公平台用户手册.pdf"}
 CORPUS = ["一类城市经理及以上每晚750元，普通员工550元。", "专业版单文件上限 2GB，回收站保留30 天。"]
@@ -15,6 +15,7 @@ def case(**kw):
 def test_normalize_ignores_width_spaces_and_thousands():
     assert normalize("３０ 天") == normalize("30天")
     assert normalize("1,200 元") == "1200元"
+    assert contains("| 岗位定员 | 1 人 |", "岗位定员 1 人")  # 表格单元格之间的竖线不影响对上原文
 
 
 def test_english_gloss_in_parentheses_does_not_hide_a_point():
