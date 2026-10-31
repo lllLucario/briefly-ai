@@ -48,7 +48,7 @@ def test_upload_gbk_csv(client):
 @pytest.mark.parametrize(
     ("files", "message"),
     [
-        ({"file": ("a.pptx", b"x")}, "不支持的文件类型"),
+        ({"file": ("a.key", b"x")}, "不支持的文件类型"),
         ({"file": ("坏.docx", b"not a zip")}, "文件无法解析"),
         ({"file": ("空.txt", b"   ")}, "未从文件中提取到文字"),
     ],

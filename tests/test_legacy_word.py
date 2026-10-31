@@ -35,7 +35,7 @@ def converted(monkeypatch,tmp_path):
     executable.write_bytes(b"fake")
     monkeypatch.setattr(config,"LIBREOFFICE_PATH",str(executable))
     commands=[]
-    def run(command):
+    def run(command, **_):
         commands.append(command)
         source=Path(command[-1])
         assert source.read_bytes().startswith(legacy_word.OLE_HEADER)
@@ -76,10 +76,10 @@ def test_invalid_or_renamed_document_is_not_success(payload):
 
 
 def test_no_output_or_invalid_output_is_not_success(converted,monkeypatch):
-    monkeypatch.setattr(legacy_word,"_run",lambda _:None)
+    monkeypatch.setattr(legacy_word,"_run",lambda *_,**__:None)
     with pytest.raises(ValueError,match="未获得有效转换结果"):
         load_document("a.doc",legacy_word.OLE_HEADER)
-    def invalid(command):
+    def invalid(command, **_):
         (Path(command[command.index("--outdir")+1])/"source.docx").write_bytes(b"bad")
     monkeypatch.setattr(legacy_word,"_run",invalid)
     with pytest.raises(ValueError,match="不是有效"):

@@ -125,7 +125,7 @@ def test_pdf_without_text_rejected(store):
 
 def test_unsupported_and_oversized_files_rejected(store, monkeypatch):
     with pytest.raises(ValueError, match="不支持"):
-        store.add_file("a.pptx", b"x")
+        store.add_file("a.key", b"x")
     monkeypatch.setattr(config, "MAX_UPLOAD_MB", 0)
     with pytest.raises(ValueError, match="上限"):
         store.add_file("a.txt", b"x")

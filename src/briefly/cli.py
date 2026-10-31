@@ -112,7 +112,7 @@ def main() -> None:
         sys.exit(intent_log_main(sys.argv[2:]))
     ap = argparse.ArgumentParser(prog="briefly", description="办公 AI Agent（追踪文件见 briefly track -h，周报见 briefly weekly -h，意图记录见 briefly intent-log -h）")
     ap.add_argument(
-        "input", nargs="?", help="文件路径（txt/md/doc/docx/pdf/xlsx/csv）或飞书文档链接，- 表示标准输入；不填则进入对话模式"
+        "input", nargs="?", help="文件路径（txt/md/doc/docx/pdf/xlsx/xls/csv/pptx/ppt）或飞书文档链接，- 表示标准输入；不填则进入对话模式"
     )
     ap.add_argument("-s", "--skill", choices=list(SKILLS), help="指定能力；不指定则由模型判断")
     ap.add_argument("-e", "--extra", default="", help="额外要求，如“控制在200字内”")

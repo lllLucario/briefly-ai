@@ -4,7 +4,7 @@ from io import BytesIO
 from pathlib import Path
 from time import perf_counter
 
-SUPPORTED_TYPES = ("txt", "md", "doc", "docx", "pdf", "xlsx", "csv")
+SUPPORTED_TYPES = ("txt", "md", "doc", "docx", "pdf", "xlsx", "xls", "csv", "pptx", "ppt")
 
 
 @dataclass
@@ -94,6 +94,13 @@ def _load(kind: str, data: bytes) -> LoadedDocument:
         from .tables import load_xlsx
 
         return load_xlsx(data)
+    if kind == "pptx":
+        tick = perf_counter()
+        doc = _load_pptx(data)
+        doc.report = {**doc.report, "timings": {"document_parse_seconds": round(perf_counter() - tick, 6)}}
+        return doc
+    if kind in ("xls", "ppt"):
+        return _load_converted(kind, data)
     if kind == "csv":
         from .tables import load_csv
 
@@ -151,6 +158,72 @@ def _load_docx(data: bytes) -> LoadedDocument:
     return LoadedDocument(text, markdown=True, report=report)
 
 
+def _load_converted(kind: str, data: bytes) -> LoadedDocument:
+    """旧版 .xls/.ppt：本地 LibreOffice 转成 .xlsx/.pptx 后按新格式解析。"""
+    from .legacy_word import LEGACY, convert_legacy
+
+    timings = {}
+    tick = perf_counter()
+    converted = convert_legacy(data, kind)
+    timings["conversion_seconds"] = round(perf_counter() - tick, 6)
+    tick = perf_counter()
+    if kind == "xls":
+        from .tables import load_xlsx
+
+        doc = load_xlsx(converted)
+    else:
+        doc = _load_pptx(converted)
+    timings["document_parse_seconds"] = round(perf_counter() - tick, 6)
+    target = LEGACY[kind][2]
+    doc.report = {**doc.report, "original_format": kind, "conversion": f"libreoffice-to-{target}", "timings": timings,
+                  "warnings": [*doc.report.get("warnings", []), f"旧版 .{kind} 经本地转换后解析，复杂格式请核对原文件"]}
+    return doc
+
+
+def _load_pptx(data: bytes) -> LoadedDocument:
+    """用 docling 读幻灯片：每页一节，标题写成“第N页 标题”，便于引用定位；
+    每页都重复的页脚、日期和单独的页码行去掉；演讲者备注并入对应页；图片里的文字不识别。"""
+    import re
+    from collections import Counter
+
+    from docling.datamodel.base_models import DocumentStream
+    from docling_core.types.doc import ContentLayer, PictureItem, SectionHeaderItem, TextItem, TitleItem
+
+    doc = _docling_converter("pptx").convert(DocumentStream(name="a.pptx", stream=BytesIO(data))).document
+    for item, _ in doc.iterate_items():
+        if isinstance(item, TextItem) and not isinstance(item, (SectionHeaderItem, TitleItem)):
+            item.text = escape_heading_marks(item.text)
+    # 按每项的页码逐页导出；整篇导出的分页标记在没有占位框的空白版式页上会错位
+    slides = [doc.export_to_markdown(page_no=n, escape_html=False, escape_underscores=False, image_placeholder="",
+                                     compact_tables=True).strip("\n") for n in sorted(doc.pages)]
+    notes: dict[int, list[str]] = {}
+    for item in doc.texts:
+        if item.content_layer == ContentLayer.NOTES and item.text.strip() and item.prov:
+            notes.setdefault(item.prov[0].page_no, []).append(item.text.strip())
+    # 至少 3 页、半数以上页面都出现的同一行（页脚、公司名、日期）是版式装饰
+    seen = Counter(line.strip() for s in slides for line in {l for l in s.splitlines() if l.strip()}
+                   if not line.lstrip().startswith(("#", "|")))
+    repeated = {line for line, n in seen.items() if len(slides) >= 3 and n >= max(3, len(slides) / 2)}
+    blocks = []
+    for n, slide in enumerate(slides, start=1):
+        lines = [l for l in slide.splitlines() if l.strip() not in repeated and l.strip() != str(n)]
+        title = next((i for i, l in enumerate(lines) if l.startswith("# ")), None)
+        if title is None:
+            lines.insert(0, f"# 第{n}页")
+        else:
+            lines[title] = f"# 第{n}页 " + " ".join(lines[title][2:].split())
+        if notes.get(n):
+            lines += ["", "备注：" + "\n".join(notes[n])]
+        blocks.append("\n".join(lines).strip())
+    text = re.sub(r"\n{3,}", "\n\n", "\n\n".join(blocks)).replace("&#124;", "\\|")
+    pictures = sum(1 for item, _ in doc.iterate_items() if isinstance(item, PictureItem))
+    report = {"parser": "docling", "structure": "pptx_slides", "slides": len(slides),
+              "notes": sum(len(v) for v in notes.values()), "pictures": pictures}
+    if pictures:
+        report["warnings"] = [f"幻灯片中有 {pictures} 张图片，未识别图片里的文字，请核对原文件"]
+    return LoadedDocument(text, markdown=True, report=report)
+
+
 def _unmerge(cells):
     """把合并单元格拆成单格，按 tables.merged_value 的规则决定每格显示什么。
 
@@ -183,18 +256,17 @@ def _unmerge(cells):
     return out
 
 
-_converter = None
+_converters = {}
 
 
-def _docling_converter():
-    """docling 初始化较慢，进程内只建一次。"""
-    global _converter
-    if _converter is None:
+def _docling_converter(kind="docx"):
+    """docling 初始化较慢，每种格式进程内只建一次。"""
+    if kind not in _converters:
         from docling.datamodel.base_models import InputFormat
         from docling.document_converter import DocumentConverter
 
-        _converter = DocumentConverter(allowed_formats=[InputFormat.DOCX])
-    return _converter
+        _converters[kind] = DocumentConverter(allowed_formats=[InputFormat(kind)])
+    return _converters[kind]
 
 
 def load_text(path: str | Path) -> str:

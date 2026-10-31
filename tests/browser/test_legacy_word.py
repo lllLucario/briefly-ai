@@ -21,7 +21,7 @@ def test_old_word_upload_and_rich_preview(web_page,monkeypatch,tmp_path):
     doc.add_paragraph("住宿上限650元，须事前审批。")
     stream=BytesIO()
     doc.save(stream)
-    def fake_conversion(command):
+    def fake_conversion(command, **_):
         destination=Path(command[command.index("--outdir")+1])/"source.docx"
         destination.write_bytes(stream.getvalue())
     monkeypatch.setattr(legacy_word,"_run",fake_conversion)

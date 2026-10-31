@@ -1,4 +1,4 @@
-"""旧版Word在本地转换成docx；独立临时目录和配置，不修改原文件。"""
+"""旧版Office（Word .doc、Excel .xls、PowerPoint .ppt）在本地转换成新格式；独立临时目录和配置，不修改原文件。"""
 from io import BytesIO
 import os
 from pathlib import Path
@@ -12,6 +12,12 @@ from zipfile import BadZipFile, ZipFile
 from . import config
 
 OLE_HEADER = bytes.fromhex("d0cf11e0a1b11ae1")
+# 旧格式 → (软件名, LibreOffice 导出筛选器, 新格式后缀, 转换结果里必须有的部件)
+LEGACY = {
+    "doc": ("Word", "docx:Office Open XML Text", "docx", "word/document.xml"),
+    "xls": ("Excel", "xlsx:Calc MS Excel 2007 XML", "xlsx", "xl/workbook.xml"),
+    "ppt": ("PowerPoint", "pptx:Impress MS PowerPoint 2007 XML", "pptx", "ppt/presentation.xml"),
+}
 _slots = BoundedSemaphore(2)
 
 
@@ -32,10 +38,11 @@ def converter_path():
             path = Path(base)/"LibreOffice"/"program"/"soffice.com"
             if path.is_file():
                 return str(path)
-    raise ValueError("解析旧版 .doc 需要服务端安装 LibreOffice，或配置 BRIEFLY_LIBREOFFICE 指向 soffice；.docx 可直接解析")
+    raise ValueError("解析旧版 .doc/.xls/.ppt 需要服务端安装 LibreOffice，或配置 BRIEFLY_LIBREOFFICE 指向 soffice；"
+                     ".docx/.xlsx/.pptx 可直接解析")
 
 
-def _run(command, *, action="转换"):
+def _run(command, *, action="转换", label="旧版 .doc"):
     options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
     process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL, **options)
@@ -50,21 +57,27 @@ def _run(command, *, action="转换"):
         else:
             os.killpg(process.pid, signal.SIGKILL)
         process.wait(timeout=10)
-        raise ValueError(f"旧版 .doc {action}超时；请检查文件是否损坏、加密或过于复杂") from exc
+        raise ValueError(f"{label} {action}超时；请检查文件是否损坏、加密或过于复杂") from exc
     if process.returncode != 0:
-        raise ValueError(f"旧版 .doc {action}失败；请检查文件是否损坏或受密码保护")
+        raise ValueError(f"{label} {action}失败；请检查文件是否损坏或受密码保护")
 
 
 def convert_doc(data: bytes) -> bytes:
-    if not (data.startswith(OLE_HEADER) or data.lstrip().startswith(b"{\\rtf")):
-        raise ValueError("文件不是可识别的旧版 Word .doc 文档；仅更改后缀不能转换文件格式")
+    return convert_legacy(data, "doc")
+
+
+def convert_legacy(data: bytes, kind: str) -> bytes:
+    app, export, suffix, part = LEGACY[kind]
+    # 旧版 Office 都是 OLE 复合文档；.doc 另接受 RTF（常见后缀为 .doc 的 RTF 文件）
+    if not (data.startswith(OLE_HEADER) or kind == "doc" and data.lstrip().startswith(b"{\\rtf")):
+        raise ValueError(f"文件不是可识别的旧版 {app} .{kind} 文档；仅更改后缀不能转换文件格式")
     executable = converter_path()
     if not _slots.acquire(timeout=5):
-        raise ValueError("旧版 Word 转换任务繁忙，请稍后重试")
+        raise ValueError(f"旧版 {app} 转换任务繁忙，请稍后重试")
     try:
-        with TemporaryDirectory(prefix="briefly-word-") as temporary:
+        with TemporaryDirectory(prefix="briefly-office-") as temporary:
             folder = Path(temporary)
-            source, target = folder/"source.doc", folder/"output"
+            source, target = folder/f"source.{kind}", folder/"output"
             source.write_bytes(data)
             target.mkdir()
             profile = folder/"profile"
@@ -79,18 +92,18 @@ def convert_doc(data: bytes) -> bytes:
                 '<prop oor:name="DisableMacrosExecution" oor:op="fuse"><value>true</value></prop>'
                 '</item></oor:items>', encoding="utf-8")
             _run([executable, "-env:UserInstallation="+profile.as_uri(), "--headless", "--nologo",
-                  "--nodefault", "--norestore", "--convert-to", "docx:Office Open XML Text",
-                  "--outdir", str(target), str(source)])
-            converted = target/"source.docx"
+                  "--nodefault", "--norestore", "--convert-to", export,
+                  "--outdir", str(target), str(source)], label=f"旧版 .{kind}")
+            converted = target/f"source.{suffix}"
             if not converted.is_file() or not 0 < converted.stat().st_size <= 50*1024*1024:
                 raise ValueError("未获得有效转换结果，文件可能损坏、加密或转换结果超过50MB")
             payload = converted.read_bytes()
             try:
                 with ZipFile(BytesIO(payload)) as archive:
-                    if "word/document.xml" not in archive.namelist():
-                        raise ValueError("转换结果不是有效的Word文档")
+                    if part not in archive.namelist():
+                        raise ValueError(f"转换结果不是有效的{app}文档")
             except BadZipFile as exc:
-                raise ValueError("转换结果不是有效的docx文件") from exc
+                raise ValueError(f"转换结果不是有效的{suffix}文件") from exc
             return payload
     finally:
         _slots.release()

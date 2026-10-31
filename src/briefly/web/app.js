@@ -80,10 +80,10 @@ function renderMarkdown(text) {
 // 文件类型图标（内联 SVG）：本地文件按扩展名显示带颜色的类型标签，文件夹、飞书文档、多维表格、妙记各有图形
 const FILE_LABELS = {
   pdf: ["PDF", "#e5484d"], docx: ["DOC", "#2f6fed"], doc: ["DOC", "#2f6fed"], xlsx: ["XLS", "#1f9d55"], xls: ["XLS", "#1f9d55"],
-  csv: ["CSV", "#1f9d55"], md: ["MD", "#6b7280"], txt: ["TXT", "#6b7280"],
+  csv: ["CSV", "#1f9d55"], pptx: ["PPT", "#d9622b"], ppt: ["PPT", "#d9622b"], md: ["MD", "#6b7280"], txt: ["TXT", "#6b7280"],
 };
 const KIND_NAMES = {
-  folder: "文件夹", pdf: "PDF", docx: "Word", doc: "Word", xlsx: "Excel", xls: "Excel", csv: "CSV", md: "Markdown", txt: "文本",
+  folder: "文件夹", pdf: "PDF", docx: "Word", doc: "Word", xlsx: "Excel", xls: "Excel", csv: "CSV", pptx: "PowerPoint", ppt: "PowerPoint", md: "Markdown", txt: "文本",
   feishu: "飞书文档", bitable: "多维表格", minutes: "妙记", wiki: "知识库", sheet: "电子表格", paste: "粘贴",
 };
 
