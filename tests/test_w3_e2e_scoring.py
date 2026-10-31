@@ -17,6 +17,13 @@ def test_normalize_ignores_width_spaces_and_thousands():
     assert normalize("1,200 元") == "1200元"
 
 
+def test_english_gloss_in_parentheses_does_not_hide_a_point():
+    point = case(must=[["机密级信息"], ["不需要加密"]])
+    answer = "内部（internal）级信息不需要加密，机密（Confidential）级信息需要加密。"
+    assert score(point, answer, "answered", EVIDENCE, TITLES, CORPUS)["must"] == [True, True]
+    assert score(case(must=[["机密级信息"]]), "机密（第三级）信息需要加密。", "answered", EVIDENCE, TITLES, CORPUS)["must"] == [False]
+
+
 def test_correct_answer_passes_and_citations_do_not_count_as_numbers():
     result = score(case(), "【可答性：可回答】上海属一类城市，经理每晚750元〔依据1〕。", "answered", EVIDENCE, TITLES, CORPUS)
     assert result["passed"] and result["problems"] == [] and result["retrieval_hit"] is True
