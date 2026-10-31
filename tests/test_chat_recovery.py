@@ -120,3 +120,8 @@ def test_number_formats_known_dates_and_ordinals_do_not_warn():
     assert number_issues("下周三（10-28）", ["下周三提交"], now) == []
     assert number_issues("交付日期10-28", ["下周三提交"], now) == ["10-28"]
     assert number_issues("2天后整理35条", ["两天后整理三十五条"], now) == []
+    # 区间换了连接号、并列值写成斜杠，仍是原文数字；不在原文的时点和并列值照常提醒
+    assert number_issues("上午9:30—10:00", ["每天上午9:30-10:00报销"], now) == []
+    assert number_issues("上午9:45开始", ["每天上午9:30-10:00报销"], now) == ["9:45"]
+    assert number_issues("定额补贴20/50/80元", ["分为每月20元、50元、80元三种"], now) == []
+    assert number_issues("定额补贴20/50/90元", ["分为每月20元、50元、80元三种"], now) == ["20/50/90"]

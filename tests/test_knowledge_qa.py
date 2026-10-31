@@ -63,7 +63,8 @@ def test_restricted_evidence_is_withheld_when_clean_evidence_remains(indexed):
     store, svc, lifecycle, retrieval = setup(indexed)
     kb = svc.create("库")
     add(store, svc, lifecycle, kb, "制度", "预订前申请审批。")
-    mat, _ = store.add_text("组织图", "审批由乙部门负责。", report={"object_anchors": 1})
+    textbox = {"may_infer_section": False, "may_infer_org_chart_relationships": False}
+    mat, _ = store.add_text("组织图", "审批由乙部门负责。", report={"object_anchors": 1, "textbox_provenance": textbox})
     doc, version, _ = svc.attach(kb.id, mat.id)
     lifecycle.build(kb.id, doc.id, version.id, Encoder(), expected_revision=1)
     model = fake(text_msg("【可答性：可回答】须预订前申请审批。原文：预订前申请审批。〔依据1〕"))

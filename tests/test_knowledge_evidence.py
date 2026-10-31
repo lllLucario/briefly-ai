@@ -68,6 +68,18 @@ def test_textbox_constraints_use_actual_range_and_fail_closed_without_range():
     assert constraints(report,0,90)['section_attribution']=='unverified'
 
 
+def test_graphics_restrict_only_the_textbox_text():
+    # 图片和嵌入对象不提取文字：正文段落不受图形关系限制，带图形文字的文本框附录仍受限
+    facets=dict(document_quality=dict(status='partial',facets=dict(graphics='unverified')))
+    assert constraints(dict(object_anchors=3,**facets),0,500)=={}
+    report=dict(object_anchors=3,**facets,textbox_provenance=dict(may_infer_section=False),
+                textbox_markdown_range=dict(start=100,end=200))
+    assert constraints(report,0,90)=={}
+    assert constraints(report,150,180)['organization_relationships']=='unverified'
+    del report['textbox_markdown_range']
+    assert constraints(report,0,90)['organization_relationships']=='unverified'
+
+
 def test_deduplication_cannot_drop_later_file_uncertainty(setup):
     _,store,svc=setup
     kb,mat,_,item=reference(store,svc,{},'重复的原创文字')

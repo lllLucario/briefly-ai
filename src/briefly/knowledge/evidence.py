@@ -17,17 +17,16 @@ def constraints(report,start,end):
     in_textbox=bool(textbox) and (not region or start<region["end"] and end>region["start"])
     if in_textbox and textbox.get("may_infer_section") is False:
         result["section_attribution"]="unverified"
-    if report.get("object_anchors",0)>0 or in_textbox and textbox.get("may_infer_org_chart_relationships") is False:
+    # 图片和嵌入对象不提取文字，正文里没有图形内容；图形关系限制只落在带图形文字的文本框范围（没有范围时整份）
+    graphics=report.get("document_quality",{}).get("facets",{}).get("graphics")
+    graphics_unverified=report.get("object_anchors",0)>0 or graphics not in {None,"verified","not_present"}
+    if in_textbox and (textbox.get("may_infer_org_chart_relationships") is False or graphics_unverified):
         result["organization_relationships"]="unverified"
     if report.get("table_structure_status")=="partial":
         # 解析器给出了未确认表格的范围（PDF）时只限制这些范围；没有范围时整份受限
         tables=report.get("table_partial_ranges")
         if tables is None or any(start<r["end"] and end>r["start"] for r in tables):
             result["cell_attribution"]="unverified"
-    # partial is not assumed to mean only a table problem.
-    for facet,state in report.get("document_quality",{}).get("facets",{}).items():
-        if facet=="graphics" and state not in {"verified","not_present"}:
-            result["organization_relationships"]="unverified"
     return result
 
 

@@ -7,7 +7,8 @@
     python tests/eval/w3_library_qa.py sample                         # 分层抽样，写 files/eval/w3/library/sample.json
     python tests/eval/w3_library_qa.py build .tmp/library-kb          # 本地入库并导出出题用正文，不外发
     python tests/eval/w3_library_qa.py check .tmp/library-kb          # 核对题集：gold 原文是否在入库正文中、拒答题是否被库内资料覆盖，不外发
-    python tests/eval/w3_library_qa.py run .tmp/library-kb --allow-external-real -n 3 [--split dev] [-k L01-1]
+    python tests/eval/w3_library_qa.py run .tmp/library-kb --allow-external-real -n 3 [--split dev] [-k R01]
+    python tests/eval/w3_library_qa.py rescore files/eval/w3/library/runs/<时间>-assistant   # 不调用模型，按当前规则重判
 
 run 会把问题和检索到的真实素材片段发给已配置的生成 API，须先取得用户授权并显式加 --allow-external-real。
 抽样清单、导出正文、题集和结果都在 files/eval/w3/library/（不进仓库）。
@@ -205,6 +206,41 @@ def run(root: Path, args) -> None:
     write_report(Path(args.output) / f"{stamp}-{args.path}", args, root, manifest["documents"], rows, events, stamp)
 
 
+def rescore(results: Path) -> None:
+    """不调用模型：按当前判分规则、题集和该次运行所用评测库的本地检索结果重新判分，覆盖同目录结果。"""
+    from briefly.knowledge.retrieval import RetrievalService
+    from briefly.llm import create_local_embeddings
+    from tests.eval.w3_e2e_qa import judge, render
+    from tests.eval.w3_e2e_scoring import summarize
+    data = json.loads((results / "results.json").read_text(encoding="utf-8"))
+    root = Path(data["kb_root"])
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    cases = {c["id"]: c for c in load_cases("all", [])}
+    of = doc_format_of({key: doc["format"] for key, doc in manifest["documents"].items()})
+    engine, imports = open_imports(root, create_local_embeddings(config.EMBEDDING_DIR))
+    try:
+        titles, corpus = library(imports, manifest["kb_id"])
+        retrieval = RetrievalService(imports)
+        evidence = {key: local_evidence(retrieval, manifest["kb_id"], cases[key]["question"])
+                    for key in {e["id"] for e in data["events"]}}
+    finally:
+        engine.dispose()
+    rows = []
+    for event in data["events"]:
+        case = cases[event["id"]]
+        if event["status"] != "error":
+            event.update(judge(case, event["answer"], event["status"], evidence[event["id"]], titles, corpus))
+        rows.append(dict({k: event[k] for k in ("passed", "problems", "retrieval_hit", "length")},
+                         gold_withheld=event.get("gold_withheld"), category=case["category"], split=case["split"],
+                         doc_format=of(case)))
+    data["summary"] = {split: summarize([r for r in rows if split == "all" or r["split"] == split])
+                       for split in ("all", "dev", "holdout")}
+    data["rescored"] = datetime.now().strftime("%Y%m%d-%H%M%S")
+    (results / "results.json").write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    (results / "report.md").write_text(render(data, data["events"]), encoding="utf-8")
+    print(f"已重新判分：{results}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -219,6 +255,7 @@ def main():
     r.add_argument("-n", type=int, default=3)
     r.add_argument("-k", nargs="*", default=[])
     r.add_argument("--output", default=str(WORK / "runs"))
+    sub.add_parser("rescore", help="不调用模型，按当前规则重新判分已有运行").add_argument("results", type=Path)
     args = parser.parse_args()
     if args.command == "sample":
         return sample()
@@ -228,6 +265,8 @@ def main():
         build(args.root)
     elif args.command == "check":
         check(args.root)
+    elif args.command == "rescore":
+        rescore(args.results)
     else:
         if not args.allow_external_real:
             parser.error("会把真实素材片段发往已配置的生成 API，须取得授权后显式加 --allow-external-real")

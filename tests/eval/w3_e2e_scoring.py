@@ -22,6 +22,7 @@ CITATION = re.compile(r"〔依据\d+〕|\[依据\d+\]|【可答性[：:][^】]*�
 def normalize(text: str) -> str:
     text = unicodedata.normalize("NFKC", text or "")
     text = re.sub(r"(?<=\d),(?=\d{3})", "", text)
+    text = re.sub(r"[—–‐‑−~～]", "-", text)  # 区间连接号写法不同算同一个
     return re.sub(r"\s+", "", text).lower()
 
 

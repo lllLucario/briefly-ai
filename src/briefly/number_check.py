@@ -42,9 +42,16 @@ def number_issues(answer: str, sources: list[str], now=None) -> list[str]:
             n = int("".join(str(digits[ch]) for ch in word))
         values.add(Decimal(n) * {"": 1, "千": 1000, "万": 10000, "亿": 100000000}[m[2]])
     issues = []
+    compact = re.sub(r"\s+", "", evidence)
     # 先提取再按完整数值比较，避免把 5 当成 25 或 12.5 中已有的数字。
     for number in unverified_numbers(answer, ""):
         if number in known:
+            continue
+        # 区间的一端（原文 9:30-10:00，回答换了连接号拆成 9:30 和 10:00）仍是原文数字
+        if not re.fullmatch(r"\d+(?:\.\d+)?", number) and re.search(r"(?<![\d.:])" + re.escape(number) + r"(?![\d.:])", compact):
+            continue
+        # 斜杠并列（原文 20元、50元、80元，回答写 20/50/80）：每一项都在原文数值里
+        if re.fullmatch(r"\d+(?:\.\d+)?(?:/\d+(?:\.\d+)?){2,}", number) and all(Decimal(part) in values for part in number.split("/")):
             continue
         date_sources = [*sources, *verified_dates, now.strftime("%Y-%m-%d") if now is not None else ""]
         if re.fullmatch(r"(?:\d{4}[-/])?\d{1,2}[-/]\d{1,2}", number) and any(value_in(text, number) for text in date_sources):
