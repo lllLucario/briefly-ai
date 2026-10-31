@@ -129,12 +129,7 @@ def run(root: Path, args) -> None:
         if [b.name for b in bases] != [KB_NAME]:
             raise SystemExit("不是本脚本建的虚构资料库，拒绝外发")
         imports.knowledge.set_egress(kb_id, True)  # 已核对为专用虚构资料库，按库授权外发
-        titles = {}  # 资料编号 → 入库标题（依据片段按标题对应资料）
-        for item in imports.knowledge.documents(kb_id):
-            version = imports.knowledge.versions(kb_id, item.id)[1][-1]
-            titles[item.source_key] = imports.store.get(version.material_id).title
-        corpus = [imports.store.get(imports.knowledge.versions(kb_id, d.id)[1][-1].material_id).content
-                  for d in imports.knowledge.documents(kb_id)]
+        titles, corpus = library(imports, kb_id)
         retrieval = RetrievalService(imports)
         model_factory = lambda: create_chat_model(max_retries=1, timeout=90)
         knowledge = KnowledgeAssistant(retrieval, model_factory)
@@ -142,11 +137,8 @@ def run(root: Path, args) -> None:
             agent = Agent(model_factory(), store=imports.store)
             agent.enable_knowledge(knowledge, IntentFunnel(lambda: encoder, kb_probe=knowledge.relevance))
         for case in cases:
-            # 按原问题组的本轮依据包（本地，不外发），用来判断检索是否命中
-            bundle = knowledge.qa.bundle(kb_id, [case["question"]])
-            evidence = [dict(title=e["source"]["title"], content=e["content"]) for e in bundle["evidence"]]
-            formats = {documents[g["doc"]]["format"] for g in case["gold"]}
-            doc_format = "pdf" if "pdf" in formats else "docx" if formats else "none"
+            evidence = local_evidence(retrieval, kb_id, case["question"])
+            doc_format = case_format(case, documents)
             for repeat in range(args.n):
                 started = perf_counter()
                 event = dict(id=case["id"], category=case["category"], split=case["split"], repeat=repeat)
@@ -166,18 +158,18 @@ def run(root: Path, args) -> None:
                         result = knowledge.qa.answer(kb_id, case["question"])
                         answer, status = result["answer"], result["status"]
                     event.update(status=status, answer=answer)
-                    scored = score(case, answer, status, evidence, titles, corpus)
+                    scored = judge(case, answer, status, evidence, titles, corpus)
                 except Exception as exc:  # 记录后继续，失败单独统计
                     event.update(status="error", error=f"{type(exc).__name__}: {exc}"[:300])
                     scored = dict(passed=False, problems=["error"], must=[], abstained=False, retrieval_hit=None,
-                                  unsupported_numbers=[], length=0)
+                                  unsupported_numbers=[], length=0, gold_withheld=None)
                 event.update(scored, seconds=round(perf_counter() - started, 1))
                 events.append(event)
                 rows.append(dict(scored, category=case["category"], split=case["split"], doc_format=doc_format))
                 print(case["id"], repeat, "PASS" if scored["passed"] else ",".join(scored["problems"]), flush=True)
     finally:
         engine.dispose()
-    report = dict(path=args.path, n=args.n, split=args.split, model=config.MODEL, created=stamp,
+    report = dict(path=args.path, n=args.n, split=args.split, model=config.MODEL, created=stamp, kb_root=str(root),
                   documents=manifest["documents"],
                   summary={split: summarize([r for r in rows if split == "all" or r["split"] == split])
                            for split in ("all", "dev", "holdout")},
@@ -187,17 +179,87 @@ def run(root: Path, args) -> None:
     print(f"结果：{out}")
 
 
+def library(imports, kb_id):
+    """资料编号 → 入库标题（依据片段按标题对应资料），以及全部资料原文（核对数字出处）。"""
+    titles, corpus = {}, []
+    for item in imports.knowledge.documents(kb_id):
+        material = imports.store.get(imports.knowledge.versions(kb_id, item.id)[1][-1].material_id)
+        titles[item.source_key] = material.title
+        corpus.append(material.content)
+    return titles, corpus
+
+
+def local_evidence(retrieval, kb_id, question):
+    """按原问题检索（本地，不外发），参数与本轮依据包相同；保留质量限制剔除前的结果，
+    这样“检索没找到”和“找到了但因结构未确认被剔除”能分开统计。"""
+    result = retrieval.search(kb_id, question, include_document_context=True, context_budget_only=True,
+                              context_tokens=config.KNOWLEDGE_CONTEXT_TOKENS)
+    return [dict(title=e["source"]["title"], content=e["content"], withheld=bool(e.get("constraints")))
+            for e in result["evidence"]]
+
+
+def case_format(case, documents):
+    formats = {documents[g["doc"]]["format"] for g in case["gold"]}
+    return "pdf" if "pdf" in formats else "docx" if formats else "none"
+
+
+def judge(case, answer, status, evidence, titles, corpus):
+    scored = score(case, answer, status, evidence, titles, corpus)
+    if scored["retrieval_hit"]:
+        # 命中的依据是否全部带质量限制（不会交给模型）
+        usable = [e for e in evidence if not e["withheld"]]
+        scored["gold_withheld"] = not score(case, answer, status, usable, titles, corpus)["retrieval_hit"]
+    else:
+        scored["gold_withheld"] = None
+    return scored
+
+
+def rescore(results: Path) -> None:
+    """不调用模型：按当前判分规则和本地检索结果重新判分已有运行，覆盖同目录的 results.json 与 report.md。"""
+    from briefly.knowledge.retrieval import RetrievalService
+    from briefly.llm import create_local_embeddings
+    data = json.loads((results / "results.json").read_text(encoding="utf-8"))
+    root = Path(data.get("kb_root", ".tmp/e2e-kb"))
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    documents = {d["id"]: d for d in load_documents()}
+    cases = {c["id"]: c for c in load_cases("all", [])}
+    engine, imports = open_imports(root, create_local_embeddings(config.EMBEDDING_DIR))
+    try:
+        titles, corpus = library(imports, manifest["kb_id"])
+        retrieval = RetrievalService(imports)
+        evidence = {key: local_evidence(retrieval, manifest["kb_id"], cases[key]["question"])
+                    for key in {e["id"] for e in data["events"]}}
+    finally:
+        engine.dispose()
+    rows = []
+    for event in data["events"]:
+        case = cases[event["id"]]
+        if event["status"] != "error":
+            event.update(judge(case, event["answer"], event["status"], evidence[event["id"]], titles, corpus))
+        rows.append(dict({k: event[k] for k in ("passed", "problems", "retrieval_hit", "length")},
+                         gold_withheld=event.get("gold_withheld"), category=case["category"], split=case["split"],
+                         doc_format=case_format(case, documents)))
+    data["summary"] = {split: summarize([r for r in rows if split == "all" or r["split"] == split])
+                       for split in ("all", "dev", "holdout")}
+    data["rescored"] = datetime.now().strftime("%Y%m%d-%H%M%S")
+    (results / "results.json").write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    (results / "report.md").write_text(render(data, data["events"]), encoding="utf-8")
+    print(f"已重新判分：{results}")
+
+
 def render(report: dict, events: list[dict]) -> str:
     lines = [f"# 端到端问答评测 {report['created']}", "",
              f"- 链路：{report['path']}；模型：{report['model']}；每题 {report['n']} 次；题集：{report['split']}；出错 {report['errors']} 次",
-             "- 判分为规则核对（要点串、拒答写法、无出处数字、字数），不是人工或模型评审；失败明细需人工复核。", ""]
+             "- 判分为规则核对（要点串、拒答写法、无出处数字、字数），不是人工或模型评审；失败明细需人工复核。",
+             "- 检索命中按质量限制剔除前的本地检索结果计；“命中但依据被剔除”指命中的片段全部带结构未确认限制、不会交给模型。", ""]
     for split, groups in report["summary"].items():
         if not groups["all"]["runs"]:
             continue
-        lines += [f"## {split}", "", "| 分组 | 次数 | 通过率 | 检索命中 | 检索失败 | 答非所问 | 幻觉 | 冗余 | 字数中位 |", "|---|---|---|---|---|---|---|---|---|"]
+        lines += [f"## {split}", "", "| 分组 | 次数 | 通过率 | 检索命中 | 命中但依据被剔除 | 检索失败 | 答非所问 | 幻觉 | 冗余 | 字数中位 |",
+                  "|---|---|---|---|---|---|---|---|---|---|"]
         for name, g in groups.items():
             p = g["problems"]
-            lines.append(f"| {name} | {g['runs']} | {g['pass_rate']} | {g['retrieval_hit']} | {p['retrieval_miss']} | "
+            lines.append(f"| {name} | {g['runs']} | {g['pass_rate']} | {g['retrieval_hit']} | {g.get('gold_withheld')} | {p['retrieval_miss']} | "
                          f"{p['off_target']} | {p['hallucination']} | {p['verbose']} | {g['median_length']} |")
         lines.append("")
     failed = Counter(e["id"] for e in events if e["split"] == "dev" and not e["passed"])
@@ -219,11 +281,15 @@ def main():
     r.add_argument("-n", type=int, default=3)
     r.add_argument("-k", nargs="*", default=[])
     r.add_argument("--output", default="files/eval/w3/e2e")
+    s = sub.add_parser("rescore", help="不调用模型，按当前规则重新判分已有运行")
+    s.add_argument("results", type=Path, help="某次运行的输出目录")
     args = parser.parse_args()
     if not config.EMBEDDING_DIR:
         parser.error("需要本地 Embedding 目录（.env 的 BRIEFLY_EMBEDDING_DIR）")
     if args.command == "build":
         build(args.root)
+    elif args.command == "rescore":
+        rescore(args.results)
     else:
         if not args.allow_external_fictional:
             parser.error("需显式允许把虚构问题与检索片段发往已配置的生成 API：--allow-external-fictional")

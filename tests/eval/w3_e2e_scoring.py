@@ -14,7 +14,8 @@ from briefly.number_check import number_issues
 # 判为“说明资料没有”的写法；知识问答的【可答性：依据不足】和低相关回复也算
 ABSTAIN = re.compile(
     r"可答性[：:]\s*依据不足|未提及|没有提及|未找到|没有找到|未涉及|没有涉及|未规定|没有规定|未明确|没有明确|"
-    r"未说明|没有说明|无相关|没有相关|未包含|不包含|无法确定|无法回答|依据不足|未覆盖|没有覆盖")
+    r"未说明|没有说明|无相关|没有相关|未包含|不包含|无法确定|无法回答|依据不足|未覆盖|没有覆盖|"
+    r"没有查到|未查到|没有检索到|未检索到|无法确认|不能确认")
 CITATION = re.compile(r"〔依据\d+〕|\[依据\d+\]|【可答性[：:][^】]*】")
 
 
@@ -69,11 +70,12 @@ def score(case: dict, answer: str, status: str | None, evidence: list[dict], tit
 def summarize(rows: list[dict]) -> dict:
     """rows：score 结果加 category、split、doc_format。按类别与总体汇总比例。"""
     def rate(items, key):
-        values = [r[key] for r in items if r[key] is not None]
+        values = [r.get(key) for r in items if r.get(key) is not None]
         return round(sum(values) / len(values), 3) if values else None
 
     def block(items):
         return dict(runs=len(items), pass_rate=rate(items, "passed"), retrieval_hit=rate(items, "retrieval_hit"),
+                    gold_withheld=rate(items, "gold_withheld"),
                     problems={p: sum(p in r["problems"] for r in items)
                               for p in ("retrieval_miss", "off_target", "hallucination", "verbose")},
                     median_length=sorted(r["length"] for r in items)[len(items) // 2] if items else None)
