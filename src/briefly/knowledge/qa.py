@@ -144,7 +144,8 @@ class KnowledgeQA:
         ranked = [(1 / (60 + i), 0, i, e) for i, e in enumerate(kb_items, 1)] + [(1 / (60 + i), 1, i, e) for i, e in enumerate(ws_items, 1)]
         return [e for *_, e in sorted(ranked, key=lambda row: (-row[0], row[1], row[2]))]
 
-    def bundle(self, kb_id, questions, *, document_ids=None, allow_partial=False, private_values=(), start=1):
+    def bundle(self, kb_id, questions, *, document_ids=None, allow_partial=False, private_values=(), start=1,
+               max_questions=MAX_SUB_QUESTIONS):
         """本轮依据包。返回 status 及 evidence、references、warnings、authorized；status 为 ready 或
         external_authorization_required 时另有 payload_text（规则处理后的完整外发包）和 egress（若发送将外发的内容）；
         其余状态有给用户看的 answer。
@@ -152,13 +153,14 @@ class KnowledgeQA:
         顺序：检索（本地）→ 相关度判断（retrieval.relevant；不相关不外发、不调模型）→ 质量限制 → 范围完整性 →
         脱敏与预算 → 外发授权。
         多个子问题各自检索，每个保底同样的额度，合并去重；start 为首条依据编号，同一轮多次检索时接续。
+        max_questions：子问题上限；助理第一次检索并入用户原话时为 MAX_SUB_QUESTIONS + 1，依据总额不变，按实际子问题数均分。
 
         联合检索（材料库接了工作区索引时）：同时检索工作区，依据总额仍为 KNOWLEDGE_CONTEXT_TOKENS，知识库最多
         总额 − WORKSPACE_CONTEXT_TOKENS，工作区最多 WORKSPACE_CONTEXT_TOKENS，任一侧用不满时余量给另一侧；
         两侧各自按相关度下限过滤后交错合并，依据头标明出处。工作区片段同样经质量限制与规则处理，关联知识库未允许
         外发的材料不进依据包。所选库未允许外发时：工作区有可用片段就只发工作区片段（知识库片段不发，警告说明），
         没有工作区片段时照旧提示开启授权；只有工作区片段时按个人材料规则发送。"""
-        questions = [q.strip() for q in questions if q and q.strip()][:MAX_SUB_QUESTIONS]
+        questions = [q.strip() for q in questions if q and q.strip()][:max_questions]
         if not questions:
             raise ValueError("请至少提供一个检索问题")
         knowledge = self.retrieval.imports.knowledge

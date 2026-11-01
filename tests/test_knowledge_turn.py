@@ -215,25 +215,38 @@ def test_first_search_adds_original_question_and_records_queries(indexed):
 def test_original_question_not_duplicated_or_added_to_short_follow_up(indexed):
     model = fake(tool_msg("search_knowledge", {"questions": ["年假有几天？"]}, id="a"), text_msg("年假5天〔依据1〕"),
                  tool_msg("search_knowledge", {"questions": ["病假需要什么材料"]}, id="b"), text_msg("需医院证明〔依据1〕"),
-                 tool_msg("search_knowledge", {"questions": ["年假", "病假", "事假"]}, id="c"), text_msg("见依据〔依据1〕"))
+                 tool_msg("search_knowledge", {"questions": ["年假", "病假", "事假"]}, id="c"),
+                 tool_msg("search_knowledge", {"questions": ["年假", "病假", "事假", "婚假"]}, id="d"), text_msg("见依据〔依据1〕"))
     agent, kb = base_agent(indexed, model, LEAVE, SICK)
     agent.chat("年假有几天？", kb_id=kb.id)
     agent.chat("那病假呢？", kb_id=kb.id)  # 只有原话检索不到：用智能体补全后的检索词
     agent.chat("年假、病假和事假各有几天，分别怎么申请？", kb_id=kb.id)
     queries = [s["questions"] for s in _searches_of(agent)]
-    # 子问题上限不变：原话排在最前，智能体最后一个检索词让位；依据总额仍由 bundle 按子问题均分
-    assert queries == [["年假有几天？"], ["病假需要什么材料"], ["年假、病假和事假各有几天，分别怎么申请？", "年假", "病假"]]
+    # 并入原话不挤掉智能体的检索词（第一次检索可到 4 个）；智能体自己的检索词仍最多 3 个
+    assert queries == [["年假有几天？"], ["病假需要什么材料"], ["年假、病假和事假各有几天，分别怎么申请？", "年假", "病假", "事假"],
+                       ["年假", "病假", "事假"]]
+
+
+def test_original_question_with_task_word_is_still_added(indexed):
+    from briefly.intent import knowledge_question
+    question = "项目周报每周几点前交？"
+    assert not knowledge_question(question)  # 句式判断把“周报”当写作任务；智能体已主动检索，仍并入原话
+    model = fake(tool_msg("search_knowledge", {"questions": ["项目周报提交时间"]}), text_msg("周五前〔依据1〕"))
+    agent, kb = base_agent(indexed, model, LEAVE, "项目周报须在每周五18:00前提交。")
+    agent.chat(question, kb_id=kb.id)
+    assert _searches_of(agent)[0]["questions"] == [question, "项目周报提交时间"]
 
 
 def test_original_question_keeps_evidence_budget_and_egress_authorization(indexed, monkeypatch):
-    # 并入原话后依据包总额不变（测试编码器按字符计 token）
-    monkeypatch.setattr(config, "KNOWLEDGE_CONTEXT_TOKENS", 500)
-    model = fake(tool_msg("search_knowledge", {"questions": ["病假材料"]}), text_msg("提前3天〔依据1〕"))
-    agent, kb = base_agent(indexed, model, LEAVE * 6, SICK * 6)
+    # 智能体给满 3 个检索词时并入原话共 4 个，都检索；依据包总额不变（测试编码器按字符计 token；材料总量超过额度）
+    monkeypatch.setattr(config, "KNOWLEDGE_CONTEXT_TOKENS", 1000)
+    model = fake(tool_msg("search_knowledge", {"questions": ["病假材料", "病假天数", "年假天数"]}), text_msg("提前3天〔依据1〕"))
+    agent, kb = base_agent(indexed, model, *[LEAVE * 8, SICK * 8, "事假须提前一天申请，每年不超过5天。" * 8] * 3)
     agent.chat("年假要提前几天申请？", kb_id=kb.id)
     (search,) = _searches_of(agent)
     sent = next(m for m in agent.history if isinstance(m, ToolMessage)).text
-    assert len(search["questions"]) == 2 and "【依据" in sent and len(sent) <= 500
+    assert search["questions"] == ["年假要提前几天申请？", "病假材料", "病假天数", "年假天数"]
+    assert "【依据" in sent and len(sent) <= 1000
     # 未授权外发时并入原话也不发原文
     model = fake(tool_msg("search_knowledge", {"questions": ["病假材料"]}), text_msg("请先开启授权"))
     agent, kb = base_agent(indexed, model, LEAVE, SICK)
