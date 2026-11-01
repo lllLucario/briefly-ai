@@ -973,6 +973,29 @@ function userMeta(el, m) {
   box = box || el.appendChild(Object.assign(document.createElement("div"), {className:"msg-meta"}));
   box.innerHTML = meta.join(" · ");
   correctionControl(box, m);
+  kbSuggestion(el, m);
+}
+
+// 选错知识库的提示：另一个库明显更相关时（只按库名和相似度判断，不读那个库的正文），给出切换后重新提问的入口。
+// 提示的库已删除时不显示。
+function kbSuggestion(el, m) {
+  el.querySelector(".kb-hint")?.remove();
+  const s = m.intent?.kb_suggestions?.[0];
+  if (!s || ![...$("#chat-kb").options].some((o) => o.value === s.kb_id)) return;
+  const hint = Object.assign(document.createElement("div"), {className:"kb-hint notice small"});
+  hint.innerHTML = `这个问题在知识库《${escapeHtml(s.name)}》里可能有答案${m.intent.kb_name ? `，当前选的是《${escapeHtml(m.intent.kb_name)}》` : ""}。`;
+  const button = Object.assign(document.createElement("button"), {type:"button", className:"ghost small kb-switch",
+                                                                   textContent:`切换到《${s.name}》重新提问`});
+  button.addEventListener("click", async () => {
+    if ($("#send").disabled) return;
+    button.disabled = true;
+    $("#chat-kb").value = s.kb_id;
+    $("#chat-kb-notice").classList.add("hidden");
+    const ok = await sendChat({text:m.text, material_ids:m.material_ids || [], kb_id:s.kb_id});
+    if (ok) button.textContent = `已切换到《${s.name}》`; else if (button.isConnected) button.disabled = false;
+  });
+  hint.append(" ", button);
+  el.append(hint);
 }
 
 // 判错时的纠正入口：同一句话跳过意图判断交给助理，结果追加在后面，不删原回复。拦截不给按钮，安全规则不由用户一键绕过。
@@ -1170,7 +1193,7 @@ async function sendChat({text, material_ids, kb_id, skip_funnel = false, correct
   const pending = appendMessage({ role: "assistant", text: "思考中…（读取材料或长文档时可能需要一两分钟）", pending: true });
   scrollMessages();
   $("#send").disabled = true;
-  const previousActions = [...document.querySelectorAll(".result-action, .intent-correct")].map((button) => ({button, disabled:button.disabled}));
+  const previousActions = [...document.querySelectorAll(".result-action, .intent-correct, .kb-switch")].map((button) => ({button, disabled:button.disabled}));
   previousActions.forEach(({button}) => button.disabled = true);
   let ok = false;
   try {
