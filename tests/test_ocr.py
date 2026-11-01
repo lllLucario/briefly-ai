@@ -139,6 +139,19 @@ def test_exhausted_time_budget_does_not_hang_and_explains(engine, monkeypatch):
     assert engine.calls == []
 
 
+def test_worker_deadline_counts_parse_time_before_recognition(engine, monkeypatch):
+    """隔离子进程从开始解析就计时：前面的提取已经用完预算时，不再开始识别。"""
+    from time import monotonic
+
+    engine.default = [("不会被调用", 0.95)]
+    monkeypatch.setattr(config, "OCR_TIME_BUDGET_S", 60)
+    ocr.start_deadline()
+    monkeypatch.setattr(ocr, "DEADLINE", monotonic() - 1)
+    with pytest.raises(ValueError, match="超过识别上限或时长预算"):
+        load_document("扫描件.pdf", scanned_pdf(1))
+    assert engine.calls == []
+
+
 def test_engine_failure_on_one_page_keeps_the_rest(engine):
     engine.default = "fail"
     with pytest.raises(ValueError, match="没有识别出文字"):
@@ -171,6 +184,14 @@ def test_docx_picture_text_lands_where_the_picture_is_and_icons_are_skipped(engi
     assert doc.report["ocr"]["skipped"] == {"small": 1}
 
 
+def test_pictures_with_only_a_word_or_two_are_not_kept(engine):
+    """幻灯片徽标、装饰字母（真实资料里常见“LOGO”“S S E”）不进正文。"""
+    engine.by_size = {(600, 200): [("LOGO", 0.99)], (600, 210): [("流程说明文字", 0.95)]}
+    doc = load_document("办法.docx", docx_with([picture((600, 200)), picture((600, 210))]))
+    assert "LOGO" not in doc.text and "流程说明文字" in doc.text
+    assert doc.report["ocr"]["skipped"] == {"little_text": 1}
+
+
 def test_same_picture_twice_is_recognized_once(engine):
     engine.by_size = {(600, 200): [("重复出现的图", 0.96)]}
     doc = load_document("办法.docx", docx_with([picture((600, 200)), picture((600, 200))]))
@@ -179,9 +200,9 @@ def test_same_picture_twice_is_recognized_once(engine):
 
 def test_image_limit_and_failed_picture_are_reported(engine, monkeypatch):
     monkeypatch.setattr(config, "OCR_MAX_IMAGES", 2)
-    engine.by_size = {(600, 200): [("第一张", 0.96)], (600, 210): "fail", (600, 220): [("第三张", 0.96)]}
+    engine.by_size = {(600, 200): [("第一张图片文字", 0.96)], (600, 210): "fail", (600, 220): [("第三张图片文字", 0.96)]}
     doc = load_document("办法.docx", docx_with([picture((600, 200)), picture((600, 210)), picture((600, 220))]))
-    assert "第一张" in doc.text and "第三张" not in doc.text and "正文第二段" in doc.text
+    assert "第一张图片文字" in doc.text and "第三张图片文字" not in doc.text and "正文第二段" in doc.text
     info = doc.report["ocr"]
     assert info["failed"] == 1 and info["skipped"] == {"image_limit": 1} and info["partial"]
     assert any("识别失败" in w for w in doc.report["warnings"])

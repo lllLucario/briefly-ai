@@ -19,6 +19,8 @@ def main():
     request = json.loads((folder / "request.json").read_text(encoding="utf-8"))
     for key, value in request["settings"].items():
         setattr(config, key, value)
+    from .ocr import start_deadline
+    start_deadline()
     try:
         doc = load_document(request["filename"], (folder / "input").read_bytes())
         result = dict(text=doc.text, markdown=doc.markdown, report=doc.report)

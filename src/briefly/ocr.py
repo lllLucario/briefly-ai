@@ -28,6 +28,7 @@ MIN_PIXELS = 20_000  # 图片面积不到这么多像素不识别（约 140×140
 MAX_SIDE = 3000  # 送入识别前把长边缩到这个像素以内（检测模型内部还会缩到 2000）
 PAGE_DPI = 200  # 扫描页渲染分辨率
 PAGE_MAX_SIDE = 2400  # 扫描页渲染后长边不超过这个像素
+MIN_TEXT_CHARS = 5  # 嵌入图片识别出的字母数字/汉字少于这么多（LOGO、装饰字母、照片里的零星笔画）不收录
 REPEATED_MIN = 3  # 同一张图片出现在至少这么多页、且不少于一半页面，视为版式装饰
 OPEN = "〔图片文字识别"
 CLOSE = "〔图片文字识别结束〕"
@@ -98,6 +99,13 @@ def _file_sha256(path: Path) -> str:
 
 
 _engine = None  # 进程内只建一次；测试替换成替身
+DEADLINE: float | None = None  # 隔离解析子进程里识别必须结束的时刻（monotonic），从子进程开始解析算起
+
+
+def start_deadline() -> None:
+    """解析子进程开始解析时调用：识别时长预算扣除识别之前的解析耗时（大 PDF 光提取就要几十秒）。"""
+    global DEADLINE
+    DEADLINE = monotonic() + config.OCR_TIME_BUDGET_S
 
 
 def _get_engine():
@@ -170,7 +178,7 @@ def _paragraphs(lines: list[_Line]) -> str:
         height = max(l.y1 - l.y0 for l in row)
         if (previous and len(rows) >= 3 and len(row) == 1 and len(previous) == 1
                 and previous[0].x1 >= left + (full - left) * 0.92
-                and abs(previous[0].x0 - row[0].x0) <= height * 1.5
+                and abs(previous[0].x0 - row[0].x0) <= height * 0.5
                 and row[0].y0 - previous[0].y1 <= height * 0.8
                 and not out[-1].endswith(_SENTENCE_END)):
             out[-1] = join_text(out[-1], text)
@@ -230,7 +238,7 @@ class OcrSession:
             return "page_limit"
         if kind == "image" and self.images >= config.OCR_MAX_IMAGES:
             return "image_limit"
-        if monotonic() - self.started >= self.budget:
+        if monotonic() - self.started >= self.budget or DEADLINE is not None and monotonic() >= DEADLINE:
             return "time_budget"
         return None
 
@@ -275,18 +283,20 @@ class OcrSession:
             self.skipped[reason] += 1
             return None
         self.images += 1
-        block = self._run(picture, location, page, image)
+        block = self._run(picture, location, page, image, MIN_TEXT_CHARS)
         self._seen[digest] = block
         return block
 
-    def _run(self, image, location, page, number) -> OcrBlock | None:
+    def _run(self, image, location, page, number, min_chars=1) -> OcrBlock | None:
         tick = monotonic()
         try:
             lines = _lines(_rgb(image))
         except Exception:  # 单张图片识别失败不拖垮整份解析
             self.failed += 1
             return None
-        if not lines:
+        if sum(c.isalnum() for l in lines for c in l.text) < min_chars:
+            if lines:
+                self.skipped["little_text"] += 1
             return None
         chars = sum(len(l.text) for l in lines)
         confidence = sum(l.score * len(l.text) for l in lines) / chars

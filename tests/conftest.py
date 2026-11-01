@@ -52,3 +52,4 @@ def _no_real_ocr(monkeypatch):
 
     monkeypatch.setattr(config, "OCR", "off")
     monkeypatch.setattr(ocr, "_engine", None)
+    monkeypatch.setattr(ocr, "DEADLINE", None)
