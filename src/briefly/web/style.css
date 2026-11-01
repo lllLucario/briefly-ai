@@ -506,6 +506,8 @@ summary { cursor: pointer; }
 .composer button.ghost, .composer select { font-size: 11px; padding: 5px 10px; }
 .intent-meta { white-space: nowrap; }
 .msg-meta .intent-correct { font-size: 11px; padding: 1px 8px; margin-left: 4px; }
+.msg .kb-hint { margin: 6px 0 0; padding: 6px 10px; font-size: 12px; }
+.kb-hint .kb-switch { font-size: 11px; padding: 1px 8px; margin-left: 4px; }
 .knowledge-refs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
 #chat-kb { max-width: 220px; }
 .composer-caption { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 10px; }

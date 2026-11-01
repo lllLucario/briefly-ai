@@ -57,6 +57,8 @@ class IntentDecision:
     # semantic 为语义层第一名 {intent, example, score, gap}；未达门槛、最后交给助理时也记
     kb_score: float | None = None
     semantic: dict | None = None
+    # 另一个知识库明显更相关时的切换提示 [{kb_id, name, score}]（只有库名和相似度，不含其他库的正文），网页据此提示
+    kb_suggestions: list[dict] | None = None
 
     @property
     def skill(self) -> str | None:
@@ -157,10 +159,13 @@ class IntentFunnel:
     """encoder_factory 返回本地 Embedding（需有 embed_documents）；不传或加载失败时只用规则层。"""
 
     def __init__(self, encoder_factory=None, examples: dict[str, list[str]] | None = None,
-                 threshold: float | None = None, margin: float | None = None, kb_probe=None) -> None:
-        """kb_probe(kb_id, text) 返回选定知识库中最相关片段的相似度（本地检索，不外发）。"""
+                 threshold: float | None = None, margin: float | None = None, kb_probe=None, kb_rivals=None) -> None:
+        """kb_probe(kb_id, text) 返回选定知识库中最相关片段的相似度（本地检索，不外发）；
+        kb_rivals(text) 返回各知识库最接近片段的语义相似度 [{kb_id, name, score}]（只比向量，不读正文），用于发现选错了库。"""
         self.encoder_factory = encoder_factory
         self.kb_probe = kb_probe
+        self.kb_rivals = kb_rivals
+        self.kb_rival_margin = config.INTENT_KB_RIVAL_MARGIN
         self.kb_threshold: float | None = None  # 不指定时按当前 Embedding 指纹取登记值（标定扫描时直接赋值）
         self._kb_floor_checked = False
         self.examples = examples or EXAMPLES
@@ -177,6 +182,7 @@ class IntentFunnel:
         decision = self._rules(text, state) or self._knowledge(text, state, signals) or \
             self._semantic(text, state, signals) or IntentDecision("agent", 3, "规则与语义层都没有把握，交给助理理解")
         decision.kb_score, decision.semantic = signals.get("kb_score"), signals.get("semantic")
+        decision.kb_suggestions = signals.get("kb_suggestions")
         return decision
 
     def _rules(self, text: str, state: TurnState) -> IntentDecision | None:
@@ -221,15 +227,39 @@ class IntentFunnel:
         except Exception:  # 索引未就绪或检索失败时不影响对话
             return None
         signals["kb_score"] = None if score is None else round(score, 4)
-        if score is None or score < floor:
+        if score is None:
             return None
+        if better := self._better_bases(state.kb_id, text, score, floor):
+            signals["kb_suggestions"] = better  # 低于下限交给助理时也提示：助理只查所选库，会答“没找到”
+        if score < floor:
+            return None
+        if better:
+            # 选错库时所选库也常有沾边的片段（同为制度、表格）而跨过下限，单问捷径只会答“没找到”或拿不相关的片段作答
+            names = "、".join(f"《{b['name']}》" for b in better)
+            return IntentDecision("agent", 3, f"所选知识库相似度{score:.2f}，但{names}更相关（{better[0]['score']:.2f}），"
+                                              "不走单问捷径，交给助理并提示切换知识库", round(score, 4))
         # “哪份制度讲的？按那份制度最晚能留到什么时候”：另有分句在问具体内容时要回答，不只列位置
         clauses = [c for c in re.split(r"[？?。！!；;，,]", text) if c.strip()]
-        if where and any(_ASK.search(c) and not _WHERE.search(c) for c in clauses):
+        # 整句没有提问词时（“有讲X的制度吗？把对应文件定位出来”，“吗”只在分句末尾）按找出处处理
+        if where and ask and any(_ASK.search(c) and not _WHERE.search(c) for c in clauses):
             where = None
         intent, cue = ("locate", where.group()) if where else ("knowledge", ask.group())
         return IntentDecision(intent, 2, f"选定知识库中有相关原文（相似度{score:.2f}），句式为{'找出处' if where else '提问'}",
                               round(score, 4), cue)
+
+    def _better_bases(self, kb_id: str, text: str, score: float, floor: float) -> list[dict]:
+        """其他知识库比所选库明显更相关（达到下限、且高出跨库差距）时返回其中最相关的一个（列表形式，便于以后放宽）。
+        所选库与其他库用同一口径（最接近片段的语义相似度）比较；取不到时退回 kb_probe 的分数。"""
+        if self.kb_rivals is None:
+            return []
+        try:
+            scores = self.kb_rivals(text)
+        except Exception:  # 跨库比较只是提示，失败不影响对话
+            return []
+        own = next((s["score"] for s in scores if s["kb_id"] == kb_id), score)
+        better = [dict(kb_id=s["kb_id"], name=s["name"], score=round(s["score"], 4)) for s in scores
+                  if s["kb_id"] != kb_id and s["score"] >= floor and s["score"] - own >= self.kb_rival_margin]
+        return sorted(better, key=lambda b: -b["score"])[:1]
 
     def _kb_floor(self) -> float | None:
         """当前模型没有登记下限时跳过知识库路由、交给助理：只看句式会把库里无关的问题也送进知识捷径并外发依据，

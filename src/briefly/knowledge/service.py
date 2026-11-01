@@ -399,6 +399,20 @@ class KnowledgeService:
             status = "partial" if ready and unavailable else "not_ready" if unavailable else "ready" if ready else "empty_library"
             return dict(status=status, material_ids=sorted({v["material_id"] for v in ready}), versions=ready, unavailable=unavailable)
 
+    def published_generations(self, kb_id):
+        """库内已发布、就绪的索引代次 [(generation_id, embedding_fingerprint)]，供跨库相关度提示用。
+        只读元数据和原件哈希，不读切片正文、不做切片核验：结果只用于提示“另一个库可能更相关”，不作为依据。"""
+        with self._session() as s:
+            self._kb(s, kb_id)
+            rows = s.execute(select(KnowledgePublication, KnowledgeVersion, IndexGeneration)
+                             .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgePublication.document_id)
+                             .join(KnowledgeVersion, KnowledgeVersion.id == KnowledgePublication.version_id)
+                             .join(IndexGeneration, IndexGeneration.id == KnowledgePublication.generation_id)
+                             .where(KnowledgeDocument.kb_id == kb_id, KnowledgeDocument.deleted_at.is_(None),
+                                    IndexGeneration.status == "ready")).all()
+            return [(generation.id, generation.embedding_identity["index_contract"]["embedding_fingerprint"])
+                    for _, version, generation in rows if self._material(s, version)[1] is None]
+
     def chunk(self, kb_id, doc_id, version_id, index, *, expected_digest=None):
         with self._session() as s:
             doc, version = self._version(s, kb_id, doc_id, version_id, include_removed=True)

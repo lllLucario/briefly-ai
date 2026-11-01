@@ -98,3 +98,41 @@ def test_switching_sessions_restores_knowledge_base_and_warns_when_removed(web_p
     expect(page.locator("#chat-kb")).to_have_value("")
     page.locator("#new-session").click()
     expect(page.locator("#chat-kb-notice")).to_be_hidden()
+
+
+def test_wrong_knowledge_base_shows_switch_hint_and_resends_in_the_suggested_base(web_page, monkeypatch):
+    from briefly import config
+    from briefly.intent import IntentFunnel
+    from briefly.knowledge.assistant import KnowledgeAssistant
+
+    page = web_page
+    base = page.url.rstrip("/")
+    fin = page.request.post(base + "/knowledge-bases", data={"name": "财务与采购"}).json()["id"]
+    hr = page.request.post(base + "/knowledge-bases", data={"name": "人事薪酬与绩效"}).json()["id"]
+    # 假编码器没有登记下限：用覆盖值；所选库跨过下限，跨库比较判定人事库明显更相关（替代真实本地检索）
+    monkeypatch.setattr(config, "INTENT_KB_THRESHOLD", 0.5)
+    monkeypatch.setattr(KnowledgeAssistant, "relevance", lambda self, kb_id, text: 0.53)
+    monkeypatch.setattr(IntentFunnel, "_better_bases", lambda self, kb_id, text, score, floor:
+                        [] if kb_id == hr else [dict(kb_id=hr, name="人事薪酬与绩效", score=0.73)])
+    page.reload()
+    page.locator('[data-tab="chat"]').click()
+    page.locator("#chat-kb").select_option(fin)
+    user = send_direct(page, "销售提成按什么公式算？")
+    hint = user.locator(".kb-hint")
+    expect(hint).to_contain_text("这个问题在知识库《人事薪酬与绩效》里可能有答案，当前选的是《财务与采购》")
+    expect(user.locator(".intent-meta")).to_have_count(0)  # 交给了助理，不显示“系统理解”
+
+    with page.expect_request(lambda r: r.url.endswith("/chat") and r.method == "POST") as request:
+        hint.locator(".kb-switch").click()
+    body = json.loads(request.value.post_data)
+    assert (body["text"], body["kb_id"]) == ("销售提成按什么公式算？", hr)
+    expect(page.locator("#send")).to_be_enabled()
+    expect(page.locator(".msg.assistant.pending")).to_have_count(0)
+    expect(page.locator("#chat-kb")).to_have_value(hr)
+    expect(hint.locator(".kb-switch")).to_have_text("已切换到《人事薪酬与绩效》")
+    expect(page.locator(".msg.user").last.locator(".kb-hint")).to_have_count(0)  # 在建议的库里不再提示
+
+    page.reload()  # 重新打开会话：提示随用户消息保存
+    page.locator('[data-tab="chat"]').click()
+    page.locator("#session-list li[data-id]").first.click()
+    expect(page.locator(".msg.user").first.locator(".kb-hint")).to_contain_text("《人事薪酬与绩效》")

@@ -80,6 +80,17 @@ class LocalIndex:
                 db.execute("INSERT INTO lexical(rowid,tokens) VALUES (?,?)", (rowid, " ".join(terms(text))))
             db.execute("INSERT INTO generations VALUES (?,?,?)", (generation.id, self.signature(generation), manifest))
 
+    def nearest(self, vector, dimension, generation_ids) -> float | None:
+        """范围内与查询向量最接近片段的相似度（1 − cosine 距离）；只读向量，不取片段正文。"""
+        if not generation_ids:
+            return None
+        with self.connect() as db:
+            db.execute("CREATE TEMP TABLE scope (generation TEXT PRIMARY KEY)")
+            db.executemany("INSERT INTO scope VALUES (?)", ((x,) for x in set(generation_ids)))
+            row = db.execute("SELECT min(vec_distance_cosine(c.embedding,?)) FROM chunks c JOIN scope s ON s.generation=c.generation",
+                             (vector_blob(vector, dimension),)).fetchone()
+        return None if row[0] is None or not math.isfinite(row[0]) else 1 - row[0]
+
     def verify(self, generation, rows):
         with self.connect() as db:
             meta = db.execute("SELECT signature,manifest FROM generations WHERE id=?", (generation.id,)).fetchone()

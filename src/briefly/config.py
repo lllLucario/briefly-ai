@@ -50,6 +50,9 @@ INTENT_MARGIN = float(os.getenv("BRIEFLY_INTENT_MARGIN", "0.05"))
 # 知识库相关度下限：选定知识库中最相关片段的语义相似度（本地检索），达到且句式为提问/找出处才走知识捷径。
 # 默认按 Embedding 指纹查登记表（relevance_floor.REGISTERED）；这里填了数字则覆盖登记值，用于临时标定
 INTENT_KB_THRESHOLD = float(v) if (v := os.getenv("BRIEFLY_INTENT_KB_THRESHOLD", "").strip()) else None
+# 跨库差距：另一个知识库的最高相似度比所选库高出这么多（且达到下限）时，判为可能选错了库，
+# 不走所选库的单问捷径、交给助理，并提示可切换的库；与下限一起用 intent_eval.py --sweep 标定
+INTENT_KB_RIVAL_MARGIN = float(os.getenv("BRIEFLY_INTENT_KB_RIVAL_MARGIN", "0.08"))
 # 意图日志（intent_log.py）：每条消息的判断与纠正记在本机业务库，不外发；原文默认不存，只存长度
 INTENT_LOG = os.getenv("BRIEFLY_INTENT_LOG", "on").lower() != "off"
 INTENT_LOG_TEXT = os.getenv("BRIEFLY_INTENT_LOG_TEXT", "off").lower() == "on"

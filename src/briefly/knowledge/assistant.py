@@ -17,6 +17,7 @@ from ..context_builder import SYSTEM_REPLY
 from ..intent import _FOLLOW_UP, knowledge_question
 from .qa import EGRESS_POLICY, EGRESS_REQUIRED, MAX_SUB_QUESTIONS, KnowledgeQA, cited_numbers
 from .retrieval import both_routes, relevance_floor, relevant, similarity
+from .service import fingerprint
 
 __all__ = ["KnowledgeAssistant", "KnowledgeSearchGuard", "MAX_SUB_QUESTIONS", "knowledge_tools", "record_knowledge_turn"]
 
@@ -41,6 +42,25 @@ class KnowledgeAssistant:
         """意图漏斗用：选定知识库中最相关片段的语义相似度。只在本地检索，不外发。"""
         sims = [s for item in self.retrieval.search(kb_id, question)["evidence"] if (s := similarity(item)) is not None]
         return max(sims) if sims else None
+
+    def library_scores(self, question: str) -> list[dict]:
+        """意图漏斗用：每个知识库与问题最接近片段的语义相似度 [{kb_id, name, score}]，用于发现“选错了库”。
+        只在本地比较向量距离，不读取片段正文、不检查外发授权（结果只给出库名和分数，不进入回答或外发）；
+        没有就绪索引或 Embedding 不一致的库不列出。"""
+        bases = self.knowledge.list_bases()
+        if not bases:
+            return []
+        encoder = self.retrieval.imports.encoder_factory()
+        expected, vector, out = fingerprint(encoder.identity), None, []
+        for kb in bases:
+            generations = [g for g, fp in self.knowledge.published_generations(kb.id) if fp == expected]
+            if not generations:
+                continue
+            vector = vector or encoder.embed_query(question)
+            score = self.retrieval.imports.lifecycle.index.nearest(vector, encoder.identity["dimension"], generations)
+            if score is not None:
+                out.append(dict(kb_id=kb.id, name=kb.name, score=score))
+        return out
 
     def answer(self, kb_id: str, question: str) -> dict:
         """B1 单点查询捷径：沿用知识问答的质量、授权与引用检查。"""
