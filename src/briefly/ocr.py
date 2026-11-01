@@ -21,6 +21,8 @@ from . import config
 
 ENGINE = "rapidocr"
 MODEL = dict(det="PP-OCRv6 small", rec="PP-OCRv6 small", cls="ch_ppocr_mobile_v2.0", lang="ch")
+# rapidocr 3.10 wheel 自带的模型文件（rapidocr/models/），指纹只看这三个
+MODEL_FILES = ("PP-OCRv6_det_small.onnx", "PP-OCRv6_rec_small.onnx", "ch_ppocr_mobile_v2.0_cls_mobile.onnx")
 MIN_SIDE = 24  # 图片短边不到这么多像素不识别（图标、分隔线）
 MIN_PIXELS = 20_000  # 图片面积不到这么多像素不识别（约 140×140，小图标、徽标）
 MAX_SIDE = 3000  # 送入识别前把长边缩到这个像素以内（检测模型内部还会缩到 2000）
@@ -75,8 +77,9 @@ def identity() -> dict:
     spec = find_spec("rapidocr")
     models = {}
     if spec and spec.origin:
-        for path in sorted((Path(spec.origin).parent / "models").glob("*.onnx")):
-            models[path.name] = _file_sha256(path)
+        for name in MODEL_FILES:
+            path = Path(spec.origin).parent / "models" / name
+            models[name] = _file_sha256(path) if path.is_file() else None
     return dict(value, engine=ENGINE, model=MODEL, packages=packages, models=models,
                 limits=dict(pages=config.OCR_MAX_PAGES, images=config.OCR_MAX_IMAGES,
                             seconds=config.OCR_TIME_BUDGET_S, min_confidence=config.OCR_MIN_CONFIDENCE,
