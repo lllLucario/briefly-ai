@@ -20,6 +20,7 @@ from sqlalchemy import CheckConstraint, DateTime, Float, ForeignKey, Integer, St
 from sqlalchemy.orm import Mapped, Session, defer, mapped_column
 
 from .db import Base
+from .loaders import SUPPORTED_TYPES
 from .materials import MaterialNotFound
 
 log = logging.getLogger(__name__)
@@ -84,7 +85,7 @@ def overlap(a: dict[str, int], b: dict[str, int]) -> float:
 def name_similarity(a: str, b: str) -> float:
     """文件名相似度：去掉扩展名、版本/日期/副本标记后比较。"""
     def norm(name):
-        stem = PurePath(name).stem if PurePath(name).suffix.lower() in {".doc", ".docx", ".pdf", ".md", ".txt", ".xlsx", ".xls", ".pptx", ".ppt", ".csv"} else name
+        stem = PurePath(name).stem if PurePath(name).suffix.lower().lstrip(".") in SUPPORTED_TYPES else name
         return _NAME_NOISE.sub("", stem).lower()
     x, y = norm(a), norm(b)
     return SequenceMatcher(None, x, y).ratio() if x and y else 0.0

@@ -81,9 +81,12 @@ function renderMarkdown(text) {
 const FILE_LABELS = {
   pdf: ["PDF", "#e5484d"], docx: ["DOC", "#2f6fed"], doc: ["DOC", "#2f6fed"], xlsx: ["XLS", "#1f9d55"], xls: ["XLS", "#1f9d55"],
   csv: ["CSV", "#1f9d55"], pptx: ["PPT", "#d9622b"], ppt: ["PPT", "#d9622b"], md: ["MD", "#6b7280"], txt: ["TXT", "#6b7280"],
+  png: ["IMG", "#8b5cf6"], jpg: ["IMG", "#8b5cf6"], jpeg: ["IMG", "#8b5cf6"], bmp: ["IMG", "#8b5cf6"], tif: ["IMG", "#8b5cf6"],
+  tiff: ["IMG", "#8b5cf6"], webp: ["IMG", "#8b5cf6"],
 };
 const KIND_NAMES = {
   folder: "文件夹", pdf: "PDF", docx: "Word", doc: "Word", xlsx: "Excel", xls: "Excel", csv: "CSV", pptx: "PowerPoint", ppt: "PowerPoint", md: "Markdown", txt: "文本",
+  png: "图片", jpg: "图片", jpeg: "图片", bmp: "图片", tif: "图片", tiff: "图片", webp: "图片",
   feishu: "飞书文档", bitable: "多维表格", minutes: "妙记", wiki: "知识库", sheet: "电子表格", paste: "粘贴",
 };
 

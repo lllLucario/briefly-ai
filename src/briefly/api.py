@@ -483,7 +483,7 @@ def create_app(
 
     @app.post("/materials/upload", tags=[docs.MATERIALS], response_model=CreatedMaterial, status_code=201, summary="上传文件创建材料")
     def upload(
-        file: Annotated[UploadFile, File(description="txt/md/doc/docx/pdf/xlsx/xls/csv/pptx/ppt")], store: Store, response: Response
+        file: Annotated[UploadFile, File(description="txt/md/doc/docx/pdf/xlsx/xls/csv/pptx/ppt/png/jpg/jpeg/bmp/tif/tiff/webp（图片与扫描件需本地 OCR：.[ocr]）")], store: Store, response: Response
     ):
         if not file.filename:
             raise HTTPException(status_code=400, detail="缺少文件名")

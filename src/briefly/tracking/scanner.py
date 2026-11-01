@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from .. import config
 from ..feishu.docx import FeishuDoc
-from ..loaders import SUPPORTED_TYPES, load_document
+from ..loaders import IMAGE_TYPES, SUPPORTED_TYPES, load_document
 from ..materials import MaterialStore
 from .attribution import extract_meta
 from .blobs import BlobStore, StoreFull, sha256_bytes
@@ -105,7 +105,9 @@ def is_supported(name: str) -> bool:
         return False
     if lower.endswith(TEMP_SUFFIXES):
         return False
-    return Path(lower).suffix.lstrip(".") in SUPPORTED_TYPES
+    # 图片只在用户主动上传时识别：追踪文件夹里常有大量截图、照片，逐张识别会拖慢每日扫描
+    suffix = Path(lower).suffix.lstrip(".")
+    return suffix in SUPPORTED_TYPES and suffix not in IMAGE_TYPES
 
 
 def _is_link(entry: os.DirEntry) -> bool:
