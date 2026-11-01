@@ -106,6 +106,46 @@ def test_knowledge_routing_uses_selected_base_relevance_and_question_form():
     assert IntentFunnel(kb_probe=broken).classify("银狮奖有什么要求", state).intent == "agent"
 
 
+def rivals_funnel(kb_score, scores):
+    """scores：各库最接近片段的相似度 {kb_id: score}（替代真实的跨库向量比较）。"""
+    f = funnel(kb_score)
+    f.kb_rivals = lambda text: [dict(kb_id=k, name=f"{k}库", score=s) for k, s in scores.items()]
+    f.kb_rival_margin = 0.08
+    return f
+
+
+def test_clearly_better_other_base_skips_shortcut_and_suggests_switching():
+    state = TurnState(kb_id="fin")
+    # 所选库跨过下限，但另一个库明显更相关：选错了库，不走单问捷径，交给助理并提示切换
+    d = rivals_funnel(0.53, {"fin": 0.53, "hr": 0.73, "sec": 0.60}).classify("销售提成按什么公式算？", state)
+    assert (d.intent, d.layer) == ("agent", 3) and "《hr库》" in d.reason
+    assert d.kb_suggestions == [dict(kb_id="hr", name="hr库", score=0.73)]  # 只给最相关的一个
+    assert d.to_dict()["kb_suggestions"][0]["name"] == "hr库"
+    # 低于下限本来就交给助理，同样提示
+    d = rivals_funnel(0.44, {"fin": 0.44, "hr": 0.72}).classify("信息分几级密级？", state)
+    assert d.intent == "agent" and d.kb_suggestions[0]["kb_id"] == "hr"
+
+
+def test_close_or_irrelevant_other_bases_keep_the_shortcut():
+    state = TurnState(kb_id="fin")
+    # 差距不到跨库差距：所选库照常走捷径，不提示
+    d = rivals_funnel(0.51, {"fin": 0.51, "hr": 0.57}).classify("资产台账里采购部门有多少台设备？", state)
+    assert d.intent == "knowledge" and d.kb_suggestions is None
+    # 另一个库高出很多但自己也达不到下限：不算更相关
+    d = rivals_funnel(0.30, {"fin": 0.30, "hr": 0.45}).classify("Excel怎么冻结首行？", state)
+    assert d.kb_suggestions is None
+    # 所选库以跨库比较的同一口径计分，取不到时用知识库路由的分数
+    assert rivals_funnel(0.60, {"hr": 0.66}).classify("销售提成按什么公式算？", state).intent == "knowledge"
+    assert rivals_funnel(0.60, {"hr": 0.70}).classify("销售提成按什么公式算？", state).intent == "agent"
+
+    f = funnel(0.6)
+
+    def broken(text):
+        raise RuntimeError("索引未就绪")
+    f.kb_rivals = broken  # 跨库比较只是提示，失败时照常路由
+    assert f.classify("销售提成按什么公式算？", state).intent == "knowledge"
+
+
 def test_locate_phrasing_and_follow_ups_in_knowledge_routing():
     state = TurnState(kb_id="kb")
     for text in ["库存现金管理那段在哪里？", "各厂家金额汇总在哪张表的哪个区域？", "资产数量统计在什么表？"]:
@@ -214,12 +254,38 @@ def test_knowledge_shortcut_respects_base_authorization_and_selection(indexed):
     assert agent.funnel.classify("我的年假有几天").intent == "agent"
 
 
+def test_wrong_base_goes_to_agent_and_keeps_the_suggestion_for_the_page(indexed):
+    model = fake(tool_msg("search_knowledge", {"questions": ["销售提成公式"]}), text_msg("制度库里没有找到提成公式。"))
+    agent, kb = knowledge_agent(indexed, model)
+    agent.funnel = rivals_funnel(0.53, {kb.id: 0.53, "kb-hr": 0.73})
+    agent.chat("销售提成按什么公式算？", kb_id=kb.id)
+    intent = visible_messages(agent.history)[0].intent
+    assert intent["intent"] == "agent" and not intent.get("direct")
+    assert intent["kb_suggestions"] == [dict(kb_id="kb-hr", name="kb-hr库", score=0.73)]
+
+
 def test_relevance_probe_reads_local_semantic_similarity(indexed):
     store, svc, lifecycle, retrieval = setup(indexed)
     kb = svc.create("制度库")
     add(store, svc, lifecycle, kb, "休假制度", "员工年假为每年5天，须提前3天申请。")
     score = KnowledgeAssistant(retrieval, fake).relevance(kb.id, "年假有几天")
     assert score is not None and -1.0 <= score <= 1.0
+
+
+def test_library_scores_compare_bases_by_vectors_only(indexed, monkeypatch):
+    store, svc, lifecycle, retrieval = setup(indexed)
+    kb, other, empty = svc.create("制度库"), svc.create("财务库"), svc.create("空库")
+    add(store, svc, lifecycle, kb, "休假制度", "员工年假为每年5天，须提前3天申请。")
+    add(store, svc, lifecycle, other, "报销制度", "出租车票须注明起止地点。")
+    add(store, svc, lifecycle, empty, "未发布", "草稿", publish=False)
+
+    def no_text(*args, **kwargs):
+        raise AssertionError("跨库比较不应读取片段正文")
+    monkeypatch.setattr(svc, "chunk", no_text)
+    monkeypatch.setattr(svc, "scope", no_text)
+    scores = KnowledgeAssistant(retrieval, fake).library_scores("年假有几天")
+    assert {s["name"] for s in scores} == {"制度库", "财务库"}  # 没有就绪索引的库不列出
+    assert all(-1.0 <= s["score"] <= 1.0 for s in scores)
 
 
 def test_locate_lists_documents_locally_without_model(indexed):
