@@ -15,7 +15,9 @@ from briefly.number_check import number_issues
 ABSTAIN = re.compile(
     r"可答性[：:]\s*依据不足|未提及|没有提及|未找到|没有找到|未涉及|没有涉及|未规定|没有规定|未明确|没有明确|"
     r"未说明|没有说明|无相关|没有相关|未包含|不包含|无法确定|无法回答|依据不足|未覆盖|没有覆盖|"
-    r"没有查到|未查到|没有检索到|未检索到|无法确认|不能确认|没写|没有写|未写")
+    r"没有查到|未查到|没有检索到|未检索到|无法确认|不能确认|没写|没有写|未写|没有提到|未提到")
+# 复述问题或未下结论的“一致”不算答到：“是否一致”“无法确认两份是否一致”“不一致”，以及依据头注记里的“此处一致”
+UNSETTLED = re.compile(r"是否一致|一致与否|不一致|此处一致")
 CITATION = re.compile(r"〔依据\d+〕|\[依据\d+\]|【可答性[：:][^】]*】")
 
 
@@ -51,10 +53,14 @@ def score(case: dict, answer: str, status: str | None, evidence: list[dict], tit
           corpus: list[str]) -> dict:
     """evidence：[{title, content}]；corpus：全部资料原文，用来核对回答里的数字是否有出处。"""
     body = CITATION.sub("", answer or "")
-    must = [any(contains(body, alt) for alt in group) for group in case["must"]]
+    settled = UNSETTLED.sub("", body)
+    must = [any(contains(settled if alt == "一致" else body, alt) for alt in group) for group in case["must"]]
     did_abstain = abstained(answer, status)
     hit = retrieval_hit(case["gold"], evidence, titles)
-    numbers = number_issues(body, [*corpus, case["question"]])
+    sources = [*corpus, case["question"]]
+    # 斜杠并列的两个原文数字（“2500/500”）整体不在原文里，拆开各自有出处时不算无出处
+    numbers = [n for n in number_issues(body, sources)
+               if "/" not in n or number_issues(" ".join(n.split("/")), sources)]
     problems = []
     if hit is False:
         problems.append("retrieval_miss")

@@ -105,3 +105,67 @@ def test_run_and_rescore_round2_with_original_materials(tmp_path, monkeypatch, m
         assert len(model.calls) == calls
     finally:
         engine.dispose()
+
+
+def test_identical_copy_is_covered_by_the_annotated_knowledge_citation():
+    titles = {"N001": "收支表.xlsx", "W1": "收支表.xlsx", "N002": "课件.ppt", "W2": "课件（部门修订稿）"}
+    refs = [{"label": "依据1", "origin": "knowledge", "title": "收支表.xlsx"}]
+    same = dict(source="both", abstain=False, gold=[dict(doc="N001", text="8 | -401"), dict(doc="W1", text="8 | -401")])
+    # 同一副本被联合检索合并进知识库片段（注明“工作区版本此处一致”），引用这条即覆盖工作区一侧
+    assert qa.score_source(same, "两份一致，均为-401〔依据1〕", refs, titles)
+    # 改稿处 gold 不同，只引知识库不能算工作区出处，依据头注记也不作数
+    revised = dict(source="conflict", abstain=False, gold=[dict(doc="N002", text="12个月"), dict(doc="W2", text="14个月")])
+    refs2 = [{"label": "依据1", "origin": "knowledge", "title": "课件.ppt"}]
+    assert not qa.score_source(revised, "两版不同，以知识库正式版为准〔依据1〕", refs2, titles)
+
+
+@pytest.mark.parametrize("answer,priority,noted", [
+    ("两版不同，以知识库正式版为准。〔依据1〕〔依据2〕", True, True),
+    ("部门稿没有保留这段说明〔依据2〕，仍应以知识库发布的正式版为准〔依据1〕。", True, True),
+    ("正式课件写30日〔依据1〕，部门稿写32日〔依据2〕，两者不一致。", False, True),
+    ("两版并列如下〔依据1〕〔依据2〕。", False, False),
+])
+def test_conflict_rules_priority_and_noted(answer, priority, noted):
+    case = dict(source="conflict", abstain=False)
+    refs = [{"label": "依据1", "origin": "knowledge"}, {"label": "依据2", "origin": "workspace"}]
+    assert qa.score_source(case, answer, refs) is priority
+    assert qa.score_source(case, answer, refs, conflict="noted") is noted
+
+
+def test_apply_source_score_records_both_conflict_rules():
+    case = dict(source="conflict", abstain=False, gold=[])
+    refs = [{"label": "依据1", "origin": "knowledge"}, {"label": "依据2", "origin": "workspace"}]
+    base = dict(passed=True, problems=[])
+    scored = qa.apply_source_score(base, case, "30日与32日不一致〔依据1〕〔依据2〕", refs)
+    assert not scored["passed"] and scored["passed_if_noted"]
+    scored = qa.apply_source_score(dict(passed=False, problems=["off_target"]), case, "30日与32日不一致〔依据1〕〔依据2〕", refs)
+    assert not scored["passed_if_noted"]
+
+
+@pytest.mark.parametrize("answer,expected", [
+    ("两份一致，8月结余都填-401。", True),
+    ("工作区版本没有给出数值，无法确认两份是否一致；知识库为-401。", False),
+    ("依据注明“工作区版本此处一致”，但没有返回工作区的数值，无法核对；知识库为-401。", False),
+    ("两份不一致：知识库-401。", False),
+])
+def test_must_consistent_needs_a_settled_statement(answer, expected):
+    from tests.eval.w3_e2e_scoring import score
+    case = dict(question="两份是否一致？", must=[["一致"], ["-401"]], abstain=False, gold=[], max_chars=None)
+    assert score(case, answer, "ready", [], {}, ["8 | 2084 | 2485 | -401"])["must"][0] is expected
+
+
+def test_slash_joined_source_numbers_and_header_time_are_not_unsupported():
+    from tests.eval.w3_e2e_scoring import score
+    case = dict(question="参考工资多少？", must=[], abstain=False, gold=[], max_chars=None)
+    corpus = ["基本工资2500元/月，岗位工资500元/月"]
+    assert score(case, "知识库为 2500/500", "ready", [], {}, corpus)["unsupported_numbers"] == []
+    assert score(case, "知识库为 2500/700", "ready", [], {}, corpus)["unsupported_numbers"]
+    refs = [{"label": "依据2", "origin": "workspace", "updated_at": "2026-11-01T22:45"}]
+    answer = "修订稿更新时间 2026-11-01 22:45"
+    assert score(case, answer, "ready", [], {}, corpus)["unsupported_numbers"]
+    assert score(case, answer, "ready", [], {}, corpus + qa.header_facts(refs))["unsupported_numbers"] == []
+
+
+def test_not_mentioned_wording_counts_as_abstain():
+    from tests.eval.w3_e2e_scoring import abstained
+    assert abstained("材料中没有提到这份表格的供应商。", None)

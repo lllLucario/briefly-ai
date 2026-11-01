@@ -502,11 +502,20 @@ def add_source_summary(results):
         runs=len(items := [e for e in data["events"] if split == "all" or e["split"] == split]),
         correct=sum(e.get("source_correct", False) for e in items),
         incorrect=sum(not e.get("source_correct", False) for e in items)) for split in ("all", "dev", "holdout")}
+
+    def rates(items):
+        return {rule: f"{sum(e.get(key, False) for e in items)}/{len(items)}"
+                for rule, key in zip(CONFLICT_RULES, ("passed", "passed_if_noted"))}
+    data["conflict_rules"] = {name: rates(items) for name, items in (
+        ("all", data["events"]), ("mixed_conflict", [e for e in data["events"] if e["category"] == "mixed_conflict"]))}
     write_json(results / "results.json", data)
     with (results / "report.md").open("a", encoding="utf-8") as out:
         out.write("\n来源正确（实际引用来源＋冲突说明，规则判分）：\n\n")
         for split, count in data["source_summary"].items():
             out.write(f"- {split}：{count['correct']}/{count['runs']}；来源错误 {count['incorrect']} 次。\n")
+        out.write("\n冲突题两种口径的通过（产品待定；主表按“还要求说明以哪版为准”）：\n\n")
+        for name, count in data["conflict_rules"].items():
+            out.write(f"- {name}：还要求说明以哪版为准 {count['priority']}；只要求指出冲突 {count['noted']}。\n")
 
 
 def validate_workspace(store, files):
@@ -517,7 +526,15 @@ def validate_workspace(store, files):
         raise SystemExit("工作区材料与 workspace.json 的 ID、标题、正文不完全一致，拒绝外发")
 
 
-def score_source(case, answer, references, titles=None):
+CONFLICT_NOTED = re.compile(r"不同|不一致|差异|差别|冲突|改为|改成|而工作区|工作区.{0,20}(?:写|为)"
+                            r"|(?:没有|不再|未|不)保留|删除|删去|删掉")  # 删除型改稿：“部门稿没有保留这段说明”
+_FORMAL = r"(?:知识库|正式版|正式制度|正式课件|正式方案|发布版)"
+CONFLICT_PRIORITY = re.compile(rf"以.{{0,35}}{_FORMAL}.{{0,12}}为准|(?:应|须|需要|优先|仍)按.{{0,20}}{_FORMAL}")
+# 冲突题的两种口径（产品待定）：priority 要求指出不同并说明以知识库正式版为准；noted 只要求指出不同
+CONFLICT_RULES = ("priority", "noted")
+
+
+def score_source(case, answer, references, titles=None, conflict="priority"):
     """只认回答实际引用的来源；检索到或发出片段不代表回答引用了它。"""
     from briefly.knowledge.qa import cited_numbers
     cited = {f"依据{n}" for n in cited_numbers(answer)}
@@ -528,21 +545,38 @@ def score_source(case, answer, references, titles=None):
         # 材料工具的正式出处格式是《标题》，而不是知识检索的〔依据N〕。
         return ref.get("origin") == "workspace" and f"《{ref['title']}》" in answer
 
+    gold = case.get("gold", [])
+    # 工作区副本与知识库原文在 gold 处逐字相同：联合检索按设计只留知识库片段并注明“工作区版本此处一致”，
+    # 引用该知识库片段即覆盖工作区一侧。只看 gold 是否相同，不信依据头注记（改稿处注记可能错）。
+    same = {g["doc"]: next(n["doc"] for n in gold if not n["doc"].startswith("W") and n["text"] == g["text"])
+            for g in gold if g["doc"].startswith("W")
+            and any(not n["doc"].startswith("W") and n["text"] == g["text"] for n in gold)}
+
+    def cites(doc):
+        origin = "workspace" if doc.startswith("W") else "knowledge"
+        if any(used(r) and r.get("origin", "knowledge") == origin and r.get("title") == titles.get(doc) for r in references):
+            return True
+        return doc in same and cites(same[doc])
+
     origins = {r.get("origin", "knowledge") for r in references if used(r)}
+    if titles and any(cites(base) for base in same.values()):
+        origins.add("workspace")
     required = {"kb": {"knowledge"}, "workspace": {"workspace"},
                 "both": {"knowledge", "workspace"}, "conflict": {"knowledge", "workspace"}, "none": set()}
     source = case.get("source", "none" if case["abstain"] else "kb")
     correct = required[source] <= origins
     if titles and source != "none":
-        for gold in case.get("gold", []):
-            origin = "workspace" if gold["doc"].startswith("W") else "knowledge"
-            correct = correct and any(used(r) and r.get("origin", "knowledge") == origin
-                                      and r.get("title") == titles.get(gold["doc"]) for r in references)
+        correct = correct and all(cites(g["doc"]) for g in gold)
     if source == "conflict":
-        different = bool(re.search(r"不同|不一致|差异|冲突|改为|改成|而工作区|工作区.{0,20}(?:写|为)", answer))
-        priority = bool(re.search(r"以.{0,35}(?:知识库|正式版|正式制度).{0,12}为准|(?:应|须|需要|优先|仍)按.{0,20}(?:知识库|正式版|正式制度)", answer))
-        correct = correct and different and priority
+        correct = correct and bool(CONFLICT_NOTED.search(answer))
+        if conflict == "priority":
+            correct = correct and bool(CONFLICT_PRIORITY.search(answer))
     return correct
+
+
+def header_facts(references):
+    """依据头随片段发给模型的出处信息（工作区文件的更新时间）；回答复述它不是无出处数字。"""
+    return [r["updated_at"].replace("T", " ") for r in references if r.get("updated_at")]
 
 
 def material_evidence(history):
@@ -563,10 +597,13 @@ def material_evidence(history):
 
 def apply_source_score(scored, case, answer, references, titles=None):
     scored = dict(scored, problems=[p for p in scored["problems"] if p != "source_incorrect"])
+    others = not any(p != "retrieval_miss" for p in scored["problems"])
     scored["source_correct"] = score_source(case, answer, references, titles)
     if not scored["source_correct"]:
         scored["problems"].append("source_incorrect")
     scored["passed"] = not any(p != "retrieval_miss" for p in scored["problems"])
+    # 冲突题另记“只要求指出冲突”口径的结果；口径由产品决定，主通过率仍按出题时的 priority 口径
+    scored["passed_if_noted"] = others and score_source(case, answer, references, titles, conflict="noted")
     return scored
 
 
@@ -624,7 +661,8 @@ def answer_round2(imports, encoder, kb_id, cases, format_of, args, stamp, model_
                     material_parts, material_refs = material_evidence(history)
                     evidence.extend(material_parts)
                     references = [*references, *material_refs]
-                scored = apply_source_score(judge(case, answer, status, evidence, titles, corpus), case, answer, references, titles)
+                scored = apply_source_score(judge(case, answer, status, evidence, titles, corpus + header_facts(references)),
+                                            case, answer, references, titles)
                 event.update(status=status, answer=answer, references=references, evidence=evidence)
             except Exception as exc:
                 event.update(status="error", error=f"{type(exc).__name__}: {exc}"[:300])
@@ -665,7 +703,8 @@ def rescore(results: Path) -> None:
     for event in data["events"]:
         case = cases[event["id"]]
         if event["status"] != "error":
-            scored = judge(case, event["answer"], event["status"], event["evidence"] if ROUND == 2 else evidence[event["id"]], titles, corpus)
+            scored = judge(case, event["answer"], event["status"], event["evidence"] if ROUND == 2 else evidence[event["id"]], titles,
+                           corpus + header_facts(event.get("references", [])) if ROUND == 2 else corpus)
             if ROUND == 2:
                 scored = apply_source_score(scored, case, event["answer"], event["references"], titles)
             event.update(scored)
