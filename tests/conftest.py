@@ -43,3 +43,13 @@ def _isolated_workspace_index(tmp_path, monkeypatch):
 def _no_office_profile_template(monkeypatch):
     """转换用替身时不建 LibreOffice 配置模板（模板初始化会多一次 soffice 调用）；模板逻辑在专门的测试里开。"""
     monkeypatch.setattr(config, "OFFICE_PROFILE_TEMPLATE", False)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_ocr(monkeypatch):
+    """单元测试不跑真实图片文字识别（慢，且结果随模型变化）：默认关闭；OCR 用例自己打开并注入替身引擎。"""
+    from briefly import ocr
+
+    monkeypatch.setattr(config, "OCR", "off")
+    monkeypatch.setattr(ocr, "_engine", None)
+    monkeypatch.setattr(ocr, "DEADLINE", None)

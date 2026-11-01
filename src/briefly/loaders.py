@@ -1,10 +1,12 @@
 """把各种办公文件读成文本，标题统一用 Markdown 表示，并附解析报告。"""
 from dataclasses import dataclass, field
+import hashlib
 from io import BytesIO
 from pathlib import Path
 from time import perf_counter
 
-SUPPORTED_TYPES = ("txt", "md", "doc", "docx", "pdf", "xlsx", "xls", "csv", "pptx", "ppt")
+IMAGE_TYPES = ("png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp")  # 只靠本地图片文字识别读取
+SUPPORTED_TYPES = ("txt", "md", "doc", "docx", "pdf", "xlsx", "xls", "csv", "pptx", "ppt", *IMAGE_TYPES)
 
 
 @dataclass
@@ -107,6 +109,8 @@ def _load(kind: str, data: bytes) -> LoadedDocument:
         from .tables import load_csv
 
         return load_csv(decode_text(data))
+    if kind in IMAGE_TYPES:
+        return _load_image(data)
     from .pdf import load_pdf
 
     return load_pdf(data)
@@ -114,6 +118,61 @@ def _load(kind: str, data: bytes) -> LoadedDocument:
 
 def load_bytes(filename: str, data: bytes) -> str:
     return load_document(filename, data).text
+
+
+def _load_image(data: bytes) -> LoadedDocument:
+    """图片文件（截图、拍照、扫描件）整张识别；多页 TIFF 每帧算一页。手机照片按 EXIF 方向摆正。"""
+    from PIL import Image, ImageOps, ImageSequence
+
+    from . import ocr
+
+    if not ocr.enabled():
+        raise ValueError(f"图片文件需要本地图片文字识别才能读取：{ocr.disabled_note()}")
+    tick = perf_counter()
+    image = Image.open(BytesIO(data))
+    frames = getattr(image, "n_frames", 1)
+    session = ocr.OcrSession()
+    tokens = []
+    for n, frame in enumerate(ImageSequence.Iterator(image), start=1):
+        frame = ImageOps.exif_transpose(frame.copy())
+        block = session.page(frame, f"第{n}页" if frames > 1 else "图片", n if frames > 1 else None)
+        if block:
+            tokens.append(session.token(block))
+    if not tokens:
+        raise ValueError("图片里没有识别出文字" + ("（已超过识别上限或预算）" if session.skipped else ""))
+    text, report = session.finish("\n\n".join(tokens), {"parser": "rapidocr", "structure": None,
+                                                         "frames": frames, "warnings": []})
+    report["timings"] = {"ocr_seconds": round(perf_counter() - tick, 6)}
+    return LoadedDocument(text, markdown=False, report=report)
+
+
+def _picture_image(item):
+    """Docling 图片项里的 PIL 图片；图表（有数据表的）和取不到像素的返回 None。"""
+    if item.meta is not None and getattr(item.meta, "tabular_chart", None) is not None:
+        return None
+    try:
+        return item.image.pil_image if item.image is not None else None
+    except Exception:
+        return None
+
+
+def _insert_ocr(doc, item, session, location, page=None, number=None):
+    """识别一张 Docling 图片，在它后面插入占位文字（导出后由 session.finish 换成识别文字）。
+    图片在表格（或另一张图片）里时插到表格之后，不改动表格结构；标题、分组下的图片就地插入。返回是否插入。"""
+    from docling_core.types.doc import DocItemLabel, PictureItem, TableItem
+
+    picture = _picture_image(item)
+    if picture is None:
+        return False
+    block = session.picture(None, location, page, number, picture=picture)
+    if block is None:
+        return False
+    anchor = item
+    while anchor.parent is not None and isinstance(parent := anchor.parent.resolve(doc), (TableItem, PictureItem)):
+        anchor = parent
+    doc.insert_text(sibling=anchor, label=DocItemLabel.TEXT, text=session.token(block),
+                    prov=item.prov[0] if item.prov else None, content_layer=item.content_layer)
+    return True
 
 
 def _load_docx(data: bytes) -> LoadedDocument:
@@ -133,13 +192,23 @@ def _load_docx(data: bytes) -> LoadedDocument:
         TitleItem,
     )
 
+    from docling_core.types.doc import PictureItem
+
+    from . import ocr
+
     doc = _docling_converter().convert(DocumentStream(name="a.docx", stream=BytesIO(data))).document
-    tables = []
+    tables, pictures = [], []
     for item, _ in doc.iterate_items():
         if isinstance(item, TextItem) and not isinstance(item, (SectionHeaderItem, TitleItem)):
             item.text = escape_heading_marks(item.text)
         elif isinstance(item, TableItem):
             tables.append(item)
+        elif isinstance(item, PictureItem):
+            pictures.append(item)
+    session = ocr.OcrSession() if pictures and ocr.enabled() else None
+    if session is not None:
+        for n, item in enumerate(pictures, start=1):
+            _insert_ocr(doc, item, session, f"图{n}", number=n)
     for table in tables:
         # 含多段文字的单元格，docling 把内容另存为表格下的子节点；拆格后文字已在单元格里，删掉子节点免得在表格后重复输出
         rich = [c.ref.resolve(doc) for c in table.data.table_cells if isinstance(c, RichTableCell)]
@@ -154,9 +223,14 @@ def _load_docx(data: bytes) -> LoadedDocument:
     if footnotes:
         text += "\n\n脚注：\n" + "\n".join(f"[{i}] {note}" for i, note in enumerate(footnotes, start=1))
     comments = sum(1 for t in doc.texts if t.content_layer == ContentLayer.NOTES)
-    report = {"parser": "docling", "structure": "docx_styles", "footnotes": len(footnotes)}
+    report = {"parser": "docling", "structure": "docx_styles", "footnotes": len(footnotes), "pictures": len(pictures),
+              "warnings": []}
     if comments:
-        report["warnings"] = [f"文档有 {comments} 条批注（审阅意见），未纳入正文"]
+        report["warnings"].append(f"文档有 {comments} 条批注（审阅意见），未纳入正文")
+    if session is not None:
+        text, report = session.finish(text, report)
+    elif pictures:
+        report["warnings"].append(f"文档中有 {len(pictures)} 张图片，未识别图片里的文字（{ocr.disabled_note()}），请核对原文件")
     return LoadedDocument(text, markdown=True, report=report)
 
 
@@ -255,11 +329,28 @@ def _slides_markdown(source) -> LoadedDocument:
 
     from docling_core.types.doc import ContentLayer, PictureItem, SectionHeaderItem, TextItem, TitleItem
 
+    from . import ocr
+
     options = dict(escape_html=False, escape_underscores=False, image_placeholder="", compact_tables=True)
-    for doc in source if isinstance(source, list) else [source]:
+    by_slide: dict[int, list] = {}  # 页码 → [(文档, 图片项)]
+    for n, doc in enumerate(source if isinstance(source, list) else [source], start=1):
         for item, _ in doc.iterate_items():
             if isinstance(item, TextItem) and not isinstance(item, (SectionHeaderItem, TitleItem)):
                 item.text = escape_heading_marks(item.text)
+            elif isinstance(item, PictureItem):
+                page = n if isinstance(source, list) else item.prov[0].page_no if item.prov else None
+                if page is not None:
+                    by_slide.setdefault(page, []).append((doc, item))
+    session = ocr.OcrSession() if by_slide and ocr.enabled() else None
+    if session is not None:
+        images = {id(item): _picture_image(item) for found in by_slide.values() for _, item in found}
+        count = len(source) if isinstance(source, list) else len(source.pages)
+        session.ignore_repeated([[hashlib.sha256(images[id(item)].tobytes()).hexdigest()
+                                  for _, item in by_slide.get(n, []) if images[id(item)] is not None]
+                                 for n in range(1, count + 1)])
+        for n in sorted(by_slide):
+            for k, (doc, item) in enumerate(by_slide[n], start=1):
+                _insert_ocr(doc, item, session, f"第{n}页 图{k}", n, k)
     slides, notes, pictures = [], {}, 0
     if not isinstance(source, list):
         numbers = sorted(source.pages)
@@ -296,8 +387,10 @@ def _slides_markdown(source) -> LoadedDocument:
     text = re.sub(r"\n{3,}", "\n\n", "\n\n".join(blocks)).replace("&#124;", "\\|")
     report = {"parser": "docling", "structure": "pptx_slides", "slides": len(slides),
               "notes": sum(len(v) for v in notes.values()), "pictures": pictures}
-    if pictures:
-        report["warnings"] = [f"幻灯片中有 {pictures} 张图片，未识别图片里的文字，请核对原文件"]
+    if session is not None:
+        text, report = session.finish(text, report)
+    elif pictures:
+        report["warnings"] = [f"幻灯片中有 {pictures} 张图片，未识别图片里的文字（{ocr.disabled_note()}），请核对原文件"]
     return LoadedDocument(text, markdown=True, report=report)
 
 

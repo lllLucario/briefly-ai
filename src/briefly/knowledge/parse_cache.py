@@ -16,7 +16,7 @@ from .service import fingerprint
 def parser_identity():
     root = Path(__file__).resolve().parents[1]
     sources = ["loaders.py", "direct_word.py", "direct_ppt.py", "word_xhtml.py", "legacy_word.py", "pdf.py",
-               "tables.py", "chunking.py", "layout_cleaner.py", "materials.py", "parse_process.py",
+               "tables.py", "chunking.py", "layout_cleaner.py", "materials.py", "parse_process.py", "ocr.py",
                "parse_worker.py", "knowledge/parse_cache.py", "java/legacy-doc-parser.jar"]
     packages = {}
     for name in ("docling", "docling-slim", "docling-core", "python-docx", "python-pptx", "pypdf", "pdfplumber", "pdfminer.six",
@@ -40,7 +40,8 @@ def parser_identity():
         stat = path.stat() if path and path.is_file() else None
         runtimes[key] = dict(path=str(path) if path else None, size=stat.st_size if stat else None,
                              modified=stat.st_mtime_ns if stat else None)
-    return dict(version=1, backend=config.DOC_PARSER, ppt_backend=config.PPT_PARSER, conversion_timeout=config.DOC_CONVERSION_TIMEOUT_S,
+    from ..ocr import identity as ocr_identity
+    return dict(version=1, backend=config.DOC_PARSER, ocr=ocr_identity(), ppt_backend=config.PPT_PARSER, conversion_timeout=config.DOC_CONVERSION_TIMEOUT_S,
                 profile_template=config.OFFICE_PROFILE_TEMPLATE,
                 packages=packages, runtimes=runtimes,
                 sources={name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in sources})

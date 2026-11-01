@@ -12,7 +12,7 @@ SCHEDULE = "周报设置与提醒"
 
 OPENAPI_TAGS = [
     {"name": CHAT, "description": "五项能力的对话（多轮记忆，按 thread_id 区分会话），以及会话列表、历史、上下文用量。"},
-    {"name": MATERIALS, "description": "材料库：粘贴文本或上传 txt / md / doc / docx / pdf / xlsx / csv，自动识别章节并分块。旧版doc优先本地Java/Tika直接解析，也可配置LibreOffice转换；飞书链接的导入见“飞书”。"},
+    {"name": MATERIALS, "description": "材料库：粘贴文本或上传 txt / md / doc / docx / pdf / xlsx / xls / csv / pptx / ppt 或 png / jpg 等图片，自动识别章节并分块。旧版doc优先本地Java/Tika直接解析，也可配置LibreOffice转换；扫描件、图片文件和文档里图片中的文字用本地 OCR（.[ocr]）识别并在正文中标出来源，低置信度段落不作为确定依据；飞书链接的导入见“飞书”。"},
     {"name": KNOWLEDGE, "description": "知识库归属、文档版本、索引状态、稳定原文引用和显式引用问答；结构未确认的依据只返回带限定摘录。纳入材料不等于索引已就绪，引用问答不代表向量召回已交付。"},
     {"name": TRACKING, "description": "追踪是材料（文件）自己的属性：添加本机文件、文件夹或飞书文档后每个工作日检查修改，记录版本和差异；变化进入周报的审核清单。"},
     {"name": TODOS, "description": "待办：严格两级的父子结构、状态（父子各自维护）、归档、关联材料（上传或从材料库选择，材料只存一份）、进展说明与时间线。待办这周的进展进入周报的审核清单。"},

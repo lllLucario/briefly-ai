@@ -6,10 +6,10 @@
     "LegacyDocParser.java": "597f82a54eca3e88a4874372ecb2c85f902880570009ea0b26d99053ca21e88c",
     "LegacyDocStructured.java": "86090addd24acf8bce517bccb299e59e9105b262af8e1705be2ae0fec89aed11",
     "LegacyDocTextboxes.java": "5cb5cef52cfdc51fa73c2aa0aeda3cc1650664bdcd25ed100c023c620b051226",
-    "LegacyPptParser.java": "32929a1dfa50b3bdfad4745a2c7b97cf547afe057677e20c3794aed4e3068121",
+    "LegacyPptParser.java": "be47c9c1258c54c2003366d4c3d3b3ae59019d38ac4a9207bd0722124fe116cb",
     "NativeTableAccess.java": "abfa2ba2ea1276cd8800725cb370c6ac160ef7424a002035a5930ccc8fa507bb"
   },
-  "jar_sha256": "30c4c92295810816d6adb2821699f510065506fb8e0b9bdb30a83359eac9bc36",
+  "jar_sha256": "04f6db76ff152f5ad0ee916d5c2875e2b0854c7c6fc00aeaf6b2ee8331564529",
   "compiler_sha256": "05cc22a24e7982970f63a405fc6c820bc80b806f27f3c5a6236fc475f8f7152b",
   "tika_sha256": "f29d4e0d2cff1fc32396f6ac5ce436dfc7b19f9303d3b899e1f56fde85711c96"
 }

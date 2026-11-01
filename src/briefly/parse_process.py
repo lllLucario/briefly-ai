@@ -106,7 +106,9 @@ def _load_isolated(filename, data, *, timeout=None):
             (folder / "input").write_bytes(data)
             settings = {key: getattr(config, key) for key in (
                 "DOC_PARSER", "PPT_PARSER", "JAVA_PATH", "TIKA_APP_JAR", "LIBREOFFICE_PATH", "DOC_CONVERSION_TIMEOUT_S",
-                "OFFICE_PROFILE_TEMPLATE")}
+                "OFFICE_PROFILE_TEMPLATE", "OCR", "OCR_MAX_PAGES", "OCR_MAX_IMAGES", "OCR_MIN_CONFIDENCE", "OCR_THREADS")}
+            # 识别很慢：只用总预算的四分之三，留出启动、其余解析和结果校验的时间，超出时部分识别而不是整份超时
+            settings["OCR_TIME_BUDGET_S"] = min(config.OCR_TIME_BUDGET_S, timeout * 0.75)
             (folder / "request.json").write_text(json.dumps(dict(filename=Path(filename).name, settings=settings)), encoding="utf-8")
             options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
             try:

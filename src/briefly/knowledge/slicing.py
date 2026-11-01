@@ -117,6 +117,11 @@ def token_slices(text, title, markdown, encoder, *, tokens=512, overlap=None,
                                   tokenizer_sha256=encoder.identity["artifact_sha256"]["tokenizer.json"]))
     boundaries = {0, len(text), *(s.start for s in sections)}
     boundaries.update(n for a, b, _ in structures for n in (a, b))
+    # 置信度低的图片识别文字单独成片，质量限制不波及相邻正文
+    isolated = [(r["start"], r["end"]) for r in (report or {}).get("ocr_unconfirmed_ranges") or ()]
+    boundaries.update(n for a, b in isolated for n in (a, b) if 0 <= n <= len(text))
+    if isolated:
+        config["parameters"]["isolated_ranges"] = [dict(start=a, end=b) for a, b in isolated]
     boundaries = sorted(n for n in boundaries if not any(a < n < b for a, b, _ in structures))
     result = []
 

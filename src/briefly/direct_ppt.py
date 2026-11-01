@@ -2,6 +2,7 @@
 
 Java端按Docling pptx后端的阅读顺序（自上而下成行、行内自左向右，组合形状展开）输出每页的标题、段落、
 列表、表格、图片数与备注；这里还原成同样标签的DoclingDocument，再走与pptx相同的按页导出与清理。
+开启图片文字识别时，Java端另把位图（PNG/JPEG/DIB）各写出一份，按阅读顺序还原成带像素的图片项。
 """
 import json
 import os
@@ -12,7 +13,7 @@ from .direct_word import BRIDGE, _paths, _slots
 from .legacy_word import OLE_HEADER, _run
 
 MAX_RESULT_BYTES = 50 * 1024 * 1024
-ADAPTER_VERSION = 1
+ADAPTER_VERSION = 2
 
 
 class DirectSlidesUnsupported(ValueError):
@@ -23,7 +24,10 @@ def parse_ppt(data: bytes):
     """返回 Docling 文档；直读不了时抛 DirectSlidesUnsupported（可转换）或 ValueError。"""
     if not data.startswith(OLE_HEADER):
         raise ValueError("文件不是可识别的旧版 PowerPoint .ppt 文档；仅更改后缀不能转换文件格式")
+    from .ocr import enabled
+
     java, jar = _paths()
+    pictures = ["-Dbriefly.pictures=true"] if enabled() else []
     if not _slots.acquire(timeout=5):
         raise ValueError("旧版文档直接解析任务繁忙，请稍后重试")
     try:
@@ -32,7 +36,7 @@ def parse_ppt(data: bytes):
             (folder/"input-0.ppt").write_bytes(data)
             try:
                 _run([java, "-Xmx512m", "-XX:ActiveProcessorCount=4", "-Dfile.encoding=UTF-8", "-Djava.awt.headless=true",
-                      "-cp", jar + os.pathsep + str(BRIDGE), "LegacyPptParser", str(folder/"output"),
+                      *pictures, "-cp", jar + os.pathsep + str(BRIDGE), "LegacyPptParser", str(folder/"output"),
                       str(folder/"input-0.ppt")], action="直接解析", label="旧版 .ppt")
             except ValueError as exc:  # 超时或Java异常退出（如图片过多内存不足）
                 raise DirectSlidesUnsupported(str(exc)) from exc
@@ -44,16 +48,18 @@ def parse_ppt(data: bytes):
             output = target/"slides.json"
             if not output.is_file() or not 0 < output.stat().st_size <= MAX_RESULT_BYTES:
                 raise DirectSlidesUnsupported("直接解析没有有效结果，或结果超过50MB")
-            return slide_documents(json.loads(output.read_text(encoding="utf-8")))
+            return slide_documents(json.loads(output.read_text(encoding="utf-8")), target/"pictures")
     finally:
         _slots.release()
 
 
-def slide_documents(value: dict) -> list:
+def slide_documents(value: dict, pictures: Path | None = None) -> list:
     """按 Docling pptx 后端的标签规则重建，每页一份文档（页码都是 1）：标题占位符→TITLE，其他段落→PARAGRAPH，
-    项目符号/编号→列表，表格按合并跨度建格，隐藏页内容放到不可见层，备注放到 NOTES 层。"""
+    项目符号/编号→列表，表格按合并跨度建格，隐藏页内容放到不可见层，备注放到 NOTES 层。
+    导出了像素的图片（pic 项，文件在 pictures 目录）放在阅读顺序里，其余图片只计数，补在页末。"""
     from docling_core.types.doc import (BoundingBox, ContentLayer, DocItemLabel, DoclingDocument, GroupLabel,
-                                        ProvenanceItem, Size, TableCell, TableData)
+                                        ImageRef, ProvenanceItem, Size, TableCell, TableData)
+    from PIL import Image
 
     def prov(text):
         return ProvenanceItem(page_no=1, bbox=BoundingBox(l=0, t=0, r=0, b=0), charspan=(0, len(text)))
@@ -66,11 +72,21 @@ def slide_documents(value: dict) -> list:
         parent = doc.add_group(name=f"slide-{n - 1}", label=GroupLabel.CHAPTER)
         layer = ContentLayer.INVISIBLE if slide["hidden"] else ContentLayer.BODY
         lists = []  # 打开中的列表（外层在前）：[组, 层级, 编号计数, 最后一项]
+        placed = 0
         for item in slide["items"]:
             kind, text = item["t"], item.get("x", "")
             if kind != "li":
                 lists.clear()
-            if kind == "title":
+            if kind == "pic":
+                path = pictures / Path(item["f"]).name if pictures else None
+                try:
+                    with Image.open(path) as opened:
+                        image = ImageRef.from_pil(image=opened.convert("RGBA") if opened.mode == "P" else opened.copy(), dpi=72)
+                except Exception:  # 文件缺失、格式不认识：只计数
+                    continue
+                doc.add_picture(parent=parent, image=image, prov=prov(""), content_layer=layer)
+                placed += 1
+            elif kind == "title":
                 doc.add_title(text=text, parent=parent, prov=prov(text), content_layer=layer)
             elif kind == "p":
                 doc.add_text(label=DocItemLabel.PARAGRAPH, text=text, parent=parent, prov=prov(text), content_layer=layer)
@@ -97,7 +113,7 @@ def slide_documents(value: dict) -> list:
                 if cells:
                     doc.add_table(data=TableData(num_rows=len(rows), num_cols=max(map(len, rows)), table_cells=cells),
                                   parent=parent, prov=prov(""), content_layer=layer)
-        for _ in range(slide["pictures"]):
+        for _ in range(slide["pictures"] - placed):
             doc.add_picture(parent=parent, prov=prov(""), content_layer=layer)
         for note in slide["notes"]:
             doc.add_text(label=DocItemLabel.TEXT, text=note, parent=parent, prov=prov(note), content_layer=ContentLayer.NOTES)

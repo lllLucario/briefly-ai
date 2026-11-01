@@ -1,4 +1,5 @@
 // Legacy .ppt (POI HSLF) to per-slide JSON in visual reading order; errors isolated per input, no text in logs.
+// With -Dbriefly.pictures=true, raster pictures (PNG/JPEG/DIB) are also written once each to <output>/pictures for local OCR.
 import java.awt.geom.Rectangle2D;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -9,11 +10,14 @@ import org.apache.poi.ddf.EscherProperty;
 import org.apache.poi.ddf.EscherPropertyTypes;
 import org.apache.poi.hslf.exceptions.EncryptedPowerPointFileException;
 import org.apache.poi.hslf.exceptions.OldPowerPointFormatException;
+import org.apache.poi.sl.usermodel.PictureData.PictureType;
 import org.apache.poi.hslf.usermodel.*;
 import org.apache.poi.sl.usermodel.Placeholder;
 
 public class LegacyPptParser {
     static final double ROW_TOLERANCE = 3.6; // points; Docling's pptx backend uses 45720 EMU
+    static Path pictureDir;  // null unless picture export is requested
+    static final Set<String> written = new HashSet<>();
 
     public static void main(String[] args) throws Exception {
         Path root = Path.of(args[0]);
@@ -21,6 +25,8 @@ public class LegacyPptParser {
         for (int i = 1; i < args.length; i++) {
             Path output = root.resolve(Integer.toString(i - 1));
             Files.createDirectories(output);
+            pictureDir = Boolean.getBoolean("briefly.pictures") ? output.resolve("pictures") : null;
+            written.clear();
             try (InputStream in = Files.newInputStream(Path.of(args[i])); HSLFSlideShow show = new HSLFSlideShow(in)) {
                 StringBuilder json = new StringBuilder("{\"slides\":[");
                 List<HSLFSlide> slides = show.getSlides();
@@ -107,8 +113,10 @@ public class LegacyPptParser {
             items.add(rows.append("]}").toString());
         } else if (shape instanceof HSLFGroupShape group) {
             for (HSLFShape child : ordered(group.getShapes())) shape(child, items, pictures);
-        } else if (shape instanceof HSLFPictureShape) {
+        } else if (shape instanceof HSLFPictureShape picture) {
             pictures[0]++;  // includes embedded OLE objects; their content is not read
+            String file = export(picture);
+            if (file != null) items.add("{\"t\":\"pic\",\"f\":" + quote(file) + "}");
         } else if (shape instanceof HSLFTextShape text) {
             Placeholder placeholder = text.getPlaceholder();
             if (placeholder == Placeholder.FOOTER || placeholder == Placeholder.DATETIME || placeholder == Placeholder.SLIDE_NUMBER) return;
@@ -130,6 +138,26 @@ public class LegacyPptParser {
             if (!any) wordArt(text, items);
         } else if (shape instanceof HSLFSimpleShape simple) {
             wordArt(simple, items);
+        }
+    }
+
+    /** Writes a raster picture once per picture record; vector/OLE pictures and failures are skipped (counted only). */
+    static String export(HSLFPictureShape shape) {
+        if (pictureDir == null) return null;
+        try {
+            HSLFPictureData data = shape.getPictureData();
+            if (data == null) return null;
+            PictureType type = data.getType();
+            String ext = type == PictureType.PNG ? "png" : type == PictureType.JPEG ? "jpg" : type == PictureType.DIB ? "bmp" : null;
+            if (ext == null) return null;
+            String file = "pic-" + data.getIndex() + "." + ext;
+            if (written.add(file)) {
+                Files.createDirectories(pictureDir);
+                Files.write(pictureDir.resolve(file), data.getData());
+            }
+            return file;
+        } catch (Exception ex) {
+            return null;
         }
     }
 

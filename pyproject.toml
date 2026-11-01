@@ -30,6 +30,8 @@ dependencies = [
 dev = ["pytest>=8", "xlwt>=1.3,<1.4"]  # xlwt 只在测试里构造 .xls 样本
 browser = ["playwright>=1.64,<2"]
 rag = ["fastembed>=0.9.1,<0.10", "sqlite-vec>=0.1.9,<0.2", "psutil>=7.2,<8"]
+# 本地图片文字识别（Apache-2.0；ONNX Runtime CPU 推理，PP-OCRv6 small 模型随包分发，不联网下载）
+ocr = ["rapidocr>=3.10,<3.11", "onnxruntime>=1.20,<2"]
 
 [project.scripts]
 briefly = "briefly.cli:main"
