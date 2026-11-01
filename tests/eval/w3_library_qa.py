@@ -529,7 +529,8 @@ def validate_workspace(store, files):
 CONFLICT_NOTED = re.compile(r"不同|不一致|差异|差别|冲突|改为|改成|而工作区|工作区.{0,20}(?:写|为)"
                             r"|(?:没有|不再|未|不)保留|删除|删去|删掉")  # 删除型改稿：“部门稿没有保留这段说明”
 _FORMAL = r"(?:知识库|正式版|正式制度|正式课件|正式方案|发布版)"
-CONFLICT_PRIORITY = re.compile(rf"以.{{0,35}}{_FORMAL}.{{0,12}}为准|(?:应|须|需要|优先|仍)按.{{0,20}}{_FORMAL}")
+CONFLICT_PRIORITY = re.compile(rf"以.{{0,35}}{_FORMAL}.{{0,12}}为(?:准|据|依据)|(?:应|须|需要|优先|仍)按.{{0,20}}{_FORMAL}"
+                               rf"|按.{{0,6}}{_FORMAL}.{{0,30}}为准")  # “按正式课件，应以‘30日’为准”
 # 冲突题的两种口径（产品待定）：priority 要求指出不同并说明以知识库正式版为准；noted 只要求指出不同
 CONFLICT_RULES = ("priority", "noted")
 

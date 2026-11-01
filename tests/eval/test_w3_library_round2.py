@@ -125,6 +125,8 @@ def test_identical_copy_is_covered_by_the_annotated_knowledge_citation():
     ("部门稿没有保留这段说明〔依据2〕，仍应以知识库发布的正式版为准〔依据1〕。", True, True),
     ("正式课件写30日〔依据1〕，部门稿写32日〔依据2〕，两者不一致。", False, True),
     ("两版并列如下〔依据1〕〔依据2〕。", False, False),
+    ("知识库30日、部门稿32日，不一致〔依据1〕〔依据2〕。按正式课件，应以“30日”为准。", True, True),
+    ("部门稿未保留这段说明〔依据2〕，应以知识库正式发布版为据〔依据1〕。", True, True),
 ])
 def test_conflict_rules_priority_and_noted(answer, priority, noted):
     case = dict(source="conflict", abstain=False)
@@ -170,3 +172,8 @@ def test_slash_joined_source_numbers_and_header_time_are_not_unsupported():
 def test_not_mentioned_wording_counts_as_abstain():
     from tests.eval.w3_e2e_scoring import abstained
     assert abstained("材料中没有提到这份表格的供应商。", None)
+
+
+def test_semicolon_separated_citations_are_recognized():
+    from briefly.knowledge.qa import cited_numbers
+    assert cited_numbers("第八步是处理遗留问题〔依据9；依据1〕") == [9, 1]

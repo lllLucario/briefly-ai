@@ -19,7 +19,7 @@ LOW_RELEVANCE ="知识库里没有找到与问题直接相关的内容，本次�
 EGRESS_POLICY = "常见邮箱/手机号/密钥/密码及用户指定字段；不保证识别所有企业敏感信息"
 MAX_SUB_QUESTIONS = 3
 # 模型偶尔把〔依据3〕写成（依据3）：编号照样能对应依据，不认就会让引用列表漏掉这条（素材库第二轮 MC03）
-_CITATION_GROUP = re.compile(r"[〔【（(]\s*依据((?:\d+|[\s、，,]|依据)+)[〕】）)]")
+_CITATION_GROUP = re.compile(r"[〔【（(]\s*依据((?:\d+|[\s、，,；;]|依据)+)[〕】）)]")  # 〔依据9；依据1〕的分号也算分隔
 
 
 def cited_numbers(text: str) -> list[int]:
