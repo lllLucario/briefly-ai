@@ -110,6 +110,8 @@ def test_locate_phrasing_and_follow_ups_in_knowledge_routing():
     state = TurnState(kb_id="kb")
     for text in ["库存现金管理那段在哪里？", "各厂家金额汇总在哪张表的哪个区域？", "资产数量统计在什么表？"]:
         assert funnel().classify(text, state).intent == "locate"
+    # 问句只在前一分句末尾（整句没有提问词）：仍是找出处，不报错
+    assert funnel().classify("有讲病毒库更新的制度吗？把对应文件定位出来。", state).intent == "locate"
     # 找出处之外还问了具体内容：要回答，不只列位置
     assert funnel().classify("入职指南让年假去看哪份制度？按那份制度，没休完的最晚能留到什么时候？", state).intent == "knowledge"
     # 承接上一轮的追问要结合上文补全，交给助理；没有上一轮时仍可直接检索

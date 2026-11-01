@@ -225,7 +225,8 @@ class IntentFunnel:
             return None
         # “哪份制度讲的？按那份制度最晚能留到什么时候”：另有分句在问具体内容时要回答，不只列位置
         clauses = [c for c in re.split(r"[？?。！!；;，,]", text) if c.strip()]
-        if where and any(_ASK.search(c) and not _WHERE.search(c) for c in clauses):
+        # 整句没有提问词时（“有讲X的制度吗？把对应文件定位出来”，“吗”只在分句末尾）按找出处处理
+        if where and ask and any(_ASK.search(c) and not _WHERE.search(c) for c in clauses):
             where = None
         intent, cue = ("locate", where.group()) if where else ("knowledge", ask.group())
         return IntentDecision(intent, 2, f"选定知识库中有相关原文（相似度{score:.2f}），句式为{'找出处' if where else '提问'}",
