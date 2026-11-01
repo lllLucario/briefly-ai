@@ -135,3 +135,14 @@ def test_line_start_section_numbers_are_known():
     assert number_issues("见 6.4.3 档案销毁", [source]) == ["6.4.3"]
     # 行内的同样编号本来就能核对；只补行首编号，不把正文里的普通数字放进来
     assert number_issues("见 6.4.2 条，保存3年", [source]) == ["3"]
+
+
+def test_citation_labels_are_not_business_numbers():
+    source = "差旅住宿每晚不超过450元，出差补助每天80元。"
+    for answer in ("住宿每晚450元〔依据2〕", "住宿每晚450元[依据12]", "依据1–37均未提及餐补", "见依据1-3、5，补助每天80元",
+                   "依据1和依据2都写了每晚450元", "【依据4】补助80元"):
+        assert number_issues(answer, [source]) == [], answer
+    # 依据编号旁边的正文数字照常核对
+    assert number_issues("住宿每晚500元〔依据2〕", [source]) == ["500"]
+    assert number_issues("依据1–37：补助每天90元", [source]) == ["90"]
+    assert number_issues("依据3，共6天", [source]) == ["6"]

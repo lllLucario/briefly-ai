@@ -6,6 +6,8 @@ from .conflicts import value_in
 from .date_check import _pairs, review_dates
 from .weekly.engine import unverified_numbers
 
+_CITED = re.compile(r"依据\s*\d+(?:\s*[-–—~～至到、]\s*\d+)*")
+
 
 def number_issues(answer: str, sources: list[str], now=None) -> list[str]:
     evidence = "\n".join(sources)
@@ -16,6 +18,8 @@ def number_issues(answer: str, sources: list[str], now=None) -> list[str]:
     evidence, answer = clean(evidence), clean(answer)
     # 模型有时把执行顺序写在同一行；这些仍是序号，不是新增业务数字。
     answer = re.sub(r"(?<![\d.])\d+[.、)）]\s+", "", answer)
+    # 依据编号（〔依据3〕、依据1–37、依据1-3、5）是出处标注，不是业务数字；正文里的数字照常核对
+    answer = _CITED.sub("依据", answer)
     values = set()
     known = set(unverified_numbers(evidence, ""))
     # 制度、标准常把多级条款编号写在行首（“7.5.3 文件控制”）；周报规则把行首“7.”当列表序号剥掉，这里按原样补回
