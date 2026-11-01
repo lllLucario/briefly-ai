@@ -4,7 +4,7 @@
                                      [--kb-root 本地评测知识库目录]
 兜底层（agent）记为“交给助理”，只统计分流是否合理，不评价助理最终回答。
 --kb-root 指向用 ImportService 建好的本地知识库目录（含 app.db、index.sqlite、kb_id.txt），
-用例选了知识库时按该库做知识库路由；只在本机检索，不外发。
+用例选了知识库时按该库做知识库路由；目录里有多个库时同时做跨库比较（选错库提示）。只在本机检索，不外发。
 """
 import argparse
 from collections import Counter, defaultdict
@@ -109,7 +109,7 @@ def run(cases, funnel, kb_ids: dict | str = "kb-eval") -> list[dict]:
     for case in cases:
         d = funnel.classify(case["text"], state_of(case, kb_ids))
         rows.append(dict(case=case, intent=d.intent, layer=d.layer, confidence=d.confidence,
-                         outcome=outcome(case, d.intent)))
+                         outcome=outcome(case, d.intent), suggested=bool(d.kb_suggestions)))
     return rows
 
 
@@ -148,7 +148,11 @@ def report(rows, show_errors: bool) -> None:
                   f"{c['wrong_direct']:>3} {c['wrong_shortcut']:>3} {c['wrong_hint']:>3} {c['missed_block']:>3}")
     if mismatch := [r for r in rows if r["case"].get("kb_mismatch")]:
         routed = sum(r["intent"] in SHORTCUT for r in mismatch)
-        print(f"\n选错库或库里没有的问题 {len(mismatch)} 条：走了知识捷径 {routed} 条")
+        hinted = sum(r["suggested"] for r in mismatch)
+        print(f"\n选错库或库里没有的问题 {len(mismatch)} 条：走了知识捷径 {routed} 条，提示切换知识库 {hinted} 条")
+    if extra := [r for r in rows if r["suggested"] and not r["case"].get("kb_mismatch")]:
+        shortcut = sum(r["case"]["expected_intent"] in SHORTCUT for r in extra)
+        print(f"选对了库却提示切换 {len(extra)} 条（其中期望走知识捷径 {shortcut} 条）")
     confusion = Counter((r["case"]["expected_intent"], r["intent"]) for r in rows
                         if r["outcome"] in WRONG)
     if confusion:
@@ -166,7 +170,7 @@ def report(rows, show_errors: bool) -> None:
 
 
 def kb_probe(root: Path, encoder_factory):
-    """返回 (知识库映射, 带缓存的相关度函数, 关闭函数)。
+    """返回 (知识库映射, 带缓存的相关度函数, 带缓存的跨库相似度函数, 关闭函数)。
 
     目录里有 libs.json（多库：{键: {kb_id, …}}）时按用例的 state.kb 选库，否则用 kb_id.txt 的单库。"""
     from briefly.db import create_db_engine
@@ -183,23 +187,36 @@ def kb_probe(root: Path, encoder_factory):
         if (kb_id, text) not in cache:
             cache[kb_id, text] = assistant.relevance(kb_id, text)
         return cache[kb_id, text]
+
+    def rivals(text):
+        if text not in cache:
+            cache[text] = assistant.library_scores(text)
+        return cache[text]
     libs = root / "libs.json"
     if libs.is_file():
         kb_ids = {key: lib["kb_id"] for key, lib in json.loads(libs.read_text(encoding="utf-8")).items()}
     else:
         kb_ids = {None: (root / "kb_id.txt").read_text(encoding="utf-8").strip()}
-    return kb_ids, probe, engine.dispose
+    return kb_ids, probe, rivals, engine.dispose
 
 
-def kb_sweep(cases, encoder, kb_ids, probe) -> None:
-    print("\n知识库路由相似度下限扫描（下限 → 可接受率、前两层处理比例、前两层正确率、误判直接回复、误走捷径、误判提示）：")
+def kb_sweep(cases, encoder, kb_ids, probe, rivals) -> None:
+    print("\n知识库路由下限 × 跨库差距扫描（下限/差距 → 可接受率、前两层处理比例、前两层正确率、误判直接回复、误走捷径、"
+          "误判提示、选错库题提示数、选对库却提示数）：")
     for floor in (0.45, 0.50, 0.55, 0.60):
-        funnel = IntentFunnel(lambda: encoder, kb_probe=probe)
-        funnel.kb_threshold = floor
-        s = summarize(run(cases, funnel, kb_ids))
-        print(f"  {floor:.2f}  {s['acceptable']:.1%}  {1 - s['layers'].get(3, 0):.1%}  {s['early_precision'] or 0:.1%}  "
-              f"{s['outcomes'].get('wrong_direct', 0):>3}  {s['outcomes'].get('wrong_shortcut', 0):>3}  "
-              f"{s['outcomes'].get('wrong_hint', 0):>3}")
+        for margin in (None, 0.04, 0.06, 0.08, 0.10, 0.12):  # None：不做跨库比较（改前口径）
+            funnel = IntentFunnel(lambda: encoder, kb_probe=probe, kb_rivals=None if margin is None else rivals)
+            funnel.kb_threshold = floor
+            if margin is not None:
+                funnel.kb_rival_margin = margin
+            rows = run(cases, funnel, kb_ids)
+            s = summarize(rows)
+            hinted = sum(r["suggested"] for r in rows if r["case"].get("kb_mismatch"))
+            extra = sum(r["suggested"] for r in rows if not r["case"].get("kb_mismatch"))
+            print(f"  {floor:.2f}/{'关' if margin is None else f'{margin:.2f}'}  {s['acceptable']:.1%}  "
+                  f"{1 - s['layers'].get(3, 0):.1%}  {s['early_precision'] or 0:.1%}  "
+                  f"{s['outcomes'].get('wrong_direct', 0):>3}  {s['outcomes'].get('wrong_shortcut', 0):>3}  "
+                  f"{s['outcomes'].get('wrong_hint', 0):>3}  {hinted:>3}  {extra:>3}")
 
 
 def sweep(cases, encoder) -> None:
@@ -231,14 +248,14 @@ def main():
     print("\n== 规则层＋语义层（当前阈值） ==")
     report(run(cases, IntentFunnel(lambda: encoder)), args.errors and not args.kb_root)
     if args.kb_root:
-        kb_ids, probe, close = kb_probe(args.kb_root, lambda: encoder.encoder)
+        kb_ids, probe, rivals, close = kb_probe(args.kb_root, lambda: encoder.encoder)
         try:
             floor = kb_floor(encoder.identity)
             print(f"\n== 规则层＋知识库路由＋语义层 ==\n模型指纹 {embedding_fingerprint(encoder.identity)}，"
                   f"当前下限 {'未登记' if floor is None else f'{floor:.2f}'}（标定后登记到 relevance_floor.REGISTERED）")
-            report(run(cases, IntentFunnel(lambda: encoder, kb_probe=probe), kb_ids), args.errors)
+            report(run(cases, IntentFunnel(lambda: encoder, kb_probe=probe, kb_rivals=rivals), kb_ids), args.errors)
             if args.sweep:
-                kb_sweep(cases, encoder, kb_ids, probe)
+                kb_sweep(cases, encoder, kb_ids, probe, rivals)
         finally:
             close()
     if args.sweep:
