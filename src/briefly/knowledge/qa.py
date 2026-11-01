@@ -149,20 +149,18 @@ class KnowledgeQA:
                     if not added and not removed:
                         if same:
                             for e in same:
-                                e["comparison"] = f"工作区版本此处一致：你的文件《{w['source']['title']}》中有逐字相同的内容（已逐句核对）"
+                                e["comparison"] = f"工作区版本此处一致（你的文件《{w['source']['title']}》，已逐句核对）"
                             drop = True
                             break
                         w["comparison"] = f"与知识库《{title}》第{version.number}版此处一致"
                         continue
-                    detail = f"与知识库《{title}》第{version.number}版此处写法不同"
-                    if added:
-                        detail += f"：工作区此处写作{quote(added)}"
-                    if removed:
-                        detail += f"{'；' if added else '：'}知识库此处的{quote(removed)}在工作区文件中没有"
-                    w["comparison"] = detail
+                    diffs = ([f"工作区此处写作{quote(added)}"] if added else []) \
+                        + ([f"知识库此处的{quote(removed)}在工作区文件中没有"] if removed else [])
+                    w["comparison"] = f"与知识库《{title}》第{version.number}版此处写法不同：" + "；".join(diffs)
                     for e in same:
+                        # 不同之处直接写在知识库这条上：工作区那条可能因额度进不了依据包，不能只写“见工作区那条”
                         if not e.get("comparison"):
-                            e["comparison"] = f"工作区《{w['source']['title']}》此处有改动，见工作区那条依据的说明"
+                            e["comparison"] = f"工作区《{w['source']['title']}》此处写法不同：" + "；".join(diffs)
                 if not drop:
                     kept.append(w)
         return kept
@@ -251,6 +249,14 @@ class KnowledgeQA:
         encoder = self.retrieval.imports.encoder_factory()
         question = "；".join(questions)
         selected = []
+        # 工作区保底额度内的片段先留位置：对照注记会让知识库片段变长、超出它那一份，不能因此把对照出不同的工作区片段挤掉
+        # （素材库第二轮复跑 MC03：改稿片段对照后保留，却在这一步进不了依据包）。挤不下时从知识库末尾（相关度低的）去掉。
+        empty, reserved = encoder.token_length(evidence_payload(question, [], start)), []
+        for item in workspace or []:
+            if encoder.token_length(evidence_payload(question, [*reserved, item], start)) - empty <= config.WORKSPACE_CONTEXT_TOKENS:
+                reserved.append(item)
+        while evidence and reserved and encoder.token_length(evidence_payload(question, self._merge(evidence, reserved), start)) > total:
+            evidence = evidence[:-1]
         for item in workspace or []:  # 工作区片段：知识库用剩的额度都可以用（至少保底额度）
             if encoder.token_length(evidence_payload(question, self._merge(evidence, [*selected, item]), start)) <= total:
                 selected.append(item)

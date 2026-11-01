@@ -203,6 +203,7 @@ def test_short_number_line_change_is_not_marked_identical(world):
     assert ws and any("“14个月”" in e.get("comparison", "") for e in ws)
     kb = [e for e in bundle["evidence"] if e.get("origin") == "knowledge" and "12个月" in e["content"]]
     assert kb and not any("此处一致" in e.get("comparison", "") for e in kb)
+    assert any("“14个月”" in e.get("comparison", "") for e in kb)  # 不同之处也写在知识库这条上
     assert "14个月" in bundle["payload_text"] and "12个月" in bundle["payload_text"]
 
 
@@ -223,5 +224,30 @@ def test_identical_copy_note_names_the_workspace_file(world):
     LinkService(world.engine).copy_to_workspace(world.store, world.kb.id, doc.id)
     world.svc.set_egress(world.kb.id, True)
     bundle = world.qa.bundle(world.kb.id, ["值班主管客诉多久到场"])
-    assert "工作区版本此处一致：你的文件《" in bundle["payload_text"] and "已逐句核对" in bundle["payload_text"]
+    assert "工作区版本此处一致（你的文件《门店值班制度" in bundle["payload_text"] and "已逐句核对" in bundle["payload_text"]
     assert "可以直接据此说明两份一致" in bundle["payload_text"]  # JOINT_RULES 说明注记用法
+
+
+def test_kept_revision_is_not_squeezed_out_by_knowledge_notes(world, monkeypatch):
+    # 素材库第二轮复跑 MC03：对照注记让知识库片段变长、超出知识库那一份额度，对照后保留的工作区片段反而进不了依据包。
+    # 工作区保底额度内的片段先留位置，挤不下时去掉知识库末尾的片段
+    monkeypatch.setattr(config, "KNOWLEDGE_CONTEXT_TOKENS", 3000)
+    monkeypatch.setattr(config, "WORKSPACE_CONTEXT_TOKENS", 800)
+    rule = "值班主管客诉到场处理记录签到检查。"
+    for i in range(12):
+        world.publish(f"制度{i}", f"# 制度{i}\n## 条款\n{rule}第{i}条补充说明，适用于{i}号门店。" * 2)
+    for i in range(3):
+        world.store.add_text(f"笔记{i}", f"# 笔记{i}\n{rule}我的第{i}次值班记录，客诉已处理。" * 2)
+    world.svc.set_egress(world.kb.id, True)
+    compare = world.qa._compare
+
+    def noted(knowledge, kb_items, ws_items):
+        kept = compare(knowledge, kb_items, ws_items)
+        for e in kb_items:
+            e["comparison"] = "工作区版本此处一致（你的文件《一份标题很长的部门修订稿》，已逐句核对）" * 2
+        return kept
+
+    monkeypatch.setattr(world.qa, "_compare", noted)
+    bundle = world.qa.bundle(world.kb.id, ["值班主管客诉到场"])
+    assert sum(e["origin"] == "workspace" for e in bundle["evidence"]) >= 2
+    assert BagEncoder().token_length(bundle["payload_text"]) <= 3000
