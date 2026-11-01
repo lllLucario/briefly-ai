@@ -3,7 +3,7 @@ from copy import deepcopy
 
 QUALITY_KEYS=("document_quality", "table_structure_status", "restored_source_paragraphs",
               "unverified_table_segments", "object_anchors", "textbox_provenance", "textbox_markdown_range",
-              "table_partial_ranges", "inherited_quality_constraints")
+              "table_partial_ranges", "ocr_unconfirmed_ranges", "inherited_quality_constraints")
 
 
 def quality_snapshot(report):
@@ -27,6 +27,9 @@ def constraints(report,start,end):
         tables=report.get("table_partial_ranges")
         if tables is None or any(start<r["end"] and end>r["start"] for r in tables):
             result["cell_attribution"]="unverified"
+    # 图片文字识别置信度低的段落只限制这些范围；置信度够的识别文字在正文里有标记行，不受限
+    if any(start<r["end"] and end>r["start"] for r in report.get("ocr_unconfirmed_ranges") or ()):
+        result["ocr_text"]="unverified"
     return result
 
 
@@ -34,6 +37,7 @@ NOTES={
     "section_attribution":"文本框正文锚点未确认，不能赋予原文业务章节。",
     "organization_relationships":"图形连接关系未恢复，不能据此确认组织上下级或汇报关系。",
     "cell_attribution":"表格单元格归属仍待复核，不能据此给出确定的行列对应结论。",
+    "ocr_text":"这段文字来自图片识别且置信度低，可能有错字漏字，不能据此给出确定结论。",
 }
 
 

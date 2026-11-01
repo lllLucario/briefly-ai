@@ -79,9 +79,12 @@ def load_xlsx(data: bytes) -> LoadedDocument:
 
     # data_only 读 Excel 保存时缓存的计算结果（不用只读模式：要读合并区域和单元格格式）；
     # 另读一份公式，用来发现没有计算结果的公式单元格
+    from . import ocr
+
     values = load_workbook(BytesIO(data), data_only=True)
     formulas = load_workbook(BytesIO(data), read_only=True)
-    parts, missing = [], 0
+    parts, missing, pictures = [], 0, 0
+    session = ocr.OcrSession() if ocr.enabled() else None
     try:
         for sheet in values.worksheets:
             width = sheet.max_column
@@ -91,8 +94,17 @@ def load_xlsx(data: bytes) -> LoadedDocument:
                 missing += sum(
                     v is None and isinstance(f, str) and f.startswith("=") for v, f in zip(row, formula_row)
                 )
-            if table := _sheet_markdown(rows, sheet.merged_cells.ranges):
-                parts.append(f"# {sheet.title}\n\n{table}")
+            table = _sheet_markdown(rows, sheet.merged_cells.ranges)
+            # 浮在工作表上的图片按左上角所在单元格从上到下、从左到右排，识别文字放在该表之后
+            images = sorted(getattr(sheet, "_images", []), key=_anchor_cell)
+            pictures += len(images)
+            tokens = []
+            for n, image in enumerate(images if session is not None else [], start=1):
+                block = session.picture(image._data(), f"工作表“{sheet.title}” 图{n}", image=n)
+                if block:
+                    tokens.append(session.token(block))
+            if table or tokens:
+                parts.append("\n\n".join([f"# {sheet.title}", *([table] if table else []), *tokens]))
     finally:
         values.close()
         formulas.close()
@@ -100,7 +112,19 @@ def load_xlsx(data: bytes) -> LoadedDocument:
         [f"有 {missing} 个公式单元格没有计算结果（文件可能不是用 Excel 保存的），这些单元格显示为空"] if missing else []
     )
     report = {"parser": "openpyxl", "structure": "sheets", "warnings": warnings}
-    return LoadedDocument("\n\n".join(parts), markdown=True, report=report)
+    text = "\n\n".join(parts)
+    if pictures:
+        report["pictures"] = pictures
+        if session is None:
+            warnings.append(f"工作表中有 {pictures} 张图片，未识别图片里的文字（{ocr.disabled_note()}），请核对原文件")
+    if session is not None:
+        text, report = session.finish(text, report)
+    return LoadedDocument(text, markdown=True, report=report)
+
+
+def _anchor_cell(image) -> tuple[int, int]:
+    start = getattr(getattr(image, "anchor", None), "_from", None)
+    return (start.row, start.col) if start is not None else (0, 0)
 
 
 class XlsUnsupported(ValueError):

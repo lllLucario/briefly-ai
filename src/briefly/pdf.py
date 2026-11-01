@@ -3,7 +3,8 @@
 流程：pdfplumber 逐页去掉页面外的文字 → 识别带框线的表格（矢量框线；没有矢量框线、页面以图片为主时
 从渲染图里找框线）→ 去掉表格里和表格边上渲染后看不见的文字（跨页合并单元格被裁掉的部分）
 → 提取表格外的文字行（按字符坐标排序，带字号和位置）
-→ Layout Cleaner 清理 → 判断扫描件 → 识别标题（字号 → 书签；都没有时交给 chunking 按中文编号规则猜）
+→ Layout Cleaner 清理 → 没有文字层的页（扫描页、整页图片）渲染后用本地 OCR 整页识别（见 ocr.py）
+→ 判断扫描件（识别后仍大多没有文字才拒绝）→ 识别标题（字号 → 书签；都没有时交给 chunking 按中文编号规则猜）
 → 放回表格 → 合并排版换行 → 输出。
 
 表格质量：识别出的表格按行列输出为带表头的 Markdown 表；合并单元格按框线几何定位，纵向合并的内容
@@ -21,6 +22,7 @@ import pdfplumber
 import pypdfium2
 from pypdf import PdfReader
 
+from . import ocr
 from .layout_cleaner import Line, clean_pages, join_text, merge_wrapped, scanned_pages
 from .loaders import LoadedDocument, escape_heading_marks
 
@@ -47,18 +49,31 @@ RULE_IMAGE_RATIO = 0.2  # 图片占页面这个比例以上，才从渲染图里
 def load_pdf(data: bytes) -> LoadedDocument:
     reader = PdfReader(BytesIO(data))
     raster = pypdfium2.PdfDocument(data)
+    session = None
     try:
         with pdfplumber.open(BytesIO(data)) as pdf:
             extracted = [_extract_page(page, i, raster[i]) for i, page in enumerate(pdf.pages)]
+        pages, removed = clean_pages([lines for lines, _ in extracted])
+        tables = [found for _, found in extracted]
+        empty = [p for p in scanned_pages(pages) if not tables[p]]
+        if empty and ocr.enabled():
+            session = ocr.OcrSession()
+            for p in empty:
+                image = ocr.render_page(raster[p])
+                block = session.page(image, f"第{p + 1}页", p + 1)
+                if block:  # 整页识别已包含这一页零星的文字层（页码等），不重复保留
+                    pages[p] = [Line(block.rendered(), 0.0, float(image.height), p, kind="ocr")]
     finally:
         raster.close()
-    pages, removed = clean_pages([lines for lines, _ in extracted])
-    tables = [found for _, found in extracted]
 
-    empty = [p for p in scanned_pages(pages) if not tables[p]]
+    recognized = {line.page for page in pages for line in page if line.kind == "ocr"}
+    empty = [p for p in empty if p not in recognized]
     total = len(pages)
-    if not total or len(empty) >= total * SCANNED_DOC_RATIO:
-        raise ValueError(f"这是扫描版 PDF（{total} 页中 {len(empty)} 页没有可提取的文字），需要 OCR，目前暂不支持")
+    if not total or (len(empty) >= total * SCANNED_DOC_RATIO and not recognized):
+        if session is not None:
+            why = "超过识别上限或时长预算，未能识别" if session.skipped else "图片文字识别也没有识别出文字"
+            raise ValueError(f"这是扫描版 PDF（{total} 页中 {len(empty)} 页没有可提取的文字），{why}")
+        raise ValueError(f"这是扫描版 PDF（{total} 页中 {len(empty)} 页没有可提取的文字），需要图片文字识别：{ocr.disabled_note()}")
 
     if _mark_by_font_size(pages):
         structure = "font_size"
@@ -93,6 +108,10 @@ def load_pdf(data: bytes) -> LoadedDocument:
             f"有 {partial_tables} 张表格含无法定位或跨页断开的合并单元格、"
             f"{columnar} 处文字分栏排列疑似无框线表格，"
             "这些位置的行列对应关系未确认；需核对原件")
+    if session is not None:
+        text, report = session.finish(text, report)
+    elif empty:
+        report["warnings"].append(f"{ocr.disabled_note()}，没有文字层的页未识别")
     return LoadedDocument(text, markdown=structure is not None or count > 0, report=report)
 
 
@@ -373,7 +392,7 @@ def _heading_like(text: str) -> bool:
 def _mark_by_font_size(pages: list[list[Line]]) -> bool:
     """字号明显大于正文的短行视为标题；字号越大级别越高。"""
     chars: Counter = Counter()
-    for line in (l for page in pages for l in page):
+    for line in (l for page in pages for l in page if l.kind != "ocr"):  # 识别文字没有字号
         chars[round(line.size, 1)] += len(line.text)
     if not chars:
         return False
@@ -384,7 +403,7 @@ def _mark_by_font_size(pages: list[list[Line]]) -> bool:
     for p, page in enumerate(pages):
         merged: list[Line] = []
         for line in page:
-            candidate = line.size >= body * HEADING_SIZE_RATIO and _heading_like(line.text)
+            candidate = line.kind != "ocr" and line.size >= body * HEADING_SIZE_RATIO and _heading_like(line.text)
             prev = merged[-1] if merged else None
             # 一个标题被排版拆成多行：同字号、行距正常的连续候选行合并；间距大的是两个相邻标题
             if (
@@ -492,6 +511,8 @@ def _render(lines: list[Line]) -> tuple[str, list[dict], int]:
         flush_run()
         if line.heading:
             blocks += [("", False), (f"{'#' * line.heading} {line.text}", False)]
+        elif line.kind == "ocr":  # 整页识别的文字（带标记行），原样成段
+            blocks += [("", False), (line.text, False), ("", False)]
         elif line.kind == "table":
             rows = line.text.split("\n")
             blocks += [("", False), ("\n".join(rows[:2]), -1 in line.unconfirmed_rows)]

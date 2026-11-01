@@ -64,6 +64,17 @@ DOC_PARSER = os.getenv("BRIEFLY_DOC_PARSER", "auto").lower()
 PPT_PARSER = os.getenv("BRIEFLY_PPT_PARSER", "auto").lower()
 JAVA_PATH = os.getenv("BRIEFLY_JAVA", "")
 TIKA_APP_JAR = os.getenv("BRIEFLY_TIKA_APP_JAR", "")
+# 图片文字识别（本地 RapidOCR，需安装 .[ocr]）：auto 已安装就用于扫描页、文档里的图片和图片文件；off 关闭。
+OCR = os.getenv("BRIEFLY_OCR", "auto").lower()
+# 每份文件最多识别的整页（扫描页、图片文件的帧）和嵌入图片数；超出的部分跳过并在解析报告里写明。
+OCR_MAX_PAGES = max(0, int(os.getenv("BRIEFLY_OCR_MAX_PAGES", "40")))
+OCR_MAX_IMAGES = max(0, int(os.getenv("BRIEFLY_OCR_MAX_IMAGES", "60")))
+# 每份文件识别的总时长（秒）；知识入库时另不超过解析总预算的四分之三，超时后其余图片不再识别。
+OCR_TIME_BUDGET_S = max(1.0, float(os.getenv("BRIEFLY_OCR_TIME_BUDGET_S", "80")))
+# 一段识别文字的平均置信度低于此值时记为未确认范围（不作为确定依据外发）。
+OCR_MIN_CONFIDENCE = float(os.getenv("BRIEFLY_OCR_MIN_CONFIDENCE", "0.85"))
+# 推理线程数；解析最多两份并行，默认不占满所有核。
+OCR_THREADS = max(1, int(os.getenv("BRIEFLY_OCR_THREADS", "4")))
 # 选中材料合计不超过该 token 数（约 6000 个汉字）时，全文直接放进消息；超过则由模型用工具读取
 INLINE_MATERIAL_TOKENS = int(os.getenv("BRIEFLY_INLINE_MATERIAL_TOKENS", "3500"))
 
