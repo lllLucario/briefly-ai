@@ -205,7 +205,8 @@ def answer_cases(imports, encoder, kb_id, cases, doc_format_of, args, stamp):
                     status = meta.get("status")
                     event.update(intent=intent.get("intent"), layer=intent.get("layer"), resolved=intent.get("resolved"),
                                  tools=[c["name"] for m in history if m.type == "ai" for c in getattr(m, "tool_calls", [])],
-                                 forced_search=any(m.type == "ai" and m.response_metadata.get("forced_search") for m in history))
+                                 forced_search=any(m.type == "ai" and m.response_metadata.get("forced_search") for m in history),
+                                 queries=meta.get("queries"))  # 助理路径各次实际检索词；捷径路径为空（按原话检索）
                 else:
                     result = knowledge.qa.answer(kb_id, case["question"])
                     answer, status = result["answer"], result["status"]

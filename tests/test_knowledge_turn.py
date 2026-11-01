@@ -193,3 +193,51 @@ def test_relevance_needs_both_routes_to_agree():
     # 文档开头补充片段不参与；没有下限或没有语义分数时不判断
     assert relevant([_hit(0.6, lexical=True), _hit(context=True)], 0.5)
     assert relevant([_hit(0.3)], None) and relevant([_hit(lexical=True)], 0.5)
+
+
+def _searches_of(agent):
+    return [m.artifact["knowledge"] for m in agent.history if isinstance(m, ToolMessage) and m.name == "search_knowledge"]
+
+
+def test_first_search_adds_original_question_and_records_queries(indexed):
+    # 智能体把问题改写偏了（只查病假），原话本来能命中年假原文：第一次检索并入原话，第二次不再并入
+    model = fake(tool_msg("search_knowledge", {"questions": ["病假材料"]}, id="a"),
+                 tool_msg("search_knowledge", {"questions": ["病假天数"]}, id="b"), text_msg("提前3天〔依据1〕"))
+    agent, kb = base_agent(indexed, model, LEAVE, SICK)
+    agent.chat("年假要提前几天申请？", kb_id=kb.id)
+    first, second = _searches_of(agent)
+    assert first["questions"] == ["年假要提前几天申请？", "病假材料"] and second["questions"] == ["病假天数"]
+    first_result = next(m for m in agent.history if isinstance(m, ToolMessage) and m.tool_call_id == "a").text
+    assert LEAVE in first_result and first_result.count("【依据") == len(first["references"])
+    assert visible_messages(agent.history)[-1].knowledge["queries"] == [first["questions"], second["questions"]]
+
+
+def test_original_question_not_duplicated_or_added_to_short_follow_up(indexed):
+    model = fake(tool_msg("search_knowledge", {"questions": ["年假有几天？"]}, id="a"), text_msg("年假5天〔依据1〕"),
+                 tool_msg("search_knowledge", {"questions": ["病假需要什么材料"]}, id="b"), text_msg("需医院证明〔依据1〕"),
+                 tool_msg("search_knowledge", {"questions": ["年假", "病假", "事假"]}, id="c"), text_msg("见依据〔依据1〕"))
+    agent, kb = base_agent(indexed, model, LEAVE, SICK)
+    agent.chat("年假有几天？", kb_id=kb.id)
+    agent.chat("那病假呢？", kb_id=kb.id)  # 只有原话检索不到：用智能体补全后的检索词
+    agent.chat("年假、病假和事假各有几天，分别怎么申请？", kb_id=kb.id)
+    queries = [s["questions"] for s in _searches_of(agent)]
+    # 子问题上限不变：原话排在最前，智能体最后一个检索词让位；依据总额仍由 bundle 按子问题均分
+    assert queries == [["年假有几天？"], ["病假需要什么材料"], ["年假、病假和事假各有几天，分别怎么申请？", "年假", "病假"]]
+
+
+def test_original_question_keeps_evidence_budget_and_egress_authorization(indexed, monkeypatch):
+    # 并入原话后依据包总额不变（测试编码器按字符计 token）
+    monkeypatch.setattr(config, "KNOWLEDGE_CONTEXT_TOKENS", 500)
+    model = fake(tool_msg("search_knowledge", {"questions": ["病假材料"]}), text_msg("提前3天〔依据1〕"))
+    agent, kb = base_agent(indexed, model, LEAVE * 6, SICK * 6)
+    agent.chat("年假要提前几天申请？", kb_id=kb.id)
+    (search,) = _searches_of(agent)
+    sent = next(m for m in agent.history if isinstance(m, ToolMessage)).text
+    assert len(search["questions"]) == 2 and "【依据" in sent and len(sent) <= 500
+    # 未授权外发时并入原话也不发原文
+    model = fake(tool_msg("search_knowledge", {"questions": ["病假材料"]}), text_msg("请先开启授权"))
+    agent, kb = base_agent(indexed, model, LEAVE, SICK)
+    agent.knowledge.knowledge.set_egress(kb.id, False)
+    agent.chat("年假要提前几天申请？", kb_id=kb.id)
+    sent = next(m for m in agent.history if isinstance(m, ToolMessage)).text
+    assert LEAVE not in sent and SICK not in sent

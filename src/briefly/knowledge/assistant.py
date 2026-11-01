@@ -95,6 +95,7 @@ def knowledge_tools(assistant: KnowledgeAssistant) -> list:
         if not kb_id:
             return "用户没有选择知识库，请提示用户先在输入框上方选择要查询的知识库。", {}
         messages = (runtime.state or {}).get("messages", [])
+        questions = _with_original(questions, messages)
         # 同一轮多次检索时编号接续，回答里的〔依据N〕在本轮内唯一
         start = 1 + sum(len(s["references"]) for s in _searches(messages[_turn_start(messages) + 1:]) if s.get("status") == "ready")
         result = assistant.search(kb_id, questions, start=start)
@@ -110,6 +111,29 @@ def knowledge_tools(assistant: KnowledgeAssistant) -> list:
         return result["answer"], artifact
 
     return [search_knowledge]
+
+
+def _user_text(message) -> str:
+    return (message.additional_kwargs.get("display") or message.text).strip()
+
+
+def _with_original(questions: list[str], messages) -> list[str]:
+    """本轮第一次检索时把用户原话排在最前一并检索：智能体改写的检索词可能丢掉原话本来能命中的片段
+    （素材库评测 R13：原话检索答案排第 1，改写后没拿到，答成“未提及”）。依据总额不变，由 bundle 按子问题均分。
+    只有原话的简短追问（“那病假呢”）检索不到东西，不并入，用智能体补全后的检索词。"""
+    start = _turn_start(messages)
+    if start < 0 or _searches(messages[start + 1:]):
+        return questions
+    text = _user_text(messages[start])
+    if not knowledge_question(text):
+        return questions
+    previous = any(isinstance(m, HumanMessage) and not m.additional_kwargs.get("internal") for m in messages[:start])
+    if previous and (len(text) <= 15 or _FOLLOW_UP.match(text)):
+        return questions
+    text = text[:200]
+    if text in (q.strip() for q in questions):
+        return questions
+    return [text, *questions][:MAX_SUB_QUESTIONS]
 
 
 class KnowledgeSearchGuard(AgentMiddleware):
@@ -196,7 +220,8 @@ def record_knowledge_turn(state, runtime):
             warnings.append("回答含无法定位的依据编号，请核对原文。")
         knowledge = dict(kb_id=searches[-1]["kb_id"], status=searches[-1]["status"], warnings=warnings,
                          references=[r for r in refs if int(r["label"].removeprefix("依据")) in cited],
-                         egress=_turn_egress(turn, searches))
+                         egress=_turn_egress(turn, searches),
+                         queries=[s["questions"] for s in searches])  # 本轮各次实际检索词（含并入的原话），供归因
     else:
         if not cited:
             return None
