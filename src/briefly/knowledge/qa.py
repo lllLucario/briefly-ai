@@ -18,11 +18,12 @@ KNOWLEDGE_WITHHELD = ("该知识库尚未允许外发：本次只依据你的工
 LOW_RELEVANCE ="知识库里没有找到与问题直接相关的内容，本次没有调用模型，也没有外发。"
 EGRESS_POLICY = "常见邮箱/手机号/密钥/密码及用户指定字段；不保证识别所有企业敏感信息"
 MAX_SUB_QUESTIONS = 3
-_CITATION_GROUP = re.compile(r"[〔【]\s*依据((?:\d+|[\s、，,]|依据)+)[〕】]")
+# 模型偶尔把〔依据3〕写成（依据3）：编号照样能对应依据，不认就会让引用列表漏掉这条（素材库第二轮 MC03）
+_CITATION_GROUP = re.compile(r"[〔【（(]\s*依据((?:\d+|[\s、，,]|依据)+)[〕】）)]")
 
 
 def cited_numbers(text: str) -> list[int]:
-    """回答里〔依据1、依据2〕/〔依据1、2〕形式的引用编号。"""
+    """回答里〔依据1、依据2〕/〔依据1、2〕/（依据3）形式的引用编号。"""
     return [int(n) for group in _CITATION_GROUP.findall(text) for n in re.findall(r"\d+", group)]
 
 
@@ -89,51 +90,79 @@ class KnowledgeQA:
         return [item for item in merged if item["material_id"] not in blocked], warnings
 
     def _compare(self, knowledge, kb_items, ws_items):
-        """关联文档（显式/确认/疑似，或与知识库共用同一份内容）的对照：工作区片段的句子都在知识库发布版里、且依据包里
-        已有那一段的知识库片段时，只保留知识库那条并注明“工作区版本此处一致”；句子不全在时两条都给，工作区那条注明
-        写法不同。返回保留的工作区片段。"""
+        """关联文档（显式/确认/疑似，或与知识库共用同一份内容）的逐句对照，两个方向都看：
+        - 工作区片段的句子都在知识库发布版里，依据包里与它同一段的知识库片段的句子也都在工作区文件里：只保留知识库
+          那条，注明工作区哪份文件此处逐字相同；
+        - 任一方向缺句子（改了数字、删了一段、加了一段）：两条都给，工作区那条写明哪几句不同，知识库那条注明工作区此处有改动。
+        含数字的短句也参与对照（“14个月；”）。返回保留的工作区片段。"""
         from sqlalchemy import select
 
-        from ..links import DISMISSED, _NOISE, _links_of, _published, sentence_keys
+        from ..links import DISMISSED, _NOISE, _links_of, _published, comparison_sentences
         from ..materials import Material
         from .models import KnowledgeVersion
 
         def flat(text):
             return _NOISE.sub("", text).lower()
 
-        def covers(text, keys, norm):
-            # 句子都在里面；片段太短没有可比的句子（只有标题）时看去掉标点后的文字是否包含在内
-            return keys.keys() <= sentence_keys(text).keys() if keys else bool(norm) and norm in flat(text)
+        def missing(part, whole_keys, whole_flat):
+            # 片段里不在另一份全文中的句子；片段太短没有可比的句子（只有标题）时看去掉标点后的文字是否包含在内
+            keys = comparison_sentences(part)
+            if not keys:
+                norm = flat(part)
+                return [] if not norm or norm in whole_flat else [part.strip()]
+            return [text for key, text in keys.items() if key not in whole_keys]
 
-        def shares(text, keys, norm):
-            return bool(keys.keys() & sentence_keys(text).keys()) if keys else bool(norm) and norm in flat(text)
+        def quote(lines):
+            return "、".join(f"“{line[:40].replace('【', '').replace('】', '')}”" for line in lines[:2])
+
+        def content(material_id):
+            return s.scalar(select(Material.content).where(Material.id == material_id)) or ""
 
         kept = []
         with knowledge._session() as s:
             versions = {e["document_id"]: s.get(KnowledgeVersion, e["version_id"]) for e in kb_items}
-            full = {}
+            full, ws_full = {}, {}
             for w in ws_items:
                 docs = {link.document_id for link in _links_of(s, w["material_id"]) if link.kind != DISMISSED}
                 docs |= {doc for doc, version in versions.items() if version is not None and version.content_hash == w["version_id"]}
-                keys, norm = sentence_keys(w["content"]), flat(w["content"])
+                w_keys = comparison_sentences(w["content"])
+                if not (w_keys or flat(w["content"])):
+                    kept.append(w)
+                    continue
                 drop = False
                 for doc_id in sorted(docs):
                     version, material = _published(s, doc_id)
-                    if version is None or material is None or not (keys or norm):
+                    if version is None or material is None:
                         continue
                     if doc_id not in full:
-                        full[doc_id] = s.scalar(select(Material.content).where(Material.id == material.id)) or ""
+                        text = content(material.id)
+                        full[doc_id] = (comparison_sentences(text), flat(text))
+                    if w["material_id"] not in ws_full:
+                        text = content(w["material_id"]) or w["content"]
+                        ws_full[w["material_id"]] = (comparison_sentences(text), flat(text))
                     title = version.source_snapshot.get("title") or w["source"]["title"]
-                    if covers(full[doc_id], keys, norm):
-                        same = [e for e in kb_items if e["document_id"] == doc_id and shares(e["content"], keys, norm)]
+                    added = missing(w["content"], *full[doc_id])
+                    same = [e for e in kb_items if e["document_id"] == doc_id
+                            and (w_keys.keys() & comparison_sentences(e["content"]).keys()
+                                 if w_keys else flat(w["content"]) in flat(e["content"]))]
+                    removed = [line for e in same for line in missing(e["content"], *ws_full[w["material_id"]])]
+                    if not added and not removed:
                         if same:
                             for e in same:
-                                e["comparison"] = "工作区版本此处一致"
+                                e["comparison"] = f"工作区版本此处一致：你的文件《{w['source']['title']}》中有逐字相同的内容（已逐句核对）"
                             drop = True
                             break
                         w["comparison"] = f"与知识库《{title}》第{version.number}版此处一致"
-                    else:
-                        w["comparison"] = f"与知识库《{title}》第{version.number}版此处写法不同"
+                        continue
+                    detail = f"与知识库《{title}》第{version.number}版此处写法不同"
+                    if added:
+                        detail += f"：工作区此处写作{quote(added)}"
+                    if removed:
+                        detail += f"{'；' if added else '：'}知识库此处的{quote(removed)}在工作区文件中没有"
+                    w["comparison"] = detail
+                    for e in same:
+                        if not e.get("comparison"):
+                            e["comparison"] = f"工作区《{w['source']['title']}》此处有改动，见工作区那条依据的说明"
                 if not drop:
                     kept.append(w)
         return kept

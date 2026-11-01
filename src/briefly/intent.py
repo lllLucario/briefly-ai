@@ -106,14 +106,15 @@ _TASK_VERB = re.compile(r"总结|概括|提炼|梳理|捋|摘要|概览|介绍�
 _ASK = re.compile(r"[？?]$|多少|几[天种条个次门项级年月周]|哪些|什么|怎么|怎样|如何|是否|能否|吗[？?。]?$|谁|多久|何时|有没有")
 _WHERE = re.compile(r"哪[个份]?(?:文件|文档|制度|手册|方案|程序|材料)|哪一?[章节条]|哪个?小节|出处|原文在哪|写在哪|哪里写"
                     r"|条号|章节|定位|(?:表|附件|条款|规定)(?:放)?在哪|附件位置|标出.{0,6}位置"
-                    r"|(?:段|部分|区域)在哪|哪一?段|哪(?:张|个)表|什么表|哪个?(?:区域|部分)|什么区域")
+                    r"|(?:段|部分|区域)在哪|哪一?段(?!时间|时期|日期|期间|日子)|哪(?:张|个)表|什么表|哪个?(?:区域|部分)|什么区域")
 # 承接上一轮的追问（“那试用期呢”“那假如……”）需要结合上文补全，不按原句直接检索
 _FOLLOW_UP = re.compile(r"(?:那|那么|那如果|那假如|那要是|还有|同样)[，,\s]?")
 # 有上一轮回答、本轮只要求换格式或换语言：调整上一轮
 _REFORMAT = re.compile(r"(?:请|帮我)?再?(?:改成|换成|变成|转成|整理成|做成|列成)(?:一个|一张|一份)?"
                        r"(?:表格|列表|清单|要点|[两三四五]列|一段话|段落|英文|中文)(?:[，,：:].{0,12})?[。.!！]?")
 # 多目标、追问补全交给兜底层，语义层不硬分类。
-_COMPLEX = re.compile(r"然后|并且|同时|顺便|再把|另外|以及|对比|区别|那.{1,12}呢|先.{1,30}再")
+_COMPLEX = re.compile(r"然后|并且|同时|顺便|再把|另外|以及|对比|区别|那.{1,12}呢|先.{1,30}再"
+                      r"|接着(?:查|看|找)|再(?:查|找|看)(?:一下)?(?:那|这|该|对应)")
 
 EXAMPLES: dict[str, list[str]] = {
     "summarize": ["总结一下这份文档", "这份材料主要讲了什么", "帮我提炼这篇文章的要点", "概括这份报告的核心内容"],
@@ -155,12 +156,26 @@ def knowledge_question(text: str) -> bool:
                 or re.search(r"[？?]|呢[。！!？?\s]*$|哪[项条种类款]", text))
 
 
+def _probe_score(probe, floor):
+    """kb_probe 的返回值 → (语义分数, 能否走单问捷径)。只给分数时按分数是否达到下限判断。
+
+    给了两路信息时只收紧、不放宽：分数过了下限、但前几条没有一条两路一致时依据包会丢掉知识库片段，不走捷径；
+    低于下限时即使前几条全部两路一致也不放进捷径（依据包会照常接受）。在四库意图评测里几乎每题的前 5 条都两路一致，
+    选错库的题也一样，用它放宽会把选错库的题放回捷径（意图评测第六轮、本次复测：误走捷径 1→3）。"""
+    if probe is None or isinstance(probe, (int, float)):
+        return probe, probe is not None and probe >= floor
+    score = probe["score"]
+    return score, score is not None and score >= floor and probe["any_both"]
+
+
 class IntentFunnel:
     """encoder_factory 返回本地 Embedding（需有 embed_documents）；不传或加载失败时只用规则层。"""
 
     def __init__(self, encoder_factory=None, examples: dict[str, list[str]] | None = None,
                  threshold: float | None = None, margin: float | None = None, kb_probe=None, kb_rivals=None) -> None:
-        """kb_probe(kb_id, text) 返回选定知识库中最相关片段的相似度（本地检索，不外发）；
+        """kb_probe(kb_id, text) 返回选定知识库中最相关片段的相似度（本地检索，不外发），也可以返回
+        {score, any_both, all_both}：前 5 条召回里有没有、是不是全部被语义与词法两路同时命中，路由按与依据包相同的
+        相关判断（retrieval.relevant）使用；
         kb_rivals(text) 返回各知识库最接近片段的语义相似度 [{kb_id, name, score}]（只比向量，不读正文），用于发现选错了库。"""
         self.encoder_factory = encoder_factory
         self.kb_probe = kb_probe
@@ -223,15 +238,20 @@ class IntentFunnel:
         if not (where or ask) or (floor := self._kb_floor()) is None:
             return None
         try:
-            score = self.kb_probe(state.kb_id, text)
+            probe = self.kb_probe(state.kb_id, text)
         except Exception:  # 索引未就绪或检索失败时不影响对话
             return None
+        score, agree = _probe_score(probe, floor)
         signals["kb_score"] = None if score is None else round(score, 4)
         if score is None:
             return None
         if better := self._better_bases(state.kb_id, text, score, floor):
             signals["kb_suggestions"] = better  # 低于下限交给助理时也提示：助理只查所选库，会答“没找到”
-        if score < floor:
+        if not agree:
+            # 与依据包同一口径：最高分过了下限但前几条没有一条两路一致时，依据包会把知识库片段当作不相关丢掉，
+            # 单问捷径只剩工作区片段或“没找到”（素材库第二轮 MB01），所以交给助理
+            if score >= floor:
+                signals["kb_routes_disagree"] = True
             return None
         if better:
             # 选错库时所选库也常有沾边的片段（同为制度、表格）而跨过下限，单问捷径只会答“没找到”或拿不相关的片段作答

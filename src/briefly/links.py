@@ -75,6 +75,17 @@ def sentence_keys(text: str) -> dict[str, int]:
     return keys
 
 
+def comparison_sentences(text: str) -> dict[str, str]:
+    """逐句对照用：去掉空白、标点后的句子 → 原句。含数字的短句也保留：幻灯片里“14个月；”常单独成句，
+    改动恰好落在这种短句上（12→14 个月）时，不能因为它短就当成没有可比内容。"""
+    out: dict[str, str] = {}
+    for sentence in _SENTENCE.split(text):
+        key = _NOISE.sub("", sentence).lower()
+        if len(key) >= MIN_SENTENCE_CHARS or (key and any(c.isdigit() for c in key)):
+            out.setdefault(key, sentence.strip(" -*#|\t"))
+    return out
+
+
 def overlap(a: dict[str, int], b: dict[str, int]) -> float:
     total = sum(a.values()) + sum(b.values())
     if not total:

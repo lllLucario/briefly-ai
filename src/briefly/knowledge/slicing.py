@@ -110,7 +110,7 @@ def token_slices(text, title, markdown, encoder, *, tokens=512, overlap=None,
     # 图形范围可能含表格文本，以原图形整体为单位，不能拆成正文或独立行。
     tables = [t for t in tables if not any(a < t[1] and t[0] < b for a, b, _ in graphics)]
     structures = sorted([*( (t[0], t[1], "table") for t in tables), *graphics])
-    config = dict(strategy="title-token-offsets", version=5,
+    config = dict(strategy="title-token-offsets", version=6,
                   parameters=dict(tokens=tokens, overlap=overlap, include_title=True,
                                   context=context, structure_policy="rows-column-groups-and-graphics-no-overlap",
                                   protected_ranges=[dict(start=a, end=b) for a, b, _ in graphics],
@@ -123,6 +123,23 @@ def token_slices(text, title, markdown, encoder, *, tokens=512, overlap=None,
     if isolated:
         config["parameters"]["isolated_ranges"] = [dict(start=a, end=b) for a, b in isolated]
     boundaries = sorted(n for n in boundaries if not any(a < n < b for a, b, _ in structures))
+    # 幻灯片一页是一个完整单元：整页装得下、页内没有低置信识别范围时整页一片（图片占位整体在页内，不被拆开）。
+    # 否则流程图、鱼骨图里每个方框（单格表格）、每条编号短句都各成一片，几十个只有几个字的碎片向量几乎全是文档标题，
+    # 把真正含答案的表格页挤出依据包（素材库第二轮：一份 ppt 151 片、53 片不足 40 字）。装不下的页照旧按表格行、段落切；
+    # 低置信识别文字所在的页也照旧切，让质量限制只落在识别文字那一片。
+    if (report or {}).get("structure") == "pptx_slides":
+        pages = [s for s in sections if re.match(r"第\d+页", s.title)]
+        merged = []
+        for page in pages:
+            if any(a < page.end and page.start < b for a, b in isolated) \
+                    or any(a < page.start < b or a < page.end < b for a, b, _ in graphics):
+                continue
+            prefix = f"{title}\n{page.path}" + (f"\n{context}" if context else "") + "\n"  # 同下方 head()
+            if encoder.token_length(prefix + text[page.start:page.end]) <= tokens:
+                merged.append((page.start, page.end))
+        boundaries = [n for n in boundaries if not any(a < n < b for a, b in merged)]
+        tables = [t for t in tables if not any(a <= t[0] < b for a, b in merged)]
+        config["parameters"]["slide_pages"] = "whole-page-when-fits"
     result = []
 
     def append(start, end, prefix, section, encoded=None):

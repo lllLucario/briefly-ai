@@ -62,7 +62,7 @@ def test_wide_row_is_split_by_column_groups_with_row_and_column_labels():
                    for grade in (24, 23) for band in "AB")
     text = "# 薪酬\n\n" + header + rows
     config, chunks = token_slices(text, "表", True, Encoder(), tokens=150)
-    assert config["version"] == 5
+    assert config["version"] == 6
     assert "".join(c.content for c in chunks) == text  # 各段首尾相接，没有截断或丢字
     assert all(c.content == text[c.start:c.end] and len(c.embedding_text) <= 150 for c in chunks)
     pieces = [c for c in chunks if "第1行" in c.section]
@@ -93,7 +93,7 @@ def test_long_cell_is_split_inside_the_cell_and_keeps_row_and_column():
 def test_prose_default_overlap_keeps_offsets_and_total_budget():
     text = "# 范围\n\n" + "不同业务条件须结合适用对象判断。" * 100
     config, chunks = token_slices(text, "制度", True, Encoder(), context="适用版本待核对")
-    assert config["version"] == 5 and config["parameters"]["tokens"] == 512
+    assert config["version"] == 6 and config["parameters"]["tokens"] == 512
     assert config["parameters"]["overlap"] == 50
     assert chunks[0].start == 0 and chunks[-1].end == len(text)
     assert all(c.content == text[c.start:c.end] and len(c.embedding_text) <= 512 for c in chunks)
@@ -191,3 +191,33 @@ def test_continuation_chunks_give_the_answer_model_their_table_header(tmp_path):
         assert "续表" in payload and payload.index("| 地点 | 上限 |") < payload.index(second["content"].splitlines()[0])
     finally:
         engine.dispose()
+
+
+def test_decimal_value_line_is_not_a_dotted_heading():
+    # 幻灯片里单独一行的“2.45元/箱”原先被当成“2.45 节”，一页切成两片（素材库第二轮 R08）
+    from briefly.chunking import find_headings
+    text = "目标陈述\n\n极限目标\n\n2.45元/箱\n\n3.5%\n\n1.2 适用范围\n\n本制度适用于全体员工。\n"
+    assert [title for _, _, title in find_headings(text, True)] == ["1.2 适用范围"]
+
+
+SLIDES = ("# 第1页 项目\n\n动力车间\n\n# 第2页\n流程图\n\n| 设备老化 |\n| - |\n\n| 保温层脱落 |\n| - |\n\n"
+          "1、电网\n\n波动\n\n# 第3页\n财务收益\n\n| 科目 | 改善前 |\n| - | - |\n| 试验费用 | 暂无 |\n\n预计收益约29万元\n")
+
+
+def test_slide_page_is_one_slice_when_it_fits():
+    # 流程图方框（单格表格）、编号短句不再各成碎片；整页一片，章节就是页
+    config, chunks = token_slices(SLIDES, "课件.ppt", True, Encoder(), tokens=200, report={"structure": "pptx_slides"})
+    assert config["version"] == 6 and config["parameters"]["slide_pages"] == "whole-page-when-fits"
+    assert [c.section for c in chunks] == ["第1页 项目", "第2页", "第3页"]
+    assert "试验费用" in chunks[2].content and "预计收益" in chunks[2].content
+    assert "".join(c.content for c in chunks) == SLIDES
+    # 不是幻灯片的文档照旧：表格、编号短句各自切开
+    _, plain = token_slices(SLIDES, "课件.md", True, Encoder(), tokens=200)
+    assert len(plain) > len(chunks)
+
+
+def test_slide_page_with_low_confidence_ocr_is_still_split():
+    start = SLIDES.index("波动")
+    report = {"structure": "pptx_slides", "ocr_unconfirmed_ranges": [dict(start=start, end=start + 2)]}
+    _, chunks = token_slices(SLIDES, "课件.ppt", True, Encoder(), tokens=200, report=report)
+    assert any(c.start == start for c in chunks) and len([c for c in chunks if c.section.startswith("第2页")]) > 1

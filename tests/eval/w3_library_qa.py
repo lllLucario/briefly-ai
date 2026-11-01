@@ -633,7 +633,7 @@ def answer_round2(imports, encoder, kb_id, cases, format_of, args, stamp, model_
         corpus.append(f["content"])
     if args.path == "assistant":
         agent = Agent(model_factory(), store=imports.store)
-        agent.enable_knowledge(knowledge, IntentFunnel(lambda: encoder, kb_probe=knowledge.relevance))
+        agent.enable_knowledge(knowledge, IntentFunnel(lambda: encoder, kb_probe=knowledge.relevance_signals))
     rows, events = [], []
     for case in cases:
         for repeat in range(args.n):

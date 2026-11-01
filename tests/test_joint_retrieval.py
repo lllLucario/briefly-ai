@@ -178,3 +178,50 @@ def test_assistant_egress_counts_workspace_separately():
     turn = [AIMessage("", response_metadata={"egress_sent": {"evidence": ["依据1", "依据2", "依据3"], "history_evidence": 0, "materials": 0}})]
     egress = _turn_egress(turn, searches)
     assert egress["evidence_sent"] == 1 and egress["workspace_sent"] == 2
+
+
+SLIDES = ("# 第9页 协商解除的特点\n\n- 1、不受法律解除限制性规定的调整；\n- 2、不用提前30日书面通知；\n"
+          "- 3、需要支付经济补偿金，但最多支付\n\n12个月；（用人单位提出解除的）\n\n- 4、权利义务可以一次性处理。\n\n"
+          "# 第10页 补偿计算\n\n个别补偿根据员工在本单位工作年限决定，每满一年支付一个月工资。\n")
+
+
+def _revision(world, title, content):
+    links = LinkService(world.engine)
+    revised, _ = world.store.add_text(title, content)
+    links.detect()
+    links.decide(links.material_links(revised.id)[0]["id"], True)
+    world.svc.set_egress(world.kb.id, True)
+    return revised
+
+
+def test_short_number_line_change_is_not_marked_identical(world):
+    # 幻灯片里数字常单独成句：“14个月；”去掉标点只有4个字，原先不参与对照，改稿被当成一致删掉并错标知识库片段
+    world.publish("离职管理课件", SLIDES)
+    revised = _revision(world, "离职管理课件（部门修订稿）", SLIDES.replace("12个月", "14个月"))
+    bundle = world.qa.bundle(world.kb.id, ["协商解除用人单位提出时补偿最多支付几个月"])
+    ws = [e for e in bundle["evidence"] if e.get("origin") == "workspace" and e["material_id"] == revised.id]
+    assert ws and any("“14个月”" in e.get("comparison", "") for e in ws)
+    kb = [e for e in bundle["evidence"] if e.get("origin") == "knowledge" and "12个月" in e["content"]]
+    assert kb and not any("此处一致" in e.get("comparison", "") for e in kb)
+    assert "14个月" in bundle["payload_text"] and "12个月" in bundle["payload_text"]
+
+
+def test_deleted_sentence_is_reported_from_the_knowledge_side(world):
+    # 工作区删掉一句：剩下的句子都在知识库里，但知识库那段有工作区没有的句子，不能标“此处一致”
+    world.publish("离职管理课件", SLIDES)
+    deleted = "个别补偿根据员工在本单位工作年限决定，每满一年支付一个月工资。"
+    revised = _revision(world, "离职管理课件（部门修订稿）", SLIDES.replace(deleted, "整体补偿另行规定。"))
+    bundle = world.qa.bundle(world.kb.id, ["个别补偿根据什么决定"])
+    kb = [e for e in bundle["evidence"] if e.get("origin") == "knowledge" and "个别补偿" in e["content"]]
+    assert kb and not any("此处一致" in e.get("comparison", "") for e in kb)
+    ws = [e for e in bundle["evidence"] if e.get("origin") == "workspace" and e["material_id"] == revised.id]
+    assert ws and any("在工作区文件中没有" in e.get("comparison", "") and "个别补偿" in e["comparison"] for e in ws)
+
+
+def test_identical_copy_note_names_the_workspace_file(world):
+    doc = world.publish("门店值班制度", POLICY)
+    LinkService(world.engine).copy_to_workspace(world.store, world.kb.id, doc.id)
+    world.svc.set_egress(world.kb.id, True)
+    bundle = world.qa.bundle(world.kb.id, ["值班主管客诉多久到场"])
+    assert "工作区版本此处一致：你的文件《" in bundle["payload_text"] and "已逐句核对" in bundle["payload_text"]
+    assert "可以直接据此说明两份一致" in bundle["payload_text"]  # JOINT_RULES 说明注记用法

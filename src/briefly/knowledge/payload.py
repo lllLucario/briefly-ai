@@ -4,7 +4,9 @@ from ..materials import wrap_material
 # 联合检索（工作区＋知识库）时放在依据前面：两类出处怎么用。事实性规则仍以回答提示为准，这里不放宽
 JOINT_RULES = ("依据分两类：“知识库·已发布”是企业正式发布的资料，“工作区·你的文件”是用户自己的工作文件。"
                "问制度、规定时以知识库发布版为准，工作区写法不同时指出不同之处；处理用户自己的工作时以工作区为准，"
-               "并提醒与知识库不一致的地方。两类依据说法冲突时并列说明，不替用户裁决，也不编造两边都没有的内容。")
+               "并提醒与知识库不一致的地方。两类依据说法冲突时并列说明，不替用户裁决，也不编造两边都没有的内容。"
+               "依据头注明“工作区版本此处一致”的，表示工作区那份文件此段已逐句核对、与知识库逐字相同，可以直接据此说明两份一致；"
+               "注明“此处写法不同”的，以注明的不同之处为准，不要说工作区没有改动。")
 
 
 def origin_label(item):
@@ -33,5 +35,6 @@ def evidence_payload(question, evidence, start=1):
                   f"{version}章节：{item['section'] or '未确定'}"
                   + ("；续表：正文最前面的表格行是原表表头，供对应列名" if table else "") + note + "】")
         blocks.append(wrap_material(header, (table or "") + item["content"]))
-    preamble = JOINT_RULES + "\n\n" if any(item.get("origin") == "workspace" for item in evidence) else ""
+    # 工作区副本与知识库逐字相同时只留知识库片段（带对照注记），依据里没有工作区条目也要说明注记的用法
+    preamble = JOINT_RULES + "\n\n" if any(item.get("origin") == "workspace" or item.get("comparison") for item in evidence) else ""
     return preamble + "问题：" + question + "\n\n" + "\n\n".join(blocks)

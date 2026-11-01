@@ -16,7 +16,7 @@ from ..context import Context
 from ..context_builder import SYSTEM_REPLY
 from ..intent import _FOLLOW_UP, knowledge_question
 from .qa import EGRESS_POLICY, EGRESS_REQUIRED, MAX_SUB_QUESTIONS, KnowledgeQA, cited_numbers
-from .retrieval import both_routes, relevance_floor, relevant, similarity
+from .retrieval import PARAMETERS, both_routes, relevance_floor, relevant, similarity
 from .service import fingerprint
 
 __all__ = ["KnowledgeAssistant", "KnowledgeSearchGuard", "MAX_SUB_QUESTIONS", "knowledge_tools", "record_knowledge_turn"]
@@ -42,6 +42,14 @@ class KnowledgeAssistant:
         """意图漏斗用：选定知识库中最相关片段的语义相似度。只在本地检索，不外发。"""
         sims = [s for item in self.retrieval.search(kb_id, question)["evidence"] if (s := similarity(item)) is not None]
         return max(sims) if sims else None
+
+    def relevance_signals(self, kb_id: str, question: str) -> dict:
+        """意图漏斗用：最高语义相似度，以及前 5 条召回里两路一致的情况，让路由与依据包用同一个相关判断。"""
+        ranked = [e for e in self.retrieval.search(kb_id, question)["evidence"]
+                  if e["retrieval"].get("rrf_score") is not None][:PARAMETERS["top_k"]]
+        sims = [s for e in ranked if (s := similarity(e)) is not None]
+        both = [both_routes(e) for e in ranked]
+        return dict(score=max(sims) if sims else None, any_both=any(both), all_both=bool(both) and all(both))
 
     def library_scores(self, question: str) -> list[dict]:
         """意图漏斗用：每个知识库与问题最接近片段的语义相似度 [{kb_id, name, score}]，用于发现“选错了库”。
@@ -169,7 +177,8 @@ class KnowledgeSearchGuard(AgentMiddleware):
     调用，模型拿到依据后重新作答，回答检查照常对重新作答的那次进行（不占检查重写次数）。
 
     不介入：指定了能力或附了材料、意图是业务查询/调整上一轮等非知识类、句式不像提问（闲聊、写作任务），
-    或本轮已调用过任何工具（检索过、读过材料或查过业务数据）。每轮最多补一次：补检索后本轮已有工具结果。
+    或本轮已经检索过知识库。只查过工作区材料不算：选了知识库时材料工具只看工作区，模型查完材料说“材料里没有”
+    就作答，知识库里的原文一条没看（素材库第二轮 H04）。每轮最多补一次：补检索后本轮已有检索结果。
     """
 
     def wrap_model_call(self, request, handler):
@@ -201,7 +210,7 @@ class KnowledgeSearchGuard(AgentMiddleware):
             return []
         messages = request.messages
         start = _turn_start(messages)
-        if start < 0 or any(isinstance(m, ToolMessage) for m in messages[start + 1:]):
+        if start < 0 or any(isinstance(m, ToolMessage) and m.name == "search_knowledge" for m in messages[start + 1:]):
             return []
         text = (messages[start].additional_kwargs.get("display") or messages[start].text).strip()
         if not knowledge_question(text):

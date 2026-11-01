@@ -186,7 +186,7 @@ def answer_cases(imports, encoder, kb_id, cases, doc_format_of, args, stamp):
     knowledge = KnowledgeAssistant(retrieval, model_factory, workspace=imports.store if mixed else None)
     if args.path == "assistant":
         agent = Agent(model_factory(), store=imports.store)
-        agent.enable_knowledge(knowledge, IntentFunnel(lambda: encoder, kb_probe=knowledge.relevance))
+        agent.enable_knowledge(knowledge, IntentFunnel(lambda: encoder, kb_probe=knowledge.relevance_signals))
     for case in cases:
         evidence = joint_evidence(knowledge.qa, kb_id, case["question"]) if mixed else local_evidence(retrieval, kb_id, case["question"])
         doc_format = doc_format_of(case)

@@ -80,7 +80,8 @@ def test_run_and_rescore_round2_with_original_materials(tmp_path, monkeypatch, m
         if mode == "assistant_material":
             responses = [tool_msg("read_material", dict(material_id=material.id, chunk=1))]
             answer = "根据工作区《个人阅读计划》，讨论地点是青石会议室。"
-        model = fake(*responses, text_msg(answer))
+        # 只读了工作区材料就作答时，程序会补一次知识库检索再让模型重答（KnowledgeSearchGuard）
+        model = fake(*responses, text_msg(answer), *([text_msg(answer)] if mode == "assistant_material" else []))
         monkeypatch.setattr("briefly.llm.create_chat_model", lambda **kw: model)
         monkeypatch.setattr("briefly.llm.create_local_embeddings", lambda _: encoder)
         args = Namespace(path=path, n=1, split="all", k=[], output=str(tmp_path / "runs"))

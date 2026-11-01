@@ -185,7 +185,7 @@ def kb_probe(root: Path, encoder_factory):
 
     def probe(kb_id, text):
         if (kb_id, text) not in cache:
-            cache[kb_id, text] = assistant.relevance(kb_id, text)
+            cache[kb_id, text] = assistant.relevance_signals(kb_id, text)
         return cache[kb_id, text]
 
     def rivals(text):

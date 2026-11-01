@@ -341,3 +341,38 @@ def test_knowledge_tool_splits_budget_and_requires_authorization(indexed, monkey
     result = assistant.search(kb.id, ["如何审批", "谁审批", "何时审批", "第四个问题会被忽略"])
     assert budgets == [config.KNOWLEDGE_CONTEXT_TOKENS // 3] * 3
     assert len({e["reference"] for e in result["evidence"]}) == len(result["evidence"])  # 合并去重
+
+
+def test_time_span_question_is_answered_not_located():
+    # 素材库第二轮 S09：“哪段时间”命中找出处句式 `哪一?段`，只列页码
+    state = TurnState(kb_id="kb")
+    assert funnel().classify("D4的基线数据来自哪段时间、哪张报表？", state).intent == "knowledge"
+    assert funnel().classify("考勤规定在哪一段？", state).intent == "locate"
+
+
+def test_multi_step_lookup_goes_to_assistant():
+    # 素材库第二轮 MB01：先从工作区找出引用的资料，再接着查那份资料，单问捷径只检索一次
+    state = TurnState(kb_id="kb")
+    text = "资料学习计划1参考的是哪份资料？请接着查那份资料：漏水要怎样处置？"
+    assert funnel().classify(text, state).intent == "agent"
+
+
+@pytest.mark.parametrize("probe,intent", [
+    (dict(score=0.61, any_both=False, all_both=False), "agent"),  # 过了下限但两路都不一致：依据包会丢掉知识库片段
+    (dict(score=0.61, any_both=True, all_both=False), "knowledge"),
+    (dict(score=0.45, any_both=True, all_both=True), "agent"),  # 低于下限：即使全部两路一致也不放进捷径
+    (dict(score=0.45, any_both=True, all_both=False), "agent"),
+    (dict(score=None, any_both=False, all_both=False), "agent"),
+])
+def test_routing_uses_the_same_relevance_rule_as_the_bundle(probe, intent):
+    f = IntentFunnel(KeywordEncoder, EXAMPLES, threshold=0.8, margin=0.05, kb_probe=lambda kb_id, text: probe)
+    f.kb_threshold = 0.5
+    assert f.classify("年假有几天？", TurnState(kb_id="kb")).intent == intent
+
+
+def test_relevance_signals_report_route_agreement(indexed):
+    store, svc, lifecycle, retrieval = setup(indexed)
+    kb = svc.create("制度库")
+    add(store, svc, lifecycle, kb, "休假制度", "员工年假为每年5天，须提前3天申请。")
+    signals = KnowledgeAssistant(retrieval, fake).relevance_signals(kb.id, "年假有几天")
+    assert set(signals) == {"score", "any_both", "all_both"} and -1.0 <= signals["score"] <= 1.0

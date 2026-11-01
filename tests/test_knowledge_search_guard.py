@@ -78,3 +78,26 @@ def test_knowledge_question_shapes():
         assert knowledge_question(text), text
     for text in ["好的谢谢", "帮我写个请假条", "总结一下这份制度", "把这段润色一下", ""]:
         assert not knowledge_question(text), text
+
+
+def test_workspace_material_lookup_does_not_count_as_knowledge_search(indexed):
+    # 素材库第二轮 H04：助理只查了工作区材料，说“材料中没有提到”就作答，知识库原文一条没看
+    from langchain_core.tools import tool
+
+    from briefly.agent import Agent
+    from briefly.knowledge.assistant import KnowledgeAssistant
+    from test_knowledge_turn import add, setup
+
+    @tool
+    def search_materials(query: str) -> str:
+        """在工作区材料里查找。"""
+        return "没有找到相关材料。"
+
+    model = fake(tool_msg("search_materials", {"query": "年假"}), text_msg("材料中没有提到年假。"), text_msg("年假每年5天〔依据1〕"))
+    store, svc, lifecycle, retrieval = setup(indexed)
+    kb = svc.create("制度库")
+    add(store, svc, lifecycle, kb, "制度1", LEAVE)
+    svc.set_egress(kb.id, True)
+    agent = Agent(model, tools=[search_materials], knowledge=KnowledgeAssistant(retrieval, lambda: model))
+    assert agent.chat("员工年假有几天？", kb_id=kb.id) == "年假每年5天〔依据1〕"
+    assert len(searches(agent.history)) == 1 and LEAVE in sent_text(model.calls[-1])
