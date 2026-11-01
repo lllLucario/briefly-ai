@@ -105,7 +105,8 @@ def _load_isolated(filename, data, *, timeout=None):
             folder = Path(temporary)
             (folder / "input").write_bytes(data)
             settings = {key: getattr(config, key) for key in (
-                "DOC_PARSER", "JAVA_PATH", "TIKA_APP_JAR", "LIBREOFFICE_PATH", "DOC_CONVERSION_TIMEOUT_S")}
+                "DOC_PARSER", "PPT_PARSER", "JAVA_PATH", "TIKA_APP_JAR", "LIBREOFFICE_PATH", "DOC_CONVERSION_TIMEOUT_S",
+                "OFFICE_PROFILE_TEMPLATE")}
             (folder / "request.json").write_text(json.dumps(dict(filename=Path(filename).name, settings=settings)), encoding="utf-8")
             options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
             try:

@@ -125,3 +125,81 @@ def test_upload_old_word_through_existing_api(converted):
             assert "650元" in detail["content"]
     finally:
         engine.dispose()
+
+
+
+def profile_of(command):
+    from urllib.parse import urlparse
+    from urllib.request import url2pathname
+
+    uri = next(c.split("=", 1)[1] for c in command if c.startswith("-env:UserInstallation="))
+    return Path(url2pathname(urlparse(uri).path))
+
+
+@pytest.fixture
+def templated(converted, monkeypatch, tmp_path):
+    """模拟 LibreOffice：初始化时像真程序一样重写 registrymodifications.xcu 并留下缓存文件。"""
+    monkeypatch.setattr(config, "OFFICE_PROFILE_TEMPLATE", True)
+    monkeypatch.setattr(legacy_word, "gettempdir", lambda: str(tmp_path / "temp"))
+    monkeypatch.setattr(legacy_word, "_broken_templates", set())
+    (tmp_path / "temp").mkdir()
+    calls = {"init": 0, "profiles": [], "warm": [], "convert": legacy_word._run}
+
+    def run(command, **kwargs):
+        profile = profile_of(command)
+        if command[-1].endswith("warm.csv"):
+            calls["init"] += 1
+            settings = profile / "user" / "registrymodifications.xcu"
+            settings.write_text(settings.read_text(encoding="utf-8").replace(
+                "</oor:items>", '<item oor:path="/org.openoffice.Setup/Office"><prop oor:name="ooSetupInstCompleted" '
+                'oor:op="fuse"><value>true</value></prop></item></oor:items>'), encoding="utf-8")
+            (profile / "user" / "cache").mkdir()
+            (profile / "user" / "cache" / "warm").write_text("x", encoding="utf-8")
+            return
+        calls["profiles"].append(profile)
+        calls["warm"].append((profile / "user" / "cache" / "warm").is_file())
+        assert legacy_word._is_hardened(profile) and not (profile / "ready").exists()
+        calls["convert"](command, **kwargs)
+    monkeypatch.setattr(legacy_word, "_run", run)
+    return calls
+
+
+def test_conversion_copies_a_hardened_template_into_a_fresh_profile(templated, tmp_path):
+    for _ in range(2):
+        assert "| 杭州 | 480元 |" in load_document("制度.doc", legacy_word.OLE_HEADER + b"fixture").text
+    assert templated["init"] == 1  # 模板只初始化一次
+    first, second = templated["profiles"]
+    assert first != second and not first.exists() and not second.exists()  # 每次独立配置目录，用后删除
+    assert templated["warm"] == [True, True]
+    template = next((tmp_path / "temp" / "briefly-office-profile").iterdir())
+    assert (template / "user" / "cache" / "warm").is_file() and legacy_word._is_hardened(template)
+
+
+def test_template_that_lost_macro_hardening_is_not_used(templated, tmp_path):
+    load_document("制度.doc", legacy_word.OLE_HEADER + b"fixture")
+    template = next((tmp_path / "temp" / "briefly-office-profile").iterdir())
+    settings = template / "user" / "registrymodifications.xcu"
+    settings.write_text(settings.read_text(encoding="utf-8").replace("<value>3</value>", "<value>0</value>"),
+                        encoding="utf-8")
+    assert not legacy_word._is_hardened(template)
+    load_document("制度.doc", legacy_word.OLE_HEADER + b"fixture")
+    # 第二次没有复制被改过的模板（没有初始化留下的缓存），而是从零建的加固配置
+    assert templated["init"] == 1 and templated["warm"] == [True, False]
+
+
+def test_failed_template_initialisation_falls_back_to_a_fresh_profile(converted, monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "OFFICE_PROFILE_TEMPLATE", True)
+    monkeypatch.setattr(legacy_word, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(legacy_word, "_broken_templates", set())
+    convert, inits = legacy_word._run, []
+
+    def run(command, **kwargs):
+        if command[-1].endswith("warm.csv"):
+            inits.append(command)
+            raise ValueError("初始化超时")
+        assert legacy_word._is_hardened(profile_of(command))
+        convert(command, **kwargs)
+    monkeypatch.setattr(legacy_word, "_run", run)
+    for _ in range(2):
+        assert "| 杭州 | 480元 |" in load_document("制度.doc", legacy_word.OLE_HEADER + b"fixture").text
+    assert len(inits) == 1  # 失败后本进程不再反复初始化

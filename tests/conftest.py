@@ -37,3 +37,9 @@ def _no_local_embedding(monkeypatch):
 def _isolated_workspace_index(tmp_path, monkeypatch):
     """工作区语义索引文件放在每个测试自己的临时目录，不写进仓库的 data/。"""
     monkeypatch.setattr(config, "WORKSPACE_INDEX_PATH", str(tmp_path / "workspace.sqlite"))
+
+
+@pytest.fixture(autouse=True)
+def _no_office_profile_template(monkeypatch):
+    """转换用替身时不建 LibreOffice 配置模板（模板初始化会多一次 soffice 调用）；模板逻辑在专门的测试里开。"""
+    monkeypatch.setattr(config, "OFFICE_PROFILE_TEMPLATE", False)

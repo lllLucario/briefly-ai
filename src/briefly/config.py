@@ -56,8 +56,12 @@ INTENT_LOG_TEXT = os.getenv("BRIEFLY_INTENT_LOG_TEXT", "off").lower() == "on"
 # 旧版Word本地转换；不配置时查PATH及常见LibreOffice安装位置。
 LIBREOFFICE_PATH = os.getenv("BRIEFLY_LIBREOFFICE", "")
 DOC_CONVERSION_TIMEOUT_S = max(1, int(os.getenv("BRIEFLY_DOC_CONVERSION_TIMEOUT_S", "90")))
+# 转换时复制预先初始化的加固配置模板（每次仍是独立配置目录、禁用宏）；off 则每次从零初始化。
+OFFICE_PROFILE_TEMPLATE = os.getenv("BRIEFLY_OFFICE_PROFILE_TEMPLATE", "on").lower() != "off"
 # auto：本地Java/Tika可用时直接读doc；convert保留兼容路线，direct强制直接解析。
 DOC_PARSER = os.getenv("BRIEFLY_DOC_PARSER", "auto").lower()
+# auto：本地Java/Tika可用时直接读ppt，读不了再转换；convert只走LibreOffice转换。
+PPT_PARSER = os.getenv("BRIEFLY_PPT_PARSER", "auto").lower()
 JAVA_PATH = os.getenv("BRIEFLY_JAVA", "")
 TIKA_APP_JAR = os.getenv("BRIEFLY_TIKA_APP_JAR", "")
 # 选中材料合计不超过该 token 数（约 6000 个汉字）时，全文直接放进消息；超过则由模型用工具读取
