@@ -18,6 +18,8 @@ def number_issues(answer: str, sources: list[str], now=None) -> list[str]:
     answer = re.sub(r"(?<![\d.])\d+[.、)）]\s+", "", answer)
     values = set()
     known = set(unverified_numbers(evidence, ""))
+    # 制度、标准常把多级条款编号写在行首（“7.5.3 文件控制”）；周报规则把行首“7.”当列表序号剥掉，这里按原样补回
+    known.update(re.findall(r"(?m)^[ \t]*(\d+(?:\.\d+)+)(?![\d.])", evidence))
     verified_dates = []
     if now is not None:
         for year, month, day, _, written, is_label in _pairs(answer):

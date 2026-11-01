@@ -125,3 +125,13 @@ def test_number_formats_known_dates_and_ordinals_do_not_warn():
     assert number_issues("上午9:45开始", ["每天上午9:30-10:00报销"], now) == ["9:45"]
     assert number_issues("定额补贴20/50/80元", ["分为每月20元、50元、80元三种"], now) == []
     assert number_issues("定额补贴20/50/90元", ["分为每月20元、50元、80元三种"], now) == ["20/50/90"]
+
+
+def test_line_start_section_numbers_are_known():
+    # 多级条款编号写在行首，上一行以句号结尾；去掉空白后句号会紧贴编号
+    source = "c) review of retention records.\n6.4.2 档案保管\n6.4.2.1\nPaper files shall be kept dry.\n9.1 生效日期\n"
+    assert number_issues("见 6.4.2 档案保管、6.4.2.1 和 9.1。", [source]) == []
+    assert number_issues("6.4.2 要求纸质档案防潮", [source]) == []
+    assert number_issues("见 6.4.3 档案销毁", [source]) == ["6.4.3"]
+    # 行内的同样编号本来就能核对；只补行首编号，不把正文里的普通数字放进来
+    assert number_issues("见 6.4.2 条，保存3年", [source]) == ["3"]
