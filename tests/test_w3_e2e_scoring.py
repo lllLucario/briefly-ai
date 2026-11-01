@@ -60,6 +60,7 @@ def test_retrieval_miss_alone_does_not_fail_a_correct_answer():
 
 def test_abstain_detection_and_summary():
     assert abstained("资料中没有明确规定。", "answered") and abstained("知识库里没有查到这项要求。", "answered")
+    assert abstained("资料里没写境外标准。", "answered") and abstained("制度未写明补贴金额。", "answered")
     assert not abstained("每晚750元。", "answered")
     rows = [dict(passed=True, problems=[], retrieval_hit=True, length=10, category="relevance", doc_format="docx"),
             dict(passed=False, problems=["verbose"], retrieval_hit=None, length=30, category="concise", doc_format="pdf")]
