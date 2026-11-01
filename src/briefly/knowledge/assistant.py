@@ -24,9 +24,10 @@ log = logging.getLogger(__name__)
 
 
 class KnowledgeAssistant:
-    def __init__(self, retrieval, model_factory) -> None:
+    def __init__(self, retrieval, model_factory, workspace=None) -> None:
+        """workspace：材料库；接了工作区索引时知识问答同时检索工作区（联合检索，见 KnowledgeQA.bundle）。"""
         self.retrieval = retrieval
-        self.qa = KnowledgeQA(retrieval, model_factory)
+        self.qa = KnowledgeQA(retrieval, model_factory, workspace)
 
     @property
     def knowledge(self):
@@ -84,7 +85,7 @@ def _searches(messages) -> list[dict]:
 def knowledge_tools(assistant: KnowledgeAssistant) -> list:
     @tool(response_format="content_and_artifact")
     def search_knowledge(questions: list[str], runtime: ToolRuntime[Context]) -> tuple[str, dict]:
-        """在用户本次选定的知识库里检索制度、项目资料、产品手册等原文。
+        """在用户本次选定的知识库里检索制度、项目资料、产品手册等原文，同时检索用户工作区里的相关文件（依据头标明出处）。
         questions：1～3 个完整、独立的检索问题。用户追问省略了主语时，结合上文补全后再检索（例如上一轮问年假，
         这一轮“那病假呢？”应写成“病假有几天、如何申请”）；一句话里有多个问题时拆开一次传入。
         回答只能依据本工具返回的原文，关键结论用〔依据N〕标注出处；之前的聊天回答不是依据。
@@ -217,6 +218,7 @@ def record_knowledge_turn(state, runtime):
 def _turn_egress(turn, searches) -> dict:
     """按本轮各次模型调用实际发出的内容计数（ContextBuilder 在每次调用后记在回复的 egress_sent）。"""
     sent, history, materials = set(), 0, 0
+    origins = {r["label"]: r.get("origin") for s in searches for r in s["references"]}  # 依据编号 → 知识库/工作区
     for m in turn:
         record = m.response_metadata.get("egress_sent") if isinstance(m, AIMessage) else None
         if record:
@@ -227,5 +229,6 @@ def _turn_egress(turn, searches) -> dict:
     for s in searches:
         for name, count in ((s.get("egress") or {}).get("redactions") or {}).items():
             redactions[name] = redactions.get(name, 0) + count
-    return dict(evidence_sent=len(sent), history_sent=True, history_evidence=history, materials=materials,
-                redactions=redactions, policy=EGRESS_POLICY + "；对话历史与附带的材料不经规则处理")
+    workspace = sum(1 for label in sent if origins.get(label) == "workspace")
+    return dict(evidence_sent=len(sent) - workspace, workspace_sent=workspace, history_sent=True, history_evidence=history,
+                materials=materials, redactions=redactions, policy=EGRESS_POLICY + "；对话历史与附带的材料不经规则处理")

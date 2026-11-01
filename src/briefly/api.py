@@ -112,6 +112,8 @@ class MaterialDetail(MaterialOut):
     content: str
     sections: list[SectionOut]
     parse_report: dict
+    # 与知识库文档的关联（explicit / suggested / confirmed），见 links.LinkService.material_links
+    links: list[dict] = []
 
 
 class CreatedMaterial(BaseModel):
@@ -309,6 +311,7 @@ def create_app(
         yield
         if scheduler is not None:
             scheduler.stop()
+        app.state.store.workspace_index.wait(10)
         from .feishu.client import close_shared
 
         close_shared()  # 关闭共用飞书客户端的连接池
@@ -333,7 +336,7 @@ def create_app(
                 from .intent import IntentFunnel
                 from .knowledge.assistant import KnowledgeAssistant
                 # 知识能力与语义层（本地 Embedding、知识库路由）在知识库服务就绪后接入；未配置 Embedding 时语义层自动跳过
-                knowledge = KnowledgeAssistant(app.state.knowledge_retrieval, model_factory)
+                knowledge = KnowledgeAssistant(app.state.knowledge_retrieval, model_factory, workspace=app.state.store)
                 agent.enable_knowledge(knowledge, IntentFunnel(app.state.knowledge_imports.encoder_factory,
                                                                kb_probe=knowledge.relevance))
                 app.state.agent = agent
@@ -523,8 +526,19 @@ def create_app(
         m = store.get(material_id)
         sections = [SectionOut(index=s.index, level=s.level, title=s.title, path=s.path) for s in store.sections(m.id)]
         return MaterialDetail(
-            **summary(store, m).model_dump(), content=m.content, sections=sections, parse_report=m.parse_report
+            **summary(store, m).model_dump(), content=m.content, sections=sections, parse_report=m.parse_report,
+            links=app.state.links.material_links(m.id),
         )
+
+    @app.post("/links/{link_id}/confirm", tags=[docs.MATERIALS], summary="确认疑似关联：工作区文件与知识库文档是同一份")
+    def confirm_link(link_id: int):
+        app.state.links.decide(link_id, True)
+        return {"ok": True}
+
+    @app.post("/links/{link_id}/dismiss", tags=[docs.MATERIALS], summary="否认或解除关联，之后不再提示")
+    def dismiss_link(link_id: int):
+        app.state.links.decide(link_id, False)
+        return {"ok": True}
 
     @app.delete("/materials/{material_id}", tags=[docs.MATERIALS], status_code=204, summary="删除材料（被待办关联时需 force）")
     def delete_material(material_id: int, store: Store, force: bool = False):
@@ -571,6 +585,12 @@ def create_app(
     register_weekly(app)  # 周报：一周一份，审核清单 → 生成；定时、设置、提醒
     register_todos(app)  # 待办：父子结构、材料关联、活动；进展进入周报的审核清单
     register_knowledge(app,model_factory)  # 知识库入库/索引、范围召回与引用问答
+    from .links import LinkService
+    from .workspace_index import attach
+    # 工作区语义索引：与知识库共用本地 Embedding（取用时再读 encoder_factory，测试替换的假编码器同样生效）；
+    # 材料增删后后台同步，检索前再对齐一次。同步之后检测工作区与知识库文档的疑似重复
+    app.state.links = LinkService(app.state.store.engine)
+    attach(app.state.store, lambda: app.state.knowledge_imports.encoder_factory()).hooks.append(app.state.links.detect)
     from .handoffs import register as register_handoffs
     register_handoffs(app, get_agent, thread_locks, model_factory)
 

@@ -119,6 +119,7 @@ def register(app):
             raise KnowledgeConflict("任务或预览已变化，请刷新后核对")
         if job.status == "preview":
             background.add_task(run, service.confirm, kb_id, job_id, body.digest)
+            background.add_task(app.state.store.notify_changed)  # 新发布的版本：检查工作区里的疑似重复与改稿
         return job_out(job)
 
     @app.post("/knowledge-bases/{kb_id}/imports/{job_id}/retry", tags=["知识库"])

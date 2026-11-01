@@ -219,6 +219,9 @@ class EvidenceBuilder:
                 fp = fingerprint(plan.file.id, plan.base, plan.end)
                 if any(e.fingerprint == fp for e in existing if e.review_status != SUPERSEDED):
                     continue
+            if plan.end.material_id and (restriction := self.svc.store.egress_blocked([plan.end.material_id]).get(plan.end.material_id)):
+                result.skipped.append(f"《{_name(plan.file)}》：{restriction}")  # 改动内容同样不发给模型
+                continue
             net, hunks, extra = self._changes(plan)
             flags = list(dict.fromkeys(plan.flags + extra + net.flags))
             if not hunks and not ("parse_failed" in flags or "format_only" in flags):

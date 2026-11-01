@@ -228,6 +228,9 @@ class ReportWriter:
             except MaterialNotFound:
                 warnings.append(f"材料 {material_id} 已被删除，未纳入")
                 continue
+            if restriction := self.store.egress_blocked([material_id]).get(material_id):
+                warnings.append(f"{restriction}本次未纳入")  # 关联的知识库未允许外发：不发给模型
+                continue
             chunks = self.store.chunks(material_id)
             sources += [Source(material_id, c.index, material.title, c.content, c.start) for c in chunks]
             warnings += [f"《{material.title}》：{w}" for w in material.parse_report.get("warnings", [])]

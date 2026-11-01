@@ -190,6 +190,8 @@ def register(app: FastAPI, get_agent, thread_locks, model_factory) -> None:
     def preview_todos(thread_id: str, body: PreviewIn):
         with thread_locks[thread_id]:
             snap = snapshot(thread_id, body.message_id)
+            # 来源材料关联的知识库未允许外发时不发给模型（EgressRestricted，400 说明原因）
+            store.require_egress([x["material_id"] for x in snap["sources"] if x.get("material_id")])
             try:
                 items, warnings = verified_candidates(model_factory(), snap)
             except ValueError:

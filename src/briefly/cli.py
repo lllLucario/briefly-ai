@@ -124,11 +124,15 @@ def main() -> None:
         model = create_chat_model()
     except ModelConfigurationError as exc:
         sys.exit(str(exc))
+    from .workspace_index import attach
+
+    store = MaterialStore(create_db_engine())
+    attach(store)  # 配置了本地 Embedding 时材料检索用语义＋关键词
     agent = Agent(
         model,
         checkpointer=sqlite_checkpointer(config.DB_PATH),
         thread_id=args.thread,
-        store=MaterialStore(create_db_engine()),
+        store=store,
     )
     if args.input is None:
         repl(agent, args.skill)

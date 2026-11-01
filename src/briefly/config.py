@@ -33,8 +33,13 @@ MAX_UPLOAD_MB = int(os.getenv("BRIEFLY_MAX_UPLOAD_MB", "10"))
 PARSE_TIMEOUT_S = max(1, int(os.getenv("BRIEFLY_PARSE_TIMEOUT_S", "120")))
 KNOWLEDGE_DIR = os.getenv("BRIEFLY_KNOWLEDGE_DIR", "data/knowledge")
 EMBEDDING_DIR = os.getenv("BRIEFLY_EMBEDDING_DIR", "")
+# 工作区（材料库）语义索引文件，不填时放在知识库目录下 workspace.sqlite；检索前对齐时最多当场计算几条新向量，其余交给后台
+WORKSPACE_INDEX_PATH = os.getenv("BRIEFLY_WORKSPACE_INDEX_PATH", "")
+WORKSPACE_INLINE_EMBED = int(os.getenv("BRIEFLY_WORKSPACE_INLINE_EMBED", "64"))
 # 知识问答：发给生成模型的依据包总额（按本地 Embedding 分词器计）及整个回答提示的上限（按生成模型计）
 KNOWLEDGE_CONTEXT_TOKENS = int(os.getenv("BRIEFLY_KNOWLEDGE_CONTEXT_TOKENS", "8000"))
+# 联合检索（选了知识库时同时检索工作区）：上面的总额里工作区片段最多用多少（知识库用不满时余量也给工作区）
+WORKSPACE_CONTEXT_TOKENS = int(os.getenv("BRIEFLY_WORKSPACE_CONTEXT_TOKENS", "2000"))
 KNOWLEDGE_PROMPT_TOKENS = int(os.getenv("BRIEFLY_KNOWLEDGE_PROMPT_TOKENS", "12000"))
 # 助理路径知识问答这一轮的总输入上限（系统提示＋工具定义＋会话记忆＋历史＋本轮依据与问题，按生成模型计）：
 # 超出时先少带历史，不砍本轮依据；本轮依据本身放不下时仍按单次输入上限处理
