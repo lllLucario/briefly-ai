@@ -25,14 +25,32 @@ function resultActions(el, message) {
   box.className = "row gap wrap msg-actions";
   const secondary = [!todoMain ? todoButton : "", !weekMain ? weekButton : ""].filter(Boolean).join("");
   const status = saved ? `已保存 ${saved} 条待办。` : todoMain ? "行动项尚未保存到待办。" : "";
-  box.innerHTML = `<button class="${!todoMain && !weekMain ? "primary" : "ghost"} small" data-copy>复制结果</button>
-    ${todoMain ? todoButton : ""}${weekMain ? weekButton : ""}
+  box.innerHTML = `${todoMain ? todoButton : ""}${weekMain ? weekButton : ""}
     ${actionable && secondary ? `<details class="result-more"><summary>更多操作</summary><div class="row gap wrap">${secondary}</div></details>` : ""}
-    <span class="muted small" data-save-state>${status}${weekMain ? "对话周报是草稿，正式周报需核对后生成。" : !status ? "当前回复保存在会话中。" : ""}</span>`;
+    <span class="muted small" data-save-state>${status}${weekMain ? "对话周报是草稿，正式周报需核对后生成。" : ""}</span>
+    <span class="msg-tools">
+      <button type="button" class="ghost tool-icon result-action" data-retry title="修改要求后重试" aria-label="修改要求后重试">${uiIcon("retry")}</button>
+      <button type="button" class="ghost tool-icon" data-copy title="复制结果" aria-label="复制结果">${uiIcon("copy")}</button>
+    </span>`;
   el.appendChild(box);
-  box.querySelector("[data-copy]").onclick = async () => {
-    try { await navigator.clipboard.writeText(message.text); box.querySelector("[data-copy]").textContent = "已复制"; }
-    catch (_) { await uiAlert("浏览器未允许剪贴板，请选中结果后复制。"); }
+  const copy = box.querySelector("[data-copy]");
+  copy.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(message.text);
+      copy.innerHTML = uiIcon("tick"); copy.title = "已复制"; copy.setAttribute("aria-label", "已复制");
+      setTimeout(() => { copy.innerHTML = uiIcon("copy"); copy.title = "复制结果"; copy.setAttribute("aria-label", "复制结果"); }, 1500);
+    } catch (_) { await uiAlert("浏览器未允许剪贴板，请选中结果后复制。"); }
+  };
+  // 只把原请求填回输入区，不自动发起模型调用或覆盖用户正在编辑的要求。
+  const original = state.lastRequest ? {...state.lastRequest, material_ids:[...state.lastRequest.material_ids]} : null;
+  const retry = box.querySelector("[data-retry]");
+  retry.disabled = !original;
+  retry.onclick = async () => {
+    if (!original) return;
+    if ($("#input").value.trim() && $("#input").value !== original.text && !(await uiConfirm("替换输入框中尚未发送的内容，填回这次原始请求？"))) return;
+    $("#input").value = original.text;
+    state.picked = new Set(original.material_ids); renderPicked();
+    $("#input").focus();
   };
   const thread = state.threadId;
   const todo = box.querySelector("[data-todos]");
@@ -43,25 +61,12 @@ function resultActions(el, message) {
   }
   const week = box.querySelector("[data-week]");
   if (week) week.onclick = () => transferToWeek({ thread_id: thread, message_id: message.message_id });
-  if (message.warnings?.length || message.system_reply || !actionable) {
+  if (message.warnings?.length || message.system_reply) {
     const warning = document.createElement("div");
     warning.className = message.warnings?.length ? "notice warn result-warning" : "result-help";
     warning.innerHTML = `${(message.warnings || []).map((w)=>`<p>${escapeHtml(w)}</p>`).join("")}
-      ${message.warnings?.length ? "<p>此回答仍需核对，建议修正后再使用。</p>" : message.system_reply ? "<p>本次未生成可用结果，可调整内容或范围后重试。</p>" : ""}
-      <button class="ghost small result-action" data-retry>修改要求后重试</button>
-      <button class="ghost small result-action" data-supplement>补充信息</button>`;
-    el.appendChild(warning);
-    // 只把原请求填回输入区，不自动发起模型调用或覆盖用户正在编辑的要求。
-    const original = state.lastRequest ? {...state.lastRequest, material_ids:[...state.lastRequest.material_ids]} : null;
-    warning.querySelector("[data-retry]").disabled = !original;
-    warning.querySelector("[data-retry]").onclick = async () => {
-      if (!original) return;
-      if ($("#input").value.trim() && $("#input").value !== original.text && !(await uiConfirm("替换输入框中尚未发送的内容，填回这次原始请求？"))) return;
-      $("#input").value = original.text;
-      state.picked = new Set(original.material_ids); renderPicked();
-      $("#input").focus();
-    };
-    warning.querySelector("[data-supplement]").onclick = () => $("#input").focus();
+      ${message.warnings?.length ? "<p>此回答仍需核对，建议修正后再使用。</p>" : "<p>本次未生成可用结果，可调整内容或范围后重试。</p>"}`;
+    el.insertBefore(warning, box);
   }
 }
 
