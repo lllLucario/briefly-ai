@@ -185,3 +185,12 @@ def test_conflict_priority_depends_on_scene(scene, expected):
     case = dict(source="conflict", abstain=False, scene=scene)
     refs = [{"label": "依据1", "origin": "knowledge"}, {"label": "依据2", "origin": "workspace"}]
     assert qa.score_source(case, "知识库写30日〔依据1〕，你的稿子写32日〔依据2〕，两处不同。", refs) is expected
+
+
+def test_unit_in_parentheses_and_unpublished_wording():
+    from tests.eval.w3_e2e_scoring import contains
+    assert contains("A4打印纸当前库存为 2（刀）", "2刀") and not contains("库存为 2（个）", "2刀")
+    case = dict(source="conflict", abstain=False, scene="which_first")
+    refs = [{"label": "依据1", "origin": "knowledge"}, {"label": "依据2", "origin": "workspace"}]
+    answer = "知识库2500元〔依据1〕，修订稿2502元〔依据2〕，两版不同；未发布的改动不能当作现行规定，要生效需走发布。"
+    assert qa.score_source(case, answer, refs)

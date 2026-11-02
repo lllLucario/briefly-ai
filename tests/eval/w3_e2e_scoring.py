@@ -33,9 +33,13 @@ def normalize(text: str) -> str:
 GLOSS = re.compile(r"\([a-z][a-z .\-]*\)")
 
 
+# 回答常把单位放进括号：“库存为 2（刀）”与 gold“2刀”同义
+UNIT_PAREN = re.compile(r"(?<=\d)\(([^\d()]{1,3})\)")
+
+
 def contains(text: str, needle: str) -> bool:
     needle, text = normalize(needle), normalize(text)
-    return needle in text or needle in GLOSS.sub("", text)
+    return needle in text or needle in GLOSS.sub("", text) or needle in UNIT_PAREN.sub(r"\1", text)
 
 
 def abstained(answer: str, status: str | None) -> bool:
