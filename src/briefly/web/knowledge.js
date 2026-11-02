@@ -21,7 +21,7 @@
   const uploadQueues = new Map();
   let inspectionSequence = 0, inspectionSignature = "", folderSupport = null, fileTreeSignature = "";
   function renderBaseCards() {
-    $("#kb-base-cards").innerHTML = bases.map(base => `<button type="button" class="kb-base-card" data-kb-base="${escapeHtml(base.id)}" aria-pressed="${base.id === current}"><span class="start-icon">${uiIcon("folder")}</span><span><strong>${escapeHtml(base.name)}</strong><small>${base.external_allowed ? "已允许外部模型问答" : "外发未开启"}</small></span><span class="kb-card-check" aria-hidden="true">${base.id === current ? "✓" : "→"}</span></button>`).join("");
+    $("#kb-base-cards").innerHTML = bases.map(base => `<button type="button" class="kb-base-card" data-kb-base="${escapeHtml(base.id)}" title="${escapeHtml(base.name)}" aria-pressed="${base.id === current}"><span class="start-icon">${uiIcon("folder")}</span><span><strong>${escapeHtml(base.name)}</strong><small>${base.external_allowed ? "已允许外部模型问答" : "外发未开启"}</small></span><span class="kb-card-check" aria-hidden="true">${base.id === current ? "✓" : "→"}</span></button>`).join("");
     $("#kb-current-name").textContent = bases.find(base => base.id === current)?.name || "";
   }
   function renderLibraryState() {
@@ -244,6 +244,11 @@
   $("#kb-inspector").addEventListener("change", event => { if (event.target.id === "kb-inspect-version") inspectFile(draft().fileKey, 0, event.target.value, true); });
   $("#kb-open-upload").addEventListener("click", () => { draft().target = null; restore(); $("#kb-upload-error").textContent = ""; $("#kb-upload-dialog").showModal(); });
   $("#kb-upload-close").addEventListener("click", () => $("#kb-upload-dialog").close());
+  $("#kb-open-settings").addEventListener("click", () => {
+    const settings = $("#kb-library-settings"); settings.open = !settings.open;
+    if (settings.open) { const summary = settings.querySelector("summary"); summary.scrollIntoView({block:"start"}); summary.focus({preventScroll:true}); }
+  });
+  $("#kb-library-settings").addEventListener("toggle", () => $("#kb-open-settings").setAttribute("aria-expanded", String($("#kb-library-settings").open)));
   $("#kb-pick-files").addEventListener("click", () => $("#kb-files").click());
   $("#kb-pick-folder").addEventListener("click", () => $("#kb-add-folder").click());
   function renderUploadSelection() {

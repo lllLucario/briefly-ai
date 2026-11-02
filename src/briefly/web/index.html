@@ -47,10 +47,6 @@
   </header>
   <div id="inbox" class="inbox hidden"></div>
   <div id="app-status" class="notice hidden" role="alert"></div>
-  <div class="workspace-heading">
-    <div><p class="eyebrow">把信息整理好，把工作向前推</p><h1 id="page-title">待办与进展</h1></div>
-    <p id="page-description">明确任务，关联材料，留下每一步进展。</p>
-  </div>
 
   <template id="chat-welcome">
     <div class="empty welcome">
@@ -81,7 +77,7 @@
   </template>
 
   <!-- 对话 -->
-  <main id="tab-chat" class="tab">
+  <main id="tab-chat" class="tab" aria-label="助理">
     <aside class="sidebar">
       <button id="new-session" class="primary block"><svg class="icon action-icon" aria-hidden="true"><use href="#i-plus"/></svg>新会话</button>
       <div class="side-head">会话记录</div>
@@ -118,10 +114,10 @@
   </main>
 
   <!-- 待办 -->
-  <main id="tab-todos" class="tab active">
+  <main id="tab-todos" class="tab active" aria-label="待办">
     <section class="todo-board grow">
       <div class="todo-board-head">
-        <div><h2>我的待办</h2><p id="todo-count" class="muted small">把工作放在眼前，一件一件向前推进。</p></div>
+        <div><h2>待办</h2><p id="todo-count" class="muted small"></p></div>
         <div class="row gap wrap">
           <label class="todo-filter-control"><svg class="icon" aria-hidden="true"><use href="#i-filter"/></svg><select id="todo-filter" aria-label="筛选待办" title="筛选待办"><option value="open">未完成</option><option value="all">全部</option><option value="archived">已归档</option></select></label>
           <button id="new-todo" class="primary"><svg class="icon action-icon" aria-hidden="true"><use href="#i-plus"/></svg>新建待办</button>
@@ -192,7 +188,7 @@
   </main>
 
   <!-- 材料 -->
-  <main id="tab-materials" class="tab">
+  <main id="tab-materials" class="tab" aria-label="材料">
     <section class="panel grow">
       <div class="chat-head">
         <nav class="subtabs" id="mat-tabs">
@@ -264,7 +260,7 @@
   </main>
 
   <!-- 周报：一周一份。自动或手动整理清单，用户核对后生成正文。 -->
-  <main id="tab-weekly" class="tab">
+  <main id="tab-weekly" class="tab" aria-label="周报">
     <aside class="sidebar weekly-side">
       <div class="side-head">本周工作</div>
       <ul id="week-current" class="list"></ul>
@@ -489,11 +485,11 @@
     <div class="row gap end"><button id="picker-done" class="primary"><svg class="icon action-icon" aria-hidden="true"><use href="#i-tick"/></svg>确定</button></div>
   </dialog>
 
-  <main id="tab-knowledge" class="tab">
+  <main id="tab-knowledge" class="tab" aria-label="知识库">
     <section class="panel grow knowledge-workspace">
-      <div id="kb-library-bar" class="hidden"><div class="kb-library-heading"><div><p class="eyebrow">企业知识空间</p><h2>我的知识库</h2><p class="muted small">按知识库管理资料，选择文件查看原文片段。</p></div>
-        <button id="kb-open-create" class="primary"><svg class="icon action-icon" aria-hidden="true"><use href="#i-plus"/></svg>创建知识库</button></div>
-        <div id="kb-base-cards" aria-label="选择知识库"></div><select id="kb-select" hidden aria-label="当前知识库"><option value="">选择知识库</option></select></div>
+      <div id="kb-library-bar" class="hidden" role="group" aria-label="知识库管理"><div id="kb-base-cards" aria-label="选择知识库"></div>
+        <button id="kb-open-create" class="primary"><svg class="icon action-icon" aria-hidden="true"><use href="#i-plus"/></svg>创建知识库</button>
+        <select id="kb-select" hidden aria-label="当前知识库"><option value="">选择知识库</option></select></div>
       <div id="kb-empty" class="kb-empty hidden">
         <div class="workspace-empty"><span class="empty-icon"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg></span>
           <p class="eyebrow">从一份可靠的资料开始</p><h2>让企业资料，<br>成为随时可查的知识。</h2>
@@ -505,8 +501,8 @@
       </div>
       <div id="kb-create-progress" class="hidden" role="status" aria-live="polite"></div>
       <p id="kb-message" role="status" class="muted small"></p>
-      <div id="kb-content" class="hidden">
-        <div class="kb-content-heading"><div><h3 id="kb-current-name"></h3><p id="kb-library-summary" class="muted small"></p></div><div class="row gap wrap"><button id="kb-open-upload" class="primary">添加资料</button><button id="kb-to-chat" class="ghost">向助理提问 <svg class="icon action-icon" aria-hidden="true"><use href="#i-arrow"/></svg></button></div></div>
+      <div id="kb-content" class="hidden" role="region" aria-labelledby="kb-current-name">
+        <div class="kb-content-heading"><div><h3 id="kb-current-name"></h3><p id="kb-library-summary" class="muted small"></p></div><div class="row gap wrap"><button id="kb-open-upload" class="primary">添加资料</button><button id="kb-to-chat" class="ghost">向助理提问 <svg class="icon action-icon" aria-hidden="true"><use href="#i-arrow"/></svg></button><button id="kb-open-settings" class="ghost" aria-controls="kb-library-settings" aria-expanded="false"><svg class="icon action-icon" aria-hidden="true"><use href="#i-settings"/></svg>本库设置</button></div></div>
         <div id="kb-transfers" aria-live="polite"></div>
         <div class="kb-explorer">
           <aside class="kb-file-panel" aria-label="知识库文件"><div class="kb-tree-heading"><h3>文件与文件夹</h3><label class="kb-tree-search"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg><input id="kb-file-search" type="search" placeholder="查找文件" aria-label="查找知识库文件"></label></div>
@@ -514,7 +510,7 @@
           </aside>
           <section id="kb-inspector" class="kb-inspector" aria-label="文件片段预览" aria-live="polite"><div class="kb-inspector-empty"><span class="empty-icon"><svg class="icon" aria-hidden="true"><use href="#i-report"/></svg></span><h3>从左侧选择一份文件</h3><p class="muted">在这里查看标题、原文片段和入库状态。</p></div></section>
         </div>
-        <details class="kb-settings"><summary>授权、检索范围与单次问答</summary><section class="knowledge-section"><h3>单次问答</h3>
+        <details id="kb-library-settings" class="kb-settings"><summary>本库设置 · 授权、检索范围与单次问答</summary><section class="knowledge-section"><h3>单次问答</h3>
           <p class="muted small">日常提问与连续追问可使用上方「向助理提问」。此处保留单次核验及其范围设置。</p>
           <label><input id="kb-all" type="checkbox" checked> 检索当前库全部有效文档</label>
           <label class="stack" for="kb-question">问题<textarea id="kb-question" rows="3" maxlength="4000" placeholder="例如：上海住宿上限及适用对象是什么？"></textarea></label>

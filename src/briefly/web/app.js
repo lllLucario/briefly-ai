@@ -223,15 +223,7 @@ async function activateTab(name, load = true) {
       else b.removeAttribute("aria-current");
     });
     document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.id === `tab-${btn.dataset.tab}`));
-    const headings = {
-      chat: ["办公助理", "从一段文字、一份文档，开始今天的工作。"],
-      todos: ["待办与进展", "明确任务，关联材料，留下每一步进展。"],
-      materials: ["你的材料库", "把工作素材放在一起，随时取用、持续关注。"],
-      knowledge: ["企业资料与依据", "明确范围，核对原文，让每一个回答有据可查。"],
-      weekly: ["本周，值得记录", "收集、核对、生成。每一份周报，都有据可依。"],
-    };
-    $("#page-title").textContent = headings[name][0];
-    $("#page-description").textContent = headings[name][1];
+    document.title = `${btn.textContent.trim()} · Briefly AI`;
     if (!load) return;
     if (name === "materials") await Promise.all([loadMaterials(), loadTrackingSummary()]);
     if (name === "todos") await Promise.all([loadMaterials(), loadTodos()]);

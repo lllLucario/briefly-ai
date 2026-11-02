@@ -137,7 +137,7 @@ function renderTodoList() {
   if (typeof statusMenu !== "undefined" && statusMenu.matches(":popover-open")) statusMenu.hidePopover();
   $("#todo-list").innerHTML = html || `<li class="cards-empty muted">${empty}</li>`;
   $("#todo-empty-panel").classList.toggle("hidden", Boolean(top.length));
-  $("#todo-count").textContent = top.length ? `${top.length} 项工作 · 点击任务行展开要点和子待办` : "把工作放在眼前，一件一件向前推进。";
+  $("#todo-count").textContent = top.length ? `${top.length} 项工作 · 点击任务行展开要点和子待办` : "";
 }
 
 $("#todo-list").addEventListener("click", (e) => {

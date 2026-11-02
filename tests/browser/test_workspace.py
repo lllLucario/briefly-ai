@@ -10,7 +10,8 @@ pytestmark = pytest.mark.browser
 def test_task_first_journey_upload_progress_and_review(web_page):
     page = web_page
     expect(page.locator('[data-tab="todos"]')).to_have_attribute("aria-current", "page")
-    expect(page.locator("#page-title")).to_have_text("待办与进展")
+    expect(page).to_have_title("待办 · Briefly AI")
+    expect(page.get_by_role("main", name="待办", exact=True)).to_be_visible()
     page.locator("#start-todo").click()
     dialog = page.locator("#ui-dialog")
     dialog.locator('[data-ui="0"]').fill("整理测试记录")
