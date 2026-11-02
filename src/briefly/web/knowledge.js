@@ -369,6 +369,7 @@
     if (!name || !createFiles.length) { $("#kb-create-error").textContent = "请填写名称，并至少选择一份支持的资料。"; return; }
     if (creation && !creation.error) return;
     const files = [...createFiles], tokens = Number($("#kb-create-tokens").value);
+    if (!Number.isInteger(tokens) || tokens < 32 || tokens > 512) { $("#kb-create-error").textContent = "切片目标须为 32～512 之间的整数。"; $("#kb-create-tokens").focus(); return; }
     if (files.some(file => file.size > 50 * 1024 * 1024)) { $("#kb-create-error").textContent = "有文件超过单批 50MB 的接收上限，请移除该文件后再提交。"; return; }
     const rev = revision;
     creation = {name, error:""};

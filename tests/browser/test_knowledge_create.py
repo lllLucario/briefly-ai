@@ -32,6 +32,16 @@ def test_create_needs_files_and_help_explains_default(web_page):
     p.locator("#kb-create-files").set_input_files([file(), file("不支持.exe")])
     expect(p.locator("#kb-create-selection")).to_contain_text("已选 1 份")
     expect(p.locator(".kb-skipped")).to_contain_text("1 份文件格式不支持")
+    # 校验提示写在弹窗内，不弹浏览器原生的“请填写此字段”气泡。
+    p.locator("#kb-name").fill("")
+    p.locator("#kb-create").click()
+    expect(p.locator("#kb-create-error")).to_contain_text("请填写名称")
+    p.locator("#kb-name").fill("办公制度")
+    p.locator("#kb-create-tokens").fill("9999")
+    p.locator("#kb-create").click()
+    expect(p.locator("#kb-create-error")).to_contain_text("32～512")
+    assert p.request.get(p.url.rstrip("/") + "/knowledge-bases").json() == []
+    p.locator("#kb-create-tokens").fill("512")
     p.locator("#kb-create-cancel").click()
     expect(p.locator("#kb-empty")).to_be_visible()
     assert p.request.get(p.url.rstrip("/") + "/knowledge-bases").json() == []

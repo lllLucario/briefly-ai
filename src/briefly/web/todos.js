@@ -579,8 +579,7 @@ $("#todo-edit-cancel").addEventListener("click", () => {
 $("#todo-edit-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   if (todos.editSaving || !todos.editMode) return;
-  const id = todos.id, form = $("#todo-edit-form");
-  if (!form.reportValidity()) return;
+  const id = todos.id;
   const draft = {title:$("#todo-edit-title").value.trim(), description:$("#todo-edit-description").value, due:$("#todo-edit-due").value};
   if (!draft.title) { todoMsg("请填写任务标题。", "error"); $("#todo-edit-title").focus(); return; }
   todos.editDrafts.set(id, draft);
