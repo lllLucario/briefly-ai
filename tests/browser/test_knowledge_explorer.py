@@ -40,7 +40,12 @@ def test_folder_tree_persists_with_same_named_files_and_can_collapse(web_page, t
     open_knowledge(p)
     kb = create(p, "目录资料")
     p.locator("#kb-open-upload").click()
-    p.locator("#kb-add-folder").set_input_files(str(folder))
+    with p.expect_file_chooser() as picker:
+        p.locator("#kb-pick-folder").click()
+    assert picker.value.element.evaluate("e => e.webkitdirectory")
+    picker.value.set_files(str(folder))
+    expect(p.locator("#kb-upload-selection")).to_contain_text("已选 2 份资料")
+    expect(p.locator("#kb-upload-selection")).to_contain_text("企业资料/人事/制度.md")
     p.locator("#kb-upload").click()
     expect(p.locator("#kb-jobs")).to_contain_text("等待核对切片", timeout=30000)
     expect(p.locator("[data-kb-preview]")).to_have_count(2)
@@ -128,3 +133,31 @@ def test_old_server_does_not_silently_flatten_folder_upload(web_page, tmp_path):
     expect(p.locator("#kb-transfers")).to_contain_text("文件尚未发送")
     expect(p.locator("[data-kb-transfer-retry]")).to_be_enabled()
     assert sent == []
+
+
+def test_add_material_buttons_open_distinct_pickers_and_show_selection(web_page):
+    p = web_page
+    open_knowledge(p)
+    create(p, "选择资料")
+    p.locator("#kb-open-upload").click()
+    expect(p.locator("#kb-pick-files")).to_be_visible()
+    expect(p.locator("#kb-pick-folder")).to_be_visible()
+    with p.expect_file_chooser() as picker:
+        p.locator("#kb-pick-files").press("Enter")
+    assert picker.value.element.get_attribute("id") == "kb-files"
+    assert not picker.value.element.evaluate("e => e.webkitdirectory")
+    picker.value.set_files([
+        dict(name="资料1.md", mimeType="text/markdown", buffer=b"first"),
+        dict(name="资料2.md", mimeType="text/markdown", buffer=b"second"),
+    ])
+    expect(p.locator("#kb-upload-selection")).to_contain_text("已选 2 份资料")
+    p.locator("[data-upload-remove]").first.click()
+    expect(p.locator("#kb-upload-selection")).to_contain_text("已选 1 份资料")
+    expect(p.locator("#kb-upload-selection")).not_to_contain_text("资料1.md")
+    p.locator("[data-upload-clear]").click()
+    expect(p.locator("#kb-upload-selection")).to_contain_text("尚未选择资料")
+    p.locator("#kb-upload-close").click()
+    import_file(p)
+    p.locator("[data-kb-update]").click()
+    expect(p.locator("#kb-pick-folder")).to_be_disabled()
+    expect(p.locator("#kb-pick-files")).to_be_enabled()

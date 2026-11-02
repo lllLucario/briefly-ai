@@ -244,6 +244,28 @@
   $("#kb-inspector").addEventListener("change", event => { if (event.target.id === "kb-inspect-version") inspectFile(draft().fileKey, 0, event.target.value, true); });
   $("#kb-open-upload").addEventListener("click", () => { draft().target = null; restore(); $("#kb-upload-error").textContent = ""; $("#kb-upload-dialog").showModal(); });
   $("#kb-upload-close").addEventListener("click", () => $("#kb-upload-dialog").close());
+  $("#kb-pick-files").addEventListener("click", () => $("#kb-files").click());
+  $("#kb-pick-folder").addEventListener("click", () => $("#kb-add-folder").click());
+  function renderUploadSelection() {
+    const d = draft(), files = d.files;
+    $("#kb-pick-folder").disabled = Boolean(d.target);
+    $("#kb-add-folder").disabled = Boolean(d.target);
+    $("#kb-upload-selection").innerHTML = files.length ? `<div class="kb-selection-head"><strong>已选 ${files.length} 份资料</strong><button type="button" class="ghost small" data-upload-clear>清空</button></div><ul class="kb-selected-files">${files.map((file, i) => `<li><span>${escapeHtml(file.webkitRelativePath || file.name)}</span><small class="muted">${(file.size / 1024).toFixed(1)} KB</small><button type="button" class="ghost small" data-upload-remove="${i}" aria-label="移除 ${escapeHtml(file.name)}">×</button></li>`).join("")}</ul>` : '<p class="muted small">尚未选择资料。可选择多个文件，或直接选择整个文件夹。</p>';
+    if (d.skippedFiles?.length) $("#kb-upload-selection").insertAdjacentHTML("beforeend", `<details class="kb-skipped"><summary>${d.skippedFiles.length} 份文件格式不支持，不会上传</summary><ul>${d.skippedFiles.map(name => `<li>${escapeHtml(name)}</li>`).join("")}</ul></details>`);
+  }
+  $("#kb-upload-selection").addEventListener("click", event => {
+    const remove = event.target.closest("[data-upload-remove]");
+    if (remove) draft().files.splice(Number(remove.dataset.uploadRemove), 1);
+    if (event.target.closest("[data-upload-clear]")) { draft().files = []; draft().skippedFiles = []; }
+    restore();
+  });
+  function selectUploadFiles(files) {
+    const d = draft();
+    d.files = files.filter(file => supportedFile.test(file.name));
+    d.skippedFiles = files.filter(file => !supportedFile.test(file.name)).map(file => file.webkitRelativePath || file.name);
+    $("#kb-upload-error").textContent = "";
+    restore();
+  }
   $("#kb-to-chat").addEventListener("click", async () => { const id = current; await activateTab("chat"); await loadChatBases(); $("#chat-kb").value = id; $("#chat-kb").dispatchEvent(new Event("change")); $("#input").focus(); });
   function restore() {
     const d = draft();
@@ -259,6 +281,7 @@
     const files = new DataTransfer();
     d.files.forEach(file => files.items.add(file));
     $("#kb-files").files = files.files;
+    renderUploadSelection();
     message(d.message);
     renderResult(d.result);
   }
@@ -365,11 +388,10 @@
   });
   $("#kb-question").addEventListener("input", () => { draft().question = $("#kb-question").value; invalidate(); });
   $("#kb-private").addEventListener("input", () => { draft().privateText = $("#kb-private").value; invalidate(); });
-  $("#kb-files").addEventListener("change", () => { draft().files = [...$("#kb-files").files]; });
+  $("#kb-files").addEventListener("change", () => selectUploadFiles([...$("#kb-files").files]));
   $("#kb-add-folder").addEventListener("change", event => {
     if (draft().target) { $("#kb-upload-error").textContent = "更新已有文档时，请选择对应的一份文件。"; event.target.value = ""; return; }
-    const files = [...event.target.files]; draft().files = files.filter(file => supportedFile.test(file.name));
-    restore(); $("#kb-upload-error").textContent = files.length !== draft().files.length ? "已排除不支持格式的文件，请核对文件清单后上传。" : "";
+    selectUploadFiles([...event.target.files]);
     event.target.value = "";
   });
   $("#kb-all").addEventListener("change", () => { const d = draft(); d.all = $("#kb-all").checked; if (!d.all) d.selected = new Set((d.documents || []).map(doc => doc.id)); invalidate(); renderDocuments(d.documents || []); });
@@ -379,7 +401,7 @@
     if (!files.length || target && files.length !== 1) { $("#kb-upload-error").textContent = "请选择文件；更新同一来源时只选择一份。"; return; }
     if (files.some(file => file.size > 50 * 1024 * 1024)) { $("#kb-upload-error").textContent = "有文件超过单批50MB上限，请移除后再提交。"; return; }
     $("#kb-upload-dialog").close();
-    if (!target) { d.files = []; restore(); enqueueUploads(id, files, Number($("#kb-tokens").value)); return; }
+    if (!target) { d.files = []; d.skippedFiles = []; restore(); enqueueUploads(id, files, Number($("#kb-tokens").value)); return; }
     const form = new FormData();
     files.forEach(file => form.append("files", file));
     form.append("request_key", crypto.randomUUID()); form.append("tokens", $("#kb-tokens").value);

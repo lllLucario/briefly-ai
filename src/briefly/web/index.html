@@ -531,10 +531,16 @@
         <section class="knowledge-section">
           <p class="muted small">每批最多16份、合计50MB。解析后先核对切片，再确认建立索引。结构未确认的资料会保留复核提醒。</p>
           <p id="kb-update-target" class="muted small"></p>
-          <div class="row gap wrap"><label class="stack">文件<input id="kb-files" type="file" multiple accept=".txt,.md,.doc,.docx,.pdf,.xlsx,.xls,.csv,.pptx,.ppt,.png,.jpg,.jpeg,.bmp,.tif,.tiff,.webp"></label>
+          <div class="kb-file-zone"><svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg><strong>添加文件或整个文件夹</strong><p>文件夹会包含其中支持的文件及子文件夹。</p>
+            <div class="row gap wrap"><button id="kb-pick-files" type="button" class="ghost">选择文件</button><button id="kb-pick-folder" type="button" class="ghost">选择文件夹</button></div>
+            <input id="kb-files" class="visually-hidden" type="file" multiple accept=".txt,.md,.doc,.docx,.pdf,.xlsx,.xls,.csv,.pptx,.ppt,.png,.jpg,.jpeg,.bmp,.tif,.tiff,.webp">
+            <input id="kb-add-folder" type="file" webkitdirectory multiple class="visually-hidden">
+            <small class="muted">选择文件夹时，选中目标文件夹后确认，不用进入后逐个选择文件。</small>
+          </div>
+          <div id="kb-upload-selection" aria-live="polite"></div>
+          <div class="row gap wrap kb-upload-footer">
             <label class="stack">切片目标<input id="kb-tokens" type="number" min="32" max="512" value="512" aria-label="切片目标token数"></label>
             <button id="kb-upload" class="primary">上传并预览</button><button id="kb-cancel-update" class="ghost hidden">取消更新</button></div>
-          <label class="button kb-add-folder" for="kb-add-folder">或选择文件夹</label><input id="kb-add-folder" type="file" webkitdirectory multiple class="visually-hidden">
           <p id="kb-upload-error" class="danger small" role="alert"></p>
         </section>
   </dialog>

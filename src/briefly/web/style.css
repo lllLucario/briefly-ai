@@ -1306,7 +1306,8 @@ button.note-toggle { width: 100%; min-height: 62px; display: flex; align-items: 
 .kb-settings > .knowledge-section { border: 0; padding-bottom: 0; }
 #kb-upload-dialog { width: min(640px, 94vw); }
 #kb-upload-dialog .knowledge-section { border: 0; }
-.kb-add-folder { display: inline-block; margin-top: 16px; font-size: 12px; cursor: pointer; }
+.kb-upload-footer { align-items: flex-end; justify-content: flex-end; margin-top: 18px; }
+.kb-upload-footer > label { margin-right: auto; }
 @media(max-width:760px) {
   .kb-explorer { grid-template-columns: minmax(0, 1fr); height: auto; }
   .kb-inspector { max-height: 75dvh; }
