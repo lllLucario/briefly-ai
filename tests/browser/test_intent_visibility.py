@@ -111,7 +111,8 @@ def test_wrong_knowledge_base_shows_switch_hint_and_resends_in_the_suggested_bas
     hr = page.request.post(base + "/knowledge-bases", data={"name": "人事薪酬与绩效"}).json()["id"]
     # 假编码器没有登记下限：用覆盖值；所选库跨过下限，跨库比较判定人事库明显更相关（替代真实本地检索）
     monkeypatch.setattr(config, "INTENT_KB_THRESHOLD", 0.5)
-    monkeypatch.setattr(KnowledgeAssistant, "relevance", lambda self, kb_id, text: 0.53)
+    monkeypatch.setattr(KnowledgeAssistant, "relevance_signals",
+                        lambda self, kb_id, text: dict(score=0.53, any_both=True, all_both=True))
     monkeypatch.setattr(IntentFunnel, "_better_bases", lambda self, kb_id, text, score, floor:
                         [] if kb_id == hr else [dict(kb_id=hr, name="人事薪酬与绩效", score=0.73)])
     page.reload()
