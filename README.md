@@ -2,9 +2,9 @@
 
 把办公材料整理成清晰的结果，把行动项接到待办，把工作记录汇成周报。
 
-Briefly AI 是基于 **LangChain / LangGraph 的单智能体办公应用**，提供文档总结、会议纪要拆解、周报生成、待办事项梳理和文本优化。支持网页与命令行，默认使用 DeepSeek，也可配置支持工具调用和结构化输出的 OpenAI 兼容模型服务。
+Briefly AI 是基于 **LangChain / LangGraph 的单智能体办公应用**，提供文档总结、会议纪要拆解、周报生成、待办事项梳理和文本优化，并支持基于企业私有文档的**知识库问答（RAG）**。支持网页与命令行，默认使用 DeepSeek，也可配置支持工具调用和结构化输出的 OpenAI 兼容模型服务。
 
-当前面向**单用户、本地运行**。飞书和邮件为可选集成，未配置时仍可使用核心办公功能。
+当前面向**单用户、本地运行**：文档、知识库和索引保存在本机，Embedding 与图片文字识别在本机完成，只有生成回答时把必要内容发给所配置的模型服务。飞书和邮件为可选集成，未配置时仍可使用核心办公功能。
 
 ## 核心能力
 
@@ -13,16 +13,20 @@ Briefly AI 是基于 **LangChain / LangGraph 的单智能体办公应用**，提
 - **周报生成**：汇集本周材料、补充说明、待办进展和追踪文件变化，审核后生成正式周报；支持编辑、历史版本、Markdown 导出与浏览器打印 PDF。
 - **待办事项梳理**：提取候选行动项，经结构化预览和勾选确认后保存；支持两级任务、独立状态、截止日期、材料关联与进展记录。
 - **文本优化**：按读者、语气、篇幅和格式调整表达，要求保留原意、数字、日期及事实的确定程度。
+- **知识库问答**：把制度、项目资料、产品手册等私有文档批量导入知识库，提问时检索原文片段作答，每个结论标出依据并可回到原文位置；资料里没有的明确说明未找到。
 
 支持自动识别或指定能力；同一会话可继续要求“再短一点”“改成表格”或“把行动项整理成待办”。
 
 ## 工作流程
 
-网页提供“待办、助理、材料、周报”四个入口，默认进入待办。可以从任一条路径开始：
+网页提供“待办、助理、材料、知识库、周报”五个入口，默认进入待办。可以从任一条路径开始：
 
 1. **临时处理材料**：粘贴内容或选择材料 → 总结、整理纪要、优化文本 → 多轮修改 → 复制使用。
 2. **持续推进任务**：创建待办或从助理结果预览保存 → 关联材料 → 记录进展、追踪文件更新 → 纳入本周审核清单。
 3. **形成正式周报**：整理本周工作 → 核对纳入或排除 → 确认生成 → 核对正文 → 导出或显式发送。
+4. **查询企业资料**：在知识库页建库并批量上传 → 逐文件核对切片后发布 → 在助理页选择知识库提问 → 得到带依据的回答。
+
+一次提问的处理流程是：**用户提问 → 意图识别 → 知识库检索 → 答案整合 → 结构化输出**。意图识别分三层：规则层直接识别明确的任务，本地语义层判断问题类型和所选知识库的相关度，其余交给助理智能体多步处理；简单的资料问题直接检索作答，复杂或多轮的问题由助理调用知识库检索工具。
 
 **自动周报的边界**：定时任务自动检查更新、整理审核清单并提醒；正式正文由用户核对后触发生成，发送也需要显式操作。服务需保持运行，到点不会绕过审核自动发送。
 
@@ -41,7 +45,7 @@ git clone https://github.com/lllLucario/briefly-ai.git
 cd briefly-ai
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -e ".[dev]"
+python -m pip install -e ".[dev,rag,ocr]"
 Copy-Item .env.example .env
 ```
 
@@ -52,9 +56,11 @@ git clone https://github.com/lllLucario/briefly-ai.git
 cd briefly-ai
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[dev]"
+python -m pip install -e ".[dev,rag,ocr]"
 cp .env.example .env
 ```
+
+`rag` 是知识库问答所需的本地 Embedding 与向量索引，`ocr` 是扫描件和图片文字识别；只用五项办公能力时可以只装 `.[dev]`。
 
 ### 2. 配置模型
 
@@ -66,7 +72,19 @@ BRIEFLY_BASE_URL=https://api.deepseek.com
 BRIEFLY_MODEL=deepseek-flash
 ```
 
-接入其他兼容服务时，按服务商要求修改地址与模型名；若服务商不支持 DeepSeek 的思考模式参数，再设置 `BRIEFLY_THINKING=provider`。不同模型的工具兼容性和输出质量需要分别验证。
+接入其他兼容服务时，按服务商要求修改地址与模型名；若服务商不支持 DeepSeek 的思考模式参数，再设置 `BRIEFLY_THINKING=provider`。不同模型的工具兼容性和输出质量需要分别验证。需要完全私有化时，可把地址换成内网部署的 OpenAI 兼容模型服务。
+
+使用知识库前，先准备本地 Embedding 模型（只下载公开模型，不上传任何文档），并在 `.env` 指向它：
+
+```bash
+python tests/eval/w3_prepare_models.py
+```
+
+```dotenv
+BRIEFLY_EMBEDDING_DIR=.tmp/w3-models/bge-small-zh-v1.5
+```
+
+离线服务器可整体复制准备好的模型目录。
 
 ### 3. 启动网页
 
@@ -80,12 +98,36 @@ briefly-api
 
 ## 材料与长文处理
 
-- 支持文本粘贴及上传 `txt`、`md`、`docx`、`pdf`、`xlsx`、`csv`，默认单次上传上限 10 MB。
+- 支持文本粘贴及上传 `txt`、`md`、`doc`、`docx`、`pdf`、`xlsx`、`xls`、`csv`、`pptx`、`ppt` 和常见图片（`png`、`jpg` 等，需安装 `ocr`），默认单次上传上限 10 MB。旧版 `.doc`/`.xls`/`.ppt` 优先直接读取，读不了时用本机 LibreOffice 转换。
 - 统一解析成文本或 Markdown，保留可识别的标题、列表和表格，并提供解析提示；支持搜索、筛选、关联待办和内容去重。
 - 短材料直接进入上下文；长材料通过大纲、检索和分块工具读取。完整提炼使用 Map-Reduce，逐块提取、核对原文摘录并合并结果。
 - 本机文件、文件夹及支持的飞书来源可开启追踪，记录版本和差异；上传文件是副本，要监测原文件后续修改需另行开启追踪。
 
 文件变化是待核对的信息，不直接等同于用户完成了工作。长材料提炼也可能遗漏或误关联事实，重要结果仍需对照原文。
+
+材料库是个人的**工作区**，放正在处理的文件；知识库是企业的**受管控参考资料**。两者分开管理：知识库文档不会出现在材料列表里，只通过知识库检索读取。
+
+## 知识库问答
+
+**导入与切片**（参考 Coze／火山知识库的导入规则）：
+
+- 在知识库页建库，批量上传 Word、PDF、Excel、PPT 和扫描件；每个文件在独立进程中解析，互不影响，逐文件显示状态。
+- 解析后先预览切片，用户核对确认后才发布到检索。切片按标题和段落优先，表格按完整行切并在每片写明行列，幻灯片能装下时整页一片；可设置切片目标长度，正文相邻片段有少量重叠。
+- 文档有版本：更新时导入新版本并重新核对，旧版本的引用仍能回到原文；删除文档同时撤下索引。
+
+**检索与溯源**：
+
+- 本地 BGE 向量检索与 SQLite FTS5 关键词检索两路召回，用 RRF 融合排序；低于相关度下限的片段不作为依据，避免拿不相关的内容作答。
+- 回答中每个结论标注〔依据N〕，可以展开查看原文片段、所在文档、章节和版本。
+- 解析质量没有确认的范围（例如复杂表格的局部、低置信度的图片识别文字）不作为确定依据，回答会提示核对原件。
+
+**外发与工作区**：
+
+- 每个知识库默认不允许外发，首次提问时提示开启；开启后每次回答显示本次发送给模型的片段数，可随时关闭。
+- 选了知识库提问时，同时检索个人工作区里的文件，回答标明出处。两边说法不同时会指出差异：问现行规定以知识库已发布版为准，处理自己的稿子以工作区为准。
+- 所选知识库明显不是最相关的库时，提示可能在另一个库里，并可一键切换重问。
+
+相关配置见 [配置示例](.env.example)：`BRIEFLY_EMBEDDING_DIR`、`BRIEFLY_KNOWLEDGE_DIR`、`BRIEFLY_PARSE_TIMEOUT_S`，以及 `BRIEFLY_OCR*` 系列。
 
 ## 命令行使用
 
@@ -176,7 +218,7 @@ python tests/eval/journey_browser.py --real-model -n 2
 
 ## 技术结构
 
-技术栈：Python、LangChain / LangGraph、OpenAI 兼容模型接口、FastAPI、SQLAlchemy、SQLite、原生 HTML / JavaScript / CSS；解析使用 Docling、pypdf 和 openpyxl，飞书通过 httpx 调用 REST API。
+技术栈：Python、LangChain / LangGraph、OpenAI 兼容模型接口、FastAPI、SQLAlchemy、SQLite、原生 HTML / JavaScript / CSS；解析使用 Docling、pdfplumber、pypdf、openpyxl、xlrd 和 Apache POI / Tika（旧版 Office 直读），图片文字识别使用 RapidOCR；知识库使用 fastembed（BGE-small 中文）、sqlite-vec 与 SQLite FTS5；飞书通过 httpx 调用 REST API。
 
 ```text
 src/briefly/
@@ -188,7 +230,12 @@ src/briefly/
 ├── context_builder.py    上下文组装与预算
 ├── compaction.py         会话记忆压缩
 ├── output_check.py       回答检查与一次纠正
+├── intent.py             三层意图漏斗（规则、本地语义与知识库路由、助理兜底）
+├── knowledge/            知识库：入库、切片、索引、检索、依据包与问答
+├── workspace_index.py    工作区语义索引
+├── links.py              工作区与知识库的文档关联
 ├── loaders.py            文件解析入口
+├── pdf.py / ocr.py       PDF 解析与本地图片文字识别
 ├── materials.py          材料存储、分块与检索
 ├── summarize.py          长材料分块提炼与合成
 ├── handoffs.py           助理结果到业务的预览和确认
@@ -199,7 +246,7 @@ src/briefly/
 ├── mail.py               SMTP 周报发送
 ├── api.py                FastAPI 与网页服务
 ├── cli.py                命令行入口
-└── web/                  四页工作台
+└── web/                  五页工作台
 tests/
 ├── test_*.py             单元与接口回归
 ├── browser/              实际浏览器、假模型回归
