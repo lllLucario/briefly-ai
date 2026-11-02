@@ -491,13 +491,24 @@
 
   <main id="tab-knowledge" class="tab">
     <section class="panel grow knowledge-workspace">
-      <div class="row gap wrap"><label class="stack">当前知识库<select id="kb-select"><option value="">选择知识库</option></select></label>
-        <label class="stack grow">新知识库名称<input id="kb-name" maxlength="200" placeholder="例如：办公制度"></label><button id="kb-create" class="primary">创建知识库</button></div>
+      <div id="kb-library-bar" class="row gap wrap hidden"><label class="stack grow">当前知识库<select id="kb-select"><option value="">选择知识库</option></select></label>
+        <button id="kb-open-create" class="primary"><svg class="icon action-icon" aria-hidden="true"><use href="#i-plus"/></svg>创建知识库</button></div>
+      <div id="kb-empty" class="kb-empty hidden">
+        <div class="workspace-empty"><span class="empty-icon"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg></span>
+          <p class="eyebrow">从一份可靠的资料开始</p><h2>让企业资料，<br>成为随时可查的知识。</h2>
+          <p>把制度、项目资料或产品手册放在一起。<br>核对原文后，助理就能带着依据回答问题。</p>
+          <button id="kb-empty-create" class="primary"><svg class="icon action-icon" aria-hidden="true"><use href="#i-plus"/></svg>创建第一个知识库</button>
+          <div class="empty-flow"><span>选择资料</span><i>→</i><span>核对原文片段</span><i>→</i><span>确认入库</span></div>
+          <small class="muted">支持选择多个文件，也可以一次选择整个文件夹。</small>
+        </div>
+      </div>
+      <div id="kb-create-progress" class="hidden" role="status" aria-live="polite"></div>
       <p id="kb-message" role="status" class="muted small"></p>
       <div id="kb-content" class="hidden">
         <section class="knowledge-section"><h3>资料入库</h3>
           <p class="muted small">每批最多16份、合计50MB。解析后先核对切片，再确认建立索引。结构未确认的资料会保留复核提醒。</p>
           <p id="kb-update-target" class="muted small"></p>
+          <div id="kb-transfers" aria-live="polite"></div>
           <div class="row gap wrap"><label class="stack">文件<input id="kb-files" type="file" multiple accept=".txt,.md,.doc,.docx,.pdf,.xlsx,.xls,.csv,.pptx,.ppt,.png,.jpg,.jpeg,.bmp,.tif,.tiff,.webp"></label>
             <label class="stack">切片目标<input id="kb-tokens" type="number" min="32" max="512" value="512" aria-label="切片目标token数"></label>
             <button id="kb-upload" class="primary">上传并预览</button><button id="kb-cancel-update" class="ghost hidden">取消更新</button></div>
@@ -519,6 +530,22 @@
       </div>
     </section>
   </main>
+  <dialog id="kb-create-dialog" aria-labelledby="kb-create-title">
+    <form id="kb-create-form" class="stack">
+      <div class="kb-create-heading"><div><h3 id="kb-create-title">创建知识库</h3><p class="muted small">填写名称，添加至少一份资料。提交后可在页面查看处理进度。</p></div><button id="kb-create-close" type="button" class="ghost" aria-label="关闭创建知识库">×</button></div>
+      <label class="stack" for="kb-name">知识库名称<input id="kb-name" required maxlength="200" placeholder="例如：办公制度、项目资料"></label>
+      <div class="kb-file-zone"><svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg><strong>添加知识库资料</strong><p>选择文件或文件夹，包含子文件夹中的支持格式。</p>
+        <div class="row gap wrap"><label class="button" for="kb-create-files">选择文件</label><input id="kb-create-files" class="visually-hidden" type="file" multiple accept=".txt,.md,.doc,.docx,.pdf,.xlsx,.xls,.csv,.pptx,.ppt,.png,.jpg,.jpeg,.bmp,.tif,.tiff,.webp">
+          <label class="button" for="kb-create-folder">选择文件夹</label><input id="kb-create-folder" class="visually-hidden" type="file" webkitdirectory multiple></div>
+        <small class="muted">支持 Word、PDF、Excel、PPT、文本和图片。多个文件自动分批上传。</small>
+      </div>
+      <div id="kb-create-selection" aria-live="polite"></div>
+      <div class="kb-slice-setting"><label for="kb-create-tokens">切片目标</label><details class="kb-help"><summary aria-label="了解切片目标">?</summary><p>系统会把长文档拆成便于检索的小片段。这里设置每段的目标长度，单位是模型使用的文本计量单位（token），不等于字数。默认 512，通常无需修改；标题和上下文也会计入长度，表格会尽量保留完整行。上传后仍需核对原文片段，确认后才建立可检索的索引。</p></details>
+        <input id="kb-create-tokens" type="number" min="32" max="512" value="512" required><span class="muted small">推荐保留默认值 512</span></div>
+      <p id="kb-create-error" class="danger small" role="alert"></p>
+      <div class="row gap end"><button id="kb-create-cancel" type="button" class="ghost">取消</button><button id="kb-create" type="submit" class="primary">创建并上传</button></div>
+    </form>
+  </dialog>
   <dialog id="kb-preview"><h3>核对原文切片</h3><p id="kb-preview-info" class="muted small"></p><div id="kb-preview-body"></div>
     <div class="row gap"><button id="kb-preview-prev" class="ghost">上一页</button><button id="kb-preview-next" class="ghost">下一页</button></div>
     <p id="kb-preview-error" role="status"></p><label><input id="kb-preview-checked" type="checkbox"> 已核对预览和切片配置，确认建立索引</label>

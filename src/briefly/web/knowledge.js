@@ -16,6 +16,115 @@
   }
   function invalidate() { draft().seq++; }
   let bases = [];
+  let createFiles = [], skippedFiles = [], creation = null;
+  const supportedFile = /\.(txt|md|doc|docx|pdf|xlsx|xls|csv|pptx|ppt|png|jpg|jpeg|bmp|tif|tiff|webp)$/i;
+  const uploadQueues = new Map();
+  function renderLibraryState() {
+    $("#kb-library-bar").classList.toggle("hidden", !bases.length);
+    $("#kb-empty").classList.toggle("hidden", Boolean(bases.length || creation));
+    const box = $("#kb-create-progress");
+    box.classList.toggle("hidden", !creation);
+    $("#kb-open-create").disabled = Boolean(creation && !creation.error);
+    if (!creation) return box.replaceChildren();
+    box.innerHTML = `<strong>${creation.error ? "创建未完成" : "正在创建知识库"} · ${escapeHtml(creation.name)}</strong><p>${escapeHtml(creation.error || "创建完成后开始上传所选资料。请保持此网页打开。")}</p>${creation.error ? '<div class="row gap"><button class="ghost small" id="kb-create-refresh">刷新列表核对</button><button class="ghost small" id="kb-create-edit">返回填写</button></div>' : ''}`;
+  }
+  function renderSelection() {
+    $("#kb-create-selection").innerHTML = `${createFiles.length ? `<div class="kb-selection-head"><strong>已选 ${createFiles.length} 份资料</strong><button type="button" class="ghost small" data-kb-clear-files>清空</button></div><ul class="kb-selected-files">${createFiles.map((file, i) => `<li><span>${escapeHtml(file.webkitRelativePath || file.name)}</span><small class="muted">${(file.size / 1024).toFixed(1)} KB</small><button type="button" class="ghost small" data-kb-remove-file="${i}" aria-label="移除 ${escapeHtml(file.name)}">×</button></li>`).join("")}</ul>` : '<p class="muted small">尚未选择资料，请至少添加一个文件。</p>'}
+      ${skippedFiles.length ? `<details class="kb-skipped"><summary>有 ${skippedFiles.length} 份文件格式不支持，不会上传</summary><ul>${skippedFiles.map(name => `<li>${escapeHtml(name)}</li>`).join("")}</ul></details>` : ""}`;
+  }
+  function addCreateFiles(files) {
+    const keys = new Set(createFiles.map(file => `${file.webkitRelativePath || file.name}:${file.size}:${file.lastModified}`));
+    for (const file of files) {
+      if (!supportedFile.test(file.name)) { skippedFiles.push(file.webkitRelativePath || file.name); continue; }
+      const key = `${file.webkitRelativePath || file.name}:${file.size}:${file.lastModified}`;
+      if (!keys.has(key)) { createFiles.push(file); keys.add(key); }
+    }
+    $("#kb-create-error").textContent = "";
+    renderSelection();
+  }
+  function openCreate() {
+    if (creation && !creation.error) return;
+    $("#kb-create-error").textContent = "";
+    renderSelection(); $("#kb-create-dialog").showModal(); $("#kb-name").focus();
+  }
+  $("#kb-open-create").addEventListener("click", openCreate);
+  $("#kb-empty-create").addEventListener("click", openCreate);
+  $("#kb-create-close").addEventListener("click", () => $("#kb-create-dialog").close());
+  $("#kb-create-cancel").addEventListener("click", () => $("#kb-create-dialog").close());
+  $("#kb-create-files").addEventListener("change", event => { addCreateFiles([...event.target.files]); event.target.value = ""; });
+  $("#kb-create-folder").addEventListener("change", event => { addCreateFiles([...event.target.files]); event.target.value = ""; });
+  $("#kb-create-selection").addEventListener("click", event => {
+    const remove = event.target.closest("[data-kb-remove-file]");
+    if (remove) createFiles.splice(Number(remove.dataset.kbRemoveFile), 1);
+    if (event.target.closest("[data-kb-clear-files]")) { createFiles = []; skippedFiles = []; }
+    renderSelection();
+  });
+  $("#kb-create-progress").addEventListener("click", event => {
+    if (event.target.closest("#kb-create-edit")) openCreate();
+    if (event.target.closest("#kb-create-refresh")) window.loadKnowledge();
+  });
+  // 网络传输进度来自浏览器，不用解析耗时推算百分比。分批仍沿用原接口限制及幂等标识。
+  function uploadBatch(kbId, batch, changed) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest(), form = new FormData();
+      batch.files.forEach(file => form.append("files", file));
+      form.append("request_key", batch.key); form.append("tokens", batch.tokens);
+      xhr.open("POST", `/knowledge-bases/${encodeURIComponent(kbId)}/imports`);
+      xhr.upload.onprogress = event => { batch.percent = event.lengthComputable ? Math.round(event.loaded / event.total * 100) : null; changed(); };
+      xhr.onload = () => {
+        let result;
+        try { result = JSON.parse(xhr.responseText); } catch (_) { reject(new Error("服务响应无法读取，请核对任务列表后重试此批。")); return; }
+        if (xhr.status >= 200 && xhr.status < 300) resolve(result);
+        else reject(new Error(typeof result.detail === "string" ? result.detail : "上传未完成，请核对任务列表后重试此批。"));
+      };
+      xhr.onerror = () => reject(new Error("连接中断，接收结果待核对。请检查任务列表后重试此批；重试沿用原上传编号。"));
+      xhr.send(form);
+    });
+  }
+  function renderUploads(id = current) {
+    if (id !== current) return;
+    const batches = uploadQueues.get(id) || [];
+    const pending = batches.some(batch => ["queued", "uploading"].includes(batch.state));
+    $("#kb-transfers").innerHTML = (pending ? '<p class="muted small">正在上传资料，请保持此网页打开；可以切换页面继续其他工作。解析完成后仍需逐份核对，再确认入库。</p>' : '') + batches.filter(batch => batch.state !== "received" || batch.rejected?.length).map(batch => `<article class="kb-transfer" data-kb-transfer="${batch.key}"><strong>${escapeHtml(batch.title)}</strong><span>${batch.state === "queued" ? "等待上传" : batch.state === "uploading" ? batch.percent === 100 ? "文件已传输，等待服务接收结果" : `正在上传${batch.percent == null ? "" : ` · ${batch.percent}%`}` : batch.state === "error" ? "上传未完成" : "部分文件未接收"}</span>
+      ${batch.state === "uploading" ? `<progress max="100" ${batch.percent == null ? "" : `value="${batch.percent}"`} aria-label="本批文件传输进度"></progress>` : ""}
+      ${batch.error ? `<p class="danger small">${escapeHtml(batch.error)}</p><button class="ghost small" data-kb-transfer-retry="${batch.key}">重试此批</button>` : ""}
+      ${(batch.rejected || []).map(file => `<p class="danger small">${escapeHtml(file.filename)}：${escapeHtml(file.error)}</p>`).join("")}</article>`).join("");
+  }
+  async function runUploads(id) {
+    const batches = uploadQueues.get(id) || [];
+    if (batches.some(batch => batch.state === "uploading")) return;
+    for (const batch of batches) {
+      if (batch.state !== "queued") continue;
+      batch.state = "uploading"; batch.error = ""; batch.percent = null; renderUploads(id);
+      try {
+        const result = await uploadBatch(id, batch, () => renderUploads(id));
+        batch.state = "received"; batch.rejected = result.files.filter(file => file.status === "rejected");
+        batch.files = []; // 服务器已接收的文件不再保留浏览器内存副本。
+      } catch (error) { batch.state = "error"; batch.error = error.message; }
+      renderUploads(id);
+      if (active(id)) await refresh();
+    }
+    if (batches.some(batch => batch.state === "queued")) runUploads(id);
+  }
+  function enqueueUploads(id, files, tokens) {
+    const batches = []; let group = [], size = 0;
+    const flush = () => { if (group.length) batches.push({key:crypto.randomUUID(), tokens, files:group, state:"queued", title:group.length === 1 ? group[0].name : `${group[0].name} 等 ${group.length} 份文件`}); group = []; size = 0; };
+    for (const file of files) {
+      if (group.length === 16 || size + file.size > 50 * 1024 * 1024) flush();
+      group.push(file); size += file.size;
+    }
+    flush(); uploadQueues.set(id, [...(uploadQueues.get(id) || []), ...batches]);
+    renderUploads(id); runUploads(id);
+  }
+  $("#kb-transfers").addEventListener("click", event => {
+    const button = event.target.closest("[data-kb-transfer-retry]");
+    const batch = button && (uploadQueues.get(current) || []).find(item => item.key === button.dataset.kbTransferRetry);
+    if (!batch || batch.state !== "error") return;
+    batch.state = "queued"; runUploads(current);
+  });
+  window.addEventListener("beforeunload", event => {
+    if (creation && !creation.error || [...uploadQueues.values()].some(batches => batches.some(batch => ["queued", "uploading", "error"].includes(batch.state)))) { event.preventDefault(); event.returnValue = ""; }
+  });
   function syncEgress() { $("#kb-external").checked = Boolean(bases.find(kb => kb.id === current)?.external_allowed); }
   function selectedScope(d) { return d.all ? null : [...d.selected]; }
   function restore() {
@@ -72,12 +181,13 @@
     revision++; clearTimeout(timer);
     $("#kb-preview").close(); $("#kb-source").close(); preview = null;
     current = id;
+    renderLibraryState(); renderUploads();
     $("#kb-content").classList.toggle("hidden", !id);
     $("#kb-documents").replaceChildren(); $("#kb-jobs").replaceChildren();
     if (id) { restore(); await refresh(); }
-    else message("先创建或选择一个知识库。");
+    else message("");
   }
-  window.pauseKnowledge = () => { revision++; clearTimeout(timer); $("#kb-preview").close(); $("#kb-source").close(); };
+  window.pauseKnowledge = () => { revision++; clearTimeout(timer); $("#kb-preview").close(); $("#kb-source").close(); $("#kb-create-dialog").close(); };
   window.loadKnowledge = async () => {
     const rev = ++revision;
     try {
@@ -103,13 +213,31 @@
     } catch (error) { message(error.message, id); syncEgress(); }
     finally { $("#kb-external").disabled = false; }
   });
-  $("#kb-create").addEventListener("click", async () => {
+  $("#kb-create-form").addEventListener("submit", async event => {
+    event.preventDefault();
     const name = $("#kb-name").value.trim();
-    if (!name) return message("请输入知识库名称。");
+    if (!name || !createFiles.length) { $("#kb-create-error").textContent = "请填写名称，并至少选择一份支持的资料。"; return; }
+    if (creation && !creation.error) return;
+    const files = [...createFiles], tokens = Number($("#kb-create-tokens").value);
+    if (files.some(file => file.size > 50 * 1024 * 1024)) { $("#kb-create-error").textContent = "有文件超过单批 50MB 的接收上限，请移除该文件后再提交。"; return; }
     const rev = revision;
+    creation = {name, error:""};
+    $("#kb-create-dialog").close(); renderLibraryState();
     $("#kb-create").disabled = true;
-    try { const kb = await api("/knowledge-bases", {method:"POST", json:{name}}); if (rev === revision) { current = kb.id; $("#kb-name").value = ""; await window.loadKnowledge(); } }
-    catch (error) { message(error.message); }
+    try {
+      const kb = await api("/knowledge-bases", {method:"POST", json:{name}});
+      if (!bases.some(item => item.id === kb.id)) bases.push(kb);
+      creation = null;
+      if (![...$("#kb-select").options].some(option => option.value === kb.id)) {
+        $("#kb-select").insertAdjacentHTML("beforeend", `<option value="${escapeHtml(kb.id)}">${escapeHtml(kb.name)}</option>`);
+      }
+      createFiles = []; skippedFiles = []; $("#kb-name").value = "";
+      $("#kb-create-tokens").value = "512";
+      if (rev === revision) { $("#kb-select").value = kb.id; await choose(kb.id); }
+      renderLibraryState();
+      enqueueUploads(kb.id, files, tokens);
+    }
+    catch (error) { if (creation) { creation.error = `${error.message}。所选资料仍保留在本页，请先刷新知识库列表核对创建结果，再返回填写。`; renderLibraryState(); } else message(error.message); }
     finally { $("#kb-create").disabled = false; }
   });
   $("#kb-question").addEventListener("input", () => { draft().question = $("#kb-question").value; invalidate(); });
