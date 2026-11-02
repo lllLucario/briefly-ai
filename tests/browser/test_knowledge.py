@@ -12,6 +12,7 @@ pytestmark = pytest.mark.browser
 def open_knowledge(page):
     page.locator('.tabs [data-tab="knowledge"]').click()
     expect(page.locator("#kb-empty-create:visible, #kb-open-create:visible")).to_be_visible()
+    page.locator(".kb-settings").evaluate("e => e.open = true")
 
 
 def create(page, name):
@@ -19,12 +20,14 @@ def create(page, name):
     response = page.request.post(page.url.rstrip("/") + "/knowledge-bases", data={"name": name})
     assert response.ok
     page.evaluate("() => window.loadKnowledge()")
-    page.locator("#kb-select").select_option(response.json()["id"])
+    page.locator(f'[data-kb-base="{response.json()["id"]}"]').click()
     expect(page.locator("#kb-select option:checked")).to_have_text(name)
     return page.locator("#kb-select").input_value()
 
 
 def import_file(page, content="# 制度\n正式员工出差须在预订前审批。"):
+    if not page.locator("#kb-upload-dialog").is_visible():
+        page.locator("#kb-open-upload").click()
     page.locator("#kb-files").set_input_files({"name":"制度.md", "mimeType":"text/markdown", "buffer":content.encode()})
     page.locator("#kb-upload").click()
     expect(page.locator("#kb-jobs")).to_contain_text("等待核对切片", timeout=20000)
@@ -70,19 +73,19 @@ def test_late_answer_stays_with_original_library_and_drafts_return(web_page):
     open_knowledge(page)
     a = create(page, "制度A")
     b = create(page, "制度B")
-    page.locator("#kb-select").select_option(a)
+    page.locator(f'[data-kb-base="{a}"]').click()
     page.locator("#kb-question").fill("A库原始问题")
     held = []
     page.route(f"**/knowledge-bases/{a}/answer", lambda route: held.append(route))
     page.locator("#kb-ask").click()
     expect(page.locator("#kb-ask")).to_be_disabled()
-    page.locator("#kb-select").select_option(b)
+    page.locator(f'[data-kb-base="{b}"]').click()
     page.locator("#kb-question").fill("B库草稿")
     assert held
     held[0].fulfill(status=200, content_type="application/json", body=json.dumps(dict(status="answered", answer="A库迟到结果", evidence=[])))
     expect(page.locator("#kb-result")).not_to_contain_text("A库迟到结果")
     expect(page.locator("#kb-question")).to_have_value("B库草稿")
-    page.locator("#kb-select").select_option(a)
+    page.locator(f'[data-kb-base="{a}"]').click()
     expect(page.locator("#kb-question")).to_have_value("A库原始问题")
     expect(page.locator("#kb-result")).to_contain_text("A库迟到结果")
     page.locator('.tabs [data-tab="materials"]').click()
@@ -131,6 +134,7 @@ def test_knowledge_controls_fit_narrow_screen(web_page):
     page.set_viewport_size({"width":320, "height":1000})
     open_knowledge(page)
     create(page, "窄屏资料库")
+    page.locator("#kb-open-upload").click()
     expect(page.locator("#kb-upload")).to_be_visible()
     assert page.locator("body").evaluate("element => element.scrollWidth <= innerWidth")
 

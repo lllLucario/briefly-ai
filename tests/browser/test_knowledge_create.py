@@ -89,7 +89,9 @@ def test_folder_splits_batches_and_retry_reuses_request_key(web_page, tmp_path):
         else:
             route.fulfill(status=202, content_type="application/json", body='{"files":[]}')
     p.route("**/knowledge-bases/*/imports", upload)
-    p.locator("#kb-create").click()
+    with p.expect_request(lambda request: request.method == "POST" and request.url.endswith("/imports")
+                          and request.post_data_buffer.count(b'name="files"') == 1):
+        p.locator("#kb-create").click()
     expect(p.locator("#kb-transfers")).to_contain_text("上传暂不可用")
     expect(p.locator("#kb-transfers progress")).to_have_count(0)
     assert len(requests) == 2

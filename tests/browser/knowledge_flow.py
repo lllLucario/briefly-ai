@@ -25,6 +25,7 @@ def run_knowledge_journey(page, *, screenshot: Path):
         page.locator("#kb-preview-checked").check()
         page.locator("#kb-confirm").click()
         expect(page.locator("#kb-jobs")).to_contain_text("已完成", timeout=30000)
+        page.locator(".kb-settings").evaluate("e => e.open = true")
         page.locator("#kb-question").fill(question)
         page.locator("#kb-ask").click()
         expect(page.locator("#kb-result")).to_contain_text("本库未允许外发")
