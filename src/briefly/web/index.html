@@ -556,9 +556,9 @@
       <div class="row gap end"><button id="kb-create-cancel" type="button" class="ghost">取消</button><button id="kb-create" type="submit" class="primary">创建并上传</button></div>
     </form>
   </dialog>
-  <dialog id="kb-preview"><h3>核对原文切片</h3><p id="kb-preview-info" class="muted small"></p><div id="kb-preview-body"></div>
+  <dialog id="kb-preview" aria-labelledby="kb-preview-title"><h3 id="kb-preview-title">核对原文切片</h3><p id="kb-preview-info" class="muted small"></p><p id="kb-preview-state" class="notice hidden" role="status"></p><div id="kb-preview-body"></div>
     <div class="row gap"><button id="kb-preview-prev" class="ghost">上一页</button><button id="kb-preview-next" class="ghost">下一页</button></div>
-    <p id="kb-preview-error" role="status"></p><label><input id="kb-preview-checked" type="checkbox"> 已核对预览和切片配置，确认建立索引</label>
+    <p id="kb-preview-error" role="status"></p><label id="kb-preview-review"><input id="kb-preview-checked" type="checkbox"> 已核对预览和切片配置，确认建立索引</label>
     <div class="row gap end"><button id="kb-preview-close" class="ghost">关闭</button><button id="kb-confirm" class="primary" disabled>确认入库</button></div>
   </dialog>
   <dialog id="kb-source"><h3 id="kb-source-title"></h3><p id="kb-source-info" class="muted small"></p><pre id="kb-source-text"></pre><div class="row end"><button id="kb-source-close" class="primary">关闭</button></div></dialog>

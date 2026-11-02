@@ -220,7 +220,7 @@
       const state = job ? names[job.status] : version?.id === doc.active_version_id ? "当前可检索版本" : "未发布或历史版本";
       pane.innerHTML = `<header class="kb-inspector-head"><div><p class="eyebrow">原文片段预览</p><h3>${escapeHtml(title)}</h3><p class="muted small">${escapeHtml(doc?.relative_path || job?.relative_path || title)}</p></div><span class="badge">${escapeHtml(state)}</span></header>
         <div class="kb-file-stats"><span><b>${total}</b> 个片段</span><span>片段目标 <b>${version?.chunk_config?.parameters?.tokens || job?.tokens || config?.tokens || "—"}</b></span>${version ? `<label>版本 <select id="kb-inspect-version" aria-label="查看文件版本">${[...versions].reverse().map(item => `<option value="${escapeHtml(item.id)}" ${item.id === version.id ? "selected" : ""}>第 ${item.number} 版${item.id === doc.active_version_id ? "（当前可检索）" : "（未发布或历史）"}</option>`).join("")}</select></label>` : ""}</div>
-        <div class="row gap wrap kb-file-actions">${doc ? `<button class="ghost small" data-kb-update="${doc.id}">更新</button>${doc.index_status === "ready" ? `<button class="ghost small" data-kb-copy="${doc.id}">复制到工作区</button>` : ""}<button class="ghost small danger" data-kb-remove="${doc.id}">移出知识库</button>` : job.preview_digest ? `<button class="primary small" data-inspect-review="${job.id}">核对并确认入库</button>` : ""}</div>
+        <div class="row gap wrap kb-file-actions">${doc ? `<button class="ghost small" data-kb-update="${doc.id}">更新</button>${doc.index_status === "ready" ? `<button class="ghost small" data-kb-copy="${doc.id}">复制到工作区</button>` : ""}<button class="ghost small danger" data-kb-remove="${doc.id}">移出知识库</button>` : job.preview_digest ? `<button class="${job.status === "preview" ? "primary" : "ghost"} small" data-inspect-review="${job.id}">${job.status === "preview" ? "核对并确认入库" : job.status === "ready" ? "查看已入库片段" : "查看切片"}</button>` : ""}</div>
         ${doc?.workspace_update ? `<p class="notice warn small" data-kb-workspace-update="${doc.id}">工作区有更新（${escapeHtml(fmtTime(doc.workspace_update.updated_at))}，《${escapeHtml(doc.workspace_update.title)}》），知识库仍为第 ${doc.workspace_update.version} 版。需要时请用“更新”导入新版本并核对切片，不会自动发布。</p>` : ""}
         ${job && job.status !== "ready" ? `<p class="notice small">${job.status === "preview" ? "原文片段已生成，请核对后确认入库；当前还不能用于知识问答。" : escapeHtml(job.error || "文件正在处理，完成后会显示原文片段。")}</p>` : ""}
         <div class="kb-chunk-list">${rows.map((row, i) => `<article class="kb-chunk-card"><div class="kb-chunk-heading"><span>片段 ${row.chunk ?? row.index ?? offset + i + 1}</span><small class="muted">原文位置 ${row.start}–${row.end}</small></div><h4>${escapeHtml(row.section || "未识别章节标题")}</h4>${Object.keys(row.constraints || {}).length ? '<p class="kb-quality-note">此片段存在需复核的结构或识别信息，使用时请对照原件。</p>' : ""}<pre>${escapeHtml(row.content ?? "原文已变化或不可用，请核对原件；这里不会用新内容替代旧片段。")}</pre></article>`).join("") || '<p class="muted kb-tree-empty">当前暂无可显示的片段。</p>'}</div>
@@ -308,7 +308,7 @@
     $("#kb-import-history").classList.toggle("hidden", !jobs.length);
     $("#kb-jobs").innerHTML = jobs.map(job => `<div class="knowledge-row" data-kb-job="${escapeHtml(job.id)}"><button class="kb-job-file" data-kb-select-job="${escapeHtml(job.id)}">${fileIcon(job.filename.split(".").at(-1))}${escapeHtml(job.relative_path || job.filename)}</button>
       <span>${escapeHtml(names[job.status] || job.status)}</span>${job.chunk_count ? `<span class="muted small">${job.chunk_count} 个原文片段</span>` : ""}
-      ${job.preview_digest ? `<button class="ghost small" data-kb-preview="${escapeHtml(job.id)}">查看切片</button>` : ""}
+      ${job.preview_digest ? `<button class="ghost small" data-kb-preview="${escapeHtml(job.id)}">${job.status === "ready" ? "查看已入库片段" : "查看切片"}</button>` : ""}
       ${job.status === "failed" ? `<button class="ghost small" data-kb-retry="${escapeHtml(job.id)}">重试此文件</button><button class="ghost small" data-kb-reparse="${escapeHtml(job.id)}">重新解析预览</button>` : ""}
       ${job.error ? `<p class="danger small">${escapeHtml(job.error)}</p>` : ""}</div>`).join("");
   }
@@ -459,28 +459,42 @@
       }
     } catch (error) { message(error.message, id); if (preview?.kb === id && $("#kb-preview").open) $("#kb-preview-error").textContent = error.message; }
   });
+  function syncPreviewControls() {
+    const p = preview, reviewable = p?.job.status === "preview";
+    $("#kb-preview-title").textContent = reviewable ? "核对原文切片" : p?.job.status === "ready" ? "查看已入库片段" : "查看原文切片";
+    $("#kb-preview-review").classList.toggle("hidden", !reviewable);
+    $("#kb-confirm").classList.toggle("hidden", !reviewable);
+    $("#kb-preview-checked").disabled = !reviewable || !p?.loaded || Boolean(p?.submitting);
+    $("#kb-confirm").disabled = !reviewable || !p?.loaded || Boolean(p?.submitting) || !$("#kb-preview-checked").checked;
+    const notice = $("#kb-preview-state");
+    notice.classList.toggle("hidden", reviewable || !p);
+    notice.textContent = !p || reviewable ? "" : p.job.status === "ready" ? "这份文件的当次导入已完成，无需再次确认。这里可查看当次原文片段；当前有效版本以文件列表为准。" : p.job.status === "indexing" ? "正在建立索引，无需重复确认；完成后会更新文件状态。" : p.job.status === "failed" ? "这份文件处理失败。请关闭预览，在导入记录中重试或重新解析后再核对。" : "这份文件尚未进入核对阶段，请稍后查看处理状态。";
+    $("#kb-preview-prev").disabled = !p?.loaded || Boolean(p?.submitting) || p.offset === 0;
+    $("#kb-preview-next").disabled = !p?.loaded || Boolean(p?.submitting) || p.offset+10 >= p.job.chunk_count;
+  }
   async function previewPage() {
     const p = preview; if (!p) return;
     const seq = ++p.seq, offset = p.offset;
-    p.loaded = false; $("#kb-preview-checked").checked = false; $("#kb-preview-checked").disabled = true; $("#kb-confirm").disabled = true;
+    p.loaded = false; $("#kb-preview-checked").checked = false; syncPreviewControls();
     $("#kb-preview-body").textContent = "正在读取原文切片…";
     const rows = await api(`/knowledge-bases/${p.kb}/imports/${p.job.id}/chunks?offset=${offset}&limit=10`);
     if (preview !== p || p.seq !== seq || !active(p.kb, p.rev)) return;
-    p.loaded = true; $("#kb-preview-checked").disabled = false;
+    p.loaded = true;
     const overlap = p.job.chunk_config?.parameters?.overlap ?? 0;
     $("#kb-preview-info").textContent = `${p.job.filename} · 目标 ${p.job.tokens} token，正文重叠约 ${overlap} token；表格/图形不重叠 · 第${offset+1}～${offset+rows.length}段，共${p.job.chunk_count}段。仅当前页展示原文，请按需翻页核对。`;
     $("#kb-preview-body").innerHTML = rows.map(row => `<article><h4>${escapeHtml(row.section || "章节未确定")}</h4><pre>${escapeHtml(row.content)}</pre>${Object.keys(row.constraints).length ? '<p class="danger small">该片段有未确认的结构关系，问答时将保留复核限制。</p>' : ""}</article>`).join("");
-    $("#kb-preview-prev").disabled = p.offset === 0; $("#kb-preview-next").disabled = p.offset+10 >= p.job.chunk_count;
-    $("#kb-confirm").disabled = p.job.status !== "preview" || !$("#kb-preview-checked").checked;
+    syncPreviewControls();
   }
   $("#kb-preview-prev").addEventListener("click", () => { preview.offset = Math.max(0, preview.offset-10); previewPage().catch(error => $("#kb-preview-error").textContent = error.message); });
   $("#kb-preview-next").addEventListener("click", () => { preview.offset += 10; previewPage().catch(error => $("#kb-preview-error").textContent = error.message); });
   $("#kb-preview-close").addEventListener("click", () => $("#kb-preview").close());
-  $("#kb-preview-checked").addEventListener("change", () => { $("#kb-confirm").disabled = !preview?.loaded || preview.job.status !== "preview" || !$("#kb-preview-checked").checked; });
+  $("#kb-preview-checked").addEventListener("change", syncPreviewControls);
   $("#kb-confirm").addEventListener("click", async () => {
-    const p = preview; if (!p) return; $("#kb-confirm").disabled = true;
-    try { await api(`/knowledge-bases/${p.kb}/imports/${p.job.id}/confirm`, {method:"POST", json:{digest:p.job.preview_digest}}); $("#kb-preview").close(); if (active(p.kb, p.rev)) await refresh(); }
-    catch (error) { $("#kb-preview-error").textContent = error.message; $("#kb-confirm").disabled = !$("#kb-preview-checked").checked; }
+    const p = preview; if (!p?.loaded || p.job.status !== "preview" || p.submitting || !$("#kb-preview-checked").checked) return;
+    p.submitting = true; syncPreviewControls();
+    try { await api(`/knowledge-bases/${p.kb}/imports/${p.job.id}/confirm`, {method:"POST", json:{digest:p.job.preview_digest}}); if (preview === p) $("#kb-preview").close(); if (active(p.kb, p.rev)) await refresh(); }
+    catch (error) { if (preview === p) $("#kb-preview-error").textContent = error.message; }
+    finally { p.submitting = false; if (preview === p) syncPreviewControls(); }
   });
   function renderResult(result) {
     if (!result) { $("#kb-result").replaceChildren(); return; }
