@@ -3,6 +3,8 @@ from pathlib import Path
 
 from playwright.sync_api import expect
 
+from .flows import send
+
 SCENARIOS = (
     ("原创办公制度", "制度.md", "# 原创虚构制度\n正式员工国内出差在上海住宿上限为每晚650元，按实际发票报销，不适用于实习生和境外差旅。", "上海住宿上限和适用对象是什么？", ("650", "正式员工")),
     ("原创项目资料", "项目.md", "# 原创虚构项目\n陈禾负责接口联调，截止2026-11-03；发布前必须完成回归并由林遥签字。", "联调由谁负责、何时截止？", ("陈禾", "2026-11-03")),
@@ -20,21 +22,21 @@ def run_knowledge_journey(page, *, screenshot: Path):
         page.locator("#kb-create").click()
         expect(page.locator("#kb-select option:checked")).to_have_text(name)
         expect(page.locator("#kb-jobs")).to_contain_text("已完成", timeout=30000)
-        page.locator(".kb-settings").evaluate("e => e.open = true")
-        page.locator("#kb-question").fill(question)
-        page.locator("#kb-ask").click()
-        expect(page.locator("#kb-result")).to_contain_text("本库未允许外发")
+        kb = page.locator("#kb-select").input_value()
+        page.locator("#kb-open-settings").click()
         page.locator("#kb-external").check()
-        expect(page.locator("#kb-message")).to_contain_text("已允许本知识库外发")
-        page.locator("#kb-ask").click()
-        expect(page.locator("#kb-ask")).to_be_enabled(timeout=90000)
-        result = page.locator("#kb-result").inner_text()
-        assert "草稿回答" in result, result
+        expect(page.locator("#kb-settings-status")).to_contain_text("已允许本知识库外发")
+        page.locator("#kb-settings-close").click()
+        page.locator(".tabs [data-tab=\"chat\"]").click()
+        page.locator("#chat-kb").select_option(kb)
+        answer = send(page, question)
+        result = answer.inner_text()
         assert all(value in result for value in required), result
-        page.locator("[data-kb-reference]").first.click()
+        answer.locator("[data-chat-reference]").first.click()
         expect(page.locator("#kb-source-text")).to_contain_text(content.split("\n", 1)[1])
         expect(page.locator("#kb-source-info")).to_contain_text("当前有效版本")
         page.locator("#kb-source-close").click()
+        page.locator('.tabs [data-tab="knowledge"]').click()
         image = screenshot.with_name(f"{screenshot.stem}-scenario-{index}.png")
         page.screenshot(path=str(image), full_page=True)
         cases.append(dict(scenario=name, answer=result, source_matches=True, screenshot=image.name))

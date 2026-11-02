@@ -5,7 +5,7 @@ import pytest
 pytest.importorskip("sqlite_vec", reason="知识网页回归需安装.[rag]")
 from playwright.sync_api import expect
 
-from .test_knowledge import create, import_file, open_knowledge
+from .test_knowledge import allow_egress, ask_assistant, create, import_file, open_knowledge
 from .test_material_library import base, open_library, rows
 
 pytestmark = pytest.mark.browser
@@ -64,16 +64,12 @@ def test_joint_answer_labels_workspace_evidence_and_counts_egress_by_origin(web_
     saved = page.request.post(base(page) + "/materials", data={"title": "我的值班笔记", "content": "周三客诉两起，值班主管都在十分钟左右到场，加班餐须预订前审批。"})
     assert saved.ok
     open_knowledge(page)
-    create(page, "运营制度")
+    kb = create(page, "运营制度")
     import_file(page, POLICY)
-    page.locator("#kb-external").check()
-    expect(page.locator("#kb-message")).to_contain_text("已允许本知识库外发")
-    page.locator("#kb-question").fill("值班主管客诉多久到场？")
-    page.locator("#kb-ask").click()
-    result = page.locator("#kb-result")
-    expect(result).to_contain_text("草稿回答")
+    allow_egress(page)
+    result = ask_assistant(page, kb, "值班主管客诉多久到场？").locator(".knowledge-refs")
     expect(result).to_contain_text("个知识库片段和 1 个工作区片段")
-    expect(result.locator("[data-ws-material]")).to_contain_text("工作区 · 我的值班笔记")
-    expect(result.locator("[data-kb-reference]").first).to_contain_text("知识库 · 制度.md")
-    result.locator("[data-ws-material]").click()
+    expect(result.locator("[data-chat-material]")).to_contain_text("工作区 · 我的值班笔记")
+    expect(result.locator("[data-chat-reference]").first).to_contain_text("知识库 · 制度.md")
+    result.locator("[data-chat-material]").click()
     expect(page.locator("#material-title")).to_have_text("我的值班笔记")

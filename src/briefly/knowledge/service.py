@@ -1,6 +1,7 @@
 """知识库元数据和稳定原文引用。此处不加载模型、不构建或冒充就绪索引。"""
 import hashlib
 import json
+import re
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -22,6 +23,26 @@ class KnowledgeConflict(ValueError):
 
 def fingerprint(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+PREVIEW_CHARS = 60
+
+
+def outline_preview(text, section):
+    """结构页每节只给一行短摘录帮助理解内容；去掉标题行与表格分隔，不下发长正文。"""
+    titles = {part.strip() for part in (section or "").split(" > ")}
+    lines = []
+    for line in text.splitlines():
+        line = line.strip().lstrip("#").strip()
+        prefix = max((t for t in titles if t and line.startswith(t)), key=len, default="")
+        line = line[len(prefix):].lstrip(" ：:、.").strip()  # 正文首行常以本节标题开头，摘录不再重复
+        if not line or set(line) <= set("|-: "):
+            continue
+        lines.append(line.replace("|", " "))
+        if sum(map(len, lines)) > PREVIEW_CHARS:
+            break
+    flat = re.sub(r"\s+", " ", " ".join(lines)).strip()
+    return flat[:PREVIEW_CHARS] + "…" if len(flat) > PREVIEW_CHARS else flat
 
 
 def embedding_identity(identity):
@@ -454,7 +475,9 @@ class KnowledgeService:
                 limits = {**chunk.get("constraints", {}),
                           **constraints(version.source_snapshot.get("parse_quality", {}), chunk["start"], chunk["end"]),
                           **(constraints(material.parse_report, chunk["start"], chunk["end"]) if material else {})}
-                items.append(dict(index=chunk["index"], section=None if reason or "section_attribution" in limits else chunk["section"], constraints=limits))
+                section = None if reason or "section_attribution" in limits else chunk["section"]
+                preview = outline_preview(content[chunk["start"]:chunk["end"]], section) if material and not reason else ""
+                items.append(dict(index=chunk["index"], section=section, preview=preview, constraints=limits))
             return dict(total=len(items), items=items, status=status)
 
     def resolve_reference(self, kb_id, reference):

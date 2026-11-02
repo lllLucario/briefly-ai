@@ -14,7 +14,7 @@ from ..materials import KNOWLEDGE, MaterialStore
 from ..parse_process import ParseFailure, load_isolated
 from .lifecycle import IndexLifecycle
 from .models import KnowledgeImport, KnowledgeVersion, KnowledgeParseCache, KnowledgeImportMetrics
-from .service import KnowledgeConflict, KnowledgeNotFound, KnowledgeService, fingerprint
+from .service import KnowledgeConflict, KnowledgeNotFound, KnowledgeService, fingerprint, outline_preview
 from .slicing import token_slices
 
 
@@ -255,7 +255,8 @@ class ImportService:
         for chunk in job.prepared["chunks"]:
             limits = {**constraints(job.prepared.get("structure_report", {}), chunk["start"], chunk["end"]),
                       **constraints(material.parse_report, chunk["start"], chunk["end"])}
-            items.append(dict(index=chunk["index"], section=None if "section_attribution" in limits else chunk["section"], constraints=limits))
+            section = None if "section_attribution" in limits else chunk["section"]
+            items.append(dict(index=chunk["index"], section=section, preview=outline_preview(material.content[chunk["start"]:chunk["end"]], section), constraints=limits))
         return dict(total=len(items), items=items, status=job.status)
 
     def build_index(self, kb_id, job_id):

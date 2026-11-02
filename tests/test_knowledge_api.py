@@ -83,6 +83,7 @@ def test_outline_scope_and_source_integrity_without_content(client):
     outline = client.get(path).json()
     assert outline["total"] > 1 and len(outline["items"]) == outline["total"]
     assert all("content" not in row and "section" in row for row in outline["items"])
+    assert any(row["preview"] for row in outline["items"]) and all(len(row["preview"]) <= 61 for row in outline["items"])  # 每节只附一行短摘录
     assert outline["status"] == "not_indexed"
     assert client.get(path.replace("/outline", "/chunks")).status_code == 404
     original = client.get(path.replace("/outline", "/chunks/1")).json()

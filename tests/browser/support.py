@@ -73,6 +73,10 @@ def fake_model():
             if isinstance(messages[-1], ToolMessage):
                 return AIMessage("1. 出差须在预订前审批〔依据1〕\n2. 具体流程以制度原文为准")
             return AIMessage("", tool_calls=[{"name": "search_knowledge", "args": {"questions": ["出差审批要求"]}, "id": "kb-search"}])
+        if "客诉多久到场" in latest:  # 联合检索：知识库制度与工作区笔记分别标注出处
+            if isinstance(messages[-1], ToolMessage):
+                return AIMessage("制度要求十五分钟内到场〔依据1〕；值班笔记记录约十分钟到场〔依据2〕")
+            return AIMessage("", tool_calls=[{"name": "search_knowledge", "args": {"questions": ["值班主管客诉到场时间"]}, "id": "kb-search"}])
         if "证据缺口" in latest:
             if isinstance(messages[-1], ToolMessage):
                 return AIMessage("【一句话总结】仅依据当前输入整理。")

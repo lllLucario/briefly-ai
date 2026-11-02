@@ -24,6 +24,8 @@
     <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V3m-5 5 5-5 5 5M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></symbol>
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M6.1 6a8 8 0 0 1 13.3 3M4.6 15a8 8 0 0 0 13.3 3"/></symbol>
+    <symbol id="i-retry" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M15 9V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h4"/></symbol>
     <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3" fill="var(--panel)"/><circle cx="15" cy="17" r="3" fill="var(--panel)"/></symbol>
     <symbol id="i-tick" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
     <symbol id="i-minus" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12h8"/></symbol>
@@ -502,7 +504,7 @@
       <div id="kb-create-progress" class="hidden" role="status" aria-live="polite"></div>
       <p id="kb-message" role="status" class="muted small"></p>
       <div id="kb-content" class="hidden" role="region" aria-labelledby="kb-current-name">
-        <div class="kb-content-heading"><div><h3 id="kb-current-name"></h3><p id="kb-library-summary" class="muted small"></p></div><div class="row gap wrap"><button id="kb-open-upload" class="primary">添加资料</button><button id="kb-to-chat" class="ghost">向助理提问 <svg class="icon action-icon" aria-hidden="true"><use href="#i-arrow"/></svg></button><button id="kb-open-settings" class="ghost" aria-controls="kb-library-settings" aria-expanded="false"><svg class="icon action-icon" aria-hidden="true"><use href="#i-settings"/></svg>本库设置</button></div></div>
+        <div class="kb-content-heading"><div><div class="kb-title-line"><h3 id="kb-current-name"></h3><button type="button" id="kb-egress-chip" class="kb-egress-chip" data-allowed="false" aria-haspopup="dialog" title="本库外发授权，点击修改"><i aria-hidden="true"></i><span>外部模型问答未开启</span></button></div><p id="kb-library-summary" class="muted small"></p></div><div class="row gap wrap"><button id="kb-open-upload" class="primary">添加资料</button><button id="kb-to-chat" class="ghost">向助理提问 <svg class="icon action-icon" aria-hidden="true"><use href="#i-arrow"/></svg></button><button id="kb-open-settings" class="ghost" aria-haspopup="dialog"><svg class="icon action-icon" aria-hidden="true"><use href="#i-settings"/></svg>本库设置</button></div></div>
         <div id="kb-transfers" aria-live="polite"></div>
         <div class="kb-explorer">
           <aside class="kb-file-panel" aria-label="知识库文件"><div class="kb-tree-heading"><h3>文件与文件夹</h3><label class="kb-tree-search"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg><input id="kb-file-search" type="search" placeholder="查找文件" aria-label="查找知识库文件"></label></div>
@@ -510,16 +512,6 @@
           </aside>
           <section id="kb-inspector" class="kb-inspector" aria-label="文件结构" aria-live="polite"><div class="kb-inspector-empty"><span class="empty-icon"><svg class="icon" aria-hidden="true"><use href="#i-report"/></svg></span><h3>从左侧选择一份文件</h3><p class="muted">在这里了解章节、标题与入库状态。</p></div></section>
         </div>
-        <details id="kb-library-settings" class="kb-settings"><summary>本库设置 · 授权、检索范围与单次问答</summary><section class="knowledge-section"><h3>单次问答</h3>
-          <p class="muted small">日常提问与连续追问可使用上方「向助理提问」。此处保留单次核验及其范围设置。</p>
-          <label><input id="kb-all" type="checkbox" checked> 检索当前库全部有效文档</label>
-          <label class="stack" for="kb-question">问题<textarea id="kb-question" rows="3" maxlength="4000" placeholder="例如：上海住宿上限及适用对象是什么？"></textarea></label>
-          <label class="knowledge-consent"><input id="kb-external" type="checkbox"> 允许本知识库外发：提问时把问题、标题和召回片段经规则处理后发送给已配置的外部生成服务（一次设置，对本库之后的问答和助理均生效，可随时关闭）</label>
-          <p class="muted small">规则处理常见邮箱、手机号、密钥和指定字段，不保证识别所有企业敏感信息。未开启时只在本地核验依据，不生成回答。</p>
-          <details><summary>更多范围与外发设置</summary><label class="stack">额外隐藏的字段（每行一个，最多50项）<textarea id="kb-private" rows="2"></textarea></label>
-            <label><input id="kb-partial" type="checkbox"> 范围有未就绪文档时，允许仅依据可用部分回答</label></details>
-          <button id="kb-ask" class="primary">核验依据并回答</button><div id="kb-result" aria-live="polite"></div>
-        </section></details>
       </div>
     </section>
   </main>
@@ -555,6 +547,17 @@
       <p id="kb-create-error" class="danger small" role="alert"></p>
       <div class="row gap end"><button id="kb-create-cancel" type="button" class="ghost">取消</button><button id="kb-create" type="submit" class="primary">创建并上传</button></div>
     </form>
+  </dialog>
+  <dialog id="kb-settings-dialog" class="kb-settings-dialog" aria-labelledby="kb-settings-title">
+    <div class="dialog-head"><h3 id="kb-settings-title">本库设置</h3><button type="button" id="kb-settings-close" class="ghost icon-close" aria-label="关闭本库设置"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+    <section class="kb-setting">
+      <div class="kb-setting-row">
+        <div><strong>允许外部模型问答</strong><p class="muted small">开启后，向本库提问时会把问题、标题和召回片段经规则处理后发送给已配置的外部生成服务。一次设置，对本库之后的知识问答和助理均生效，可随时关闭。</p></div>
+        <label class="switch"><input id="kb-external" type="checkbox" role="switch" aria-label="允许本知识库外发"><span aria-hidden="true"></span></label>
+      </div>
+      <p class="muted small">未开启时只在本地检索并核验依据，不生成回答。规则处理常见邮箱、手机号和密钥，不保证识别所有企业敏感信息；每次回答都会显示发送了多少片段。</p>
+      <p id="kb-settings-status" class="small" role="status"></p>
+    </section>
   </dialog>
   <dialog id="kb-source"><h3 id="kb-source-title"></h3><p id="kb-source-info" class="muted small"></p><pre id="kb-source-text"></pre><div class="row end"><button id="kb-source-close" class="primary">关闭</button></div></dialog>
 

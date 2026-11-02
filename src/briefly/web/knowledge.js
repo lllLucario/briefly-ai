@@ -4,9 +4,8 @@
   const drafts = new Map();
   let current = "", revision = 0, timer = null;
   const names = {queued:"等待解析", parsing:"解析中", preview:"准备建立索引", indexing:"建立索引中", ready:"已完成", failed:"处理失败", rejected:"未接收"};
-  const statuses = {answered:"草稿回答", partial_answer:"部分可答", insufficient_evidence:"依据不足", needs_review:"需要复核", external_authorization_required:"本库未允许外发", located:"文档定位", blocked:"已拦截", incomplete_scope:"部分资料未就绪", not_ready:"资料未就绪", empty_scope:"范围为空", empty_library:"库内暂无可用资料", workflow_required:"请使用完整材料流程", clarification_required:"请补充问题", no_candidates:"没有召回依据", low_relevance:"没有直接相关的内容"};
   function draft(id = current) {
-    if (!drafts.has(id)) drafts.set(id, {question:"", privateText:"", all:true, selected:new Set(), files:[], seq:0, result:null, message:"", uploading:false, asking:false, target:null});
+    if (!drafts.has(id)) drafts.set(id, {files:[], message:"", uploading:false, target:null});
     return drafts.get(id);
   }
   function active(id, rev = revision) { return current === id && revision === rev && $("#tab-knowledge").classList.contains("active"); }
@@ -14,7 +13,6 @@
     if (id) draft(id).message = text;
     if (!id || current === id) $("#kb-message").textContent = text;
   }
-  function invalidate() { draft().seq++; }
   let bases = [];
   let createFiles = [], skippedFiles = [], creation = null;
   const supportedFile = /\.(txt|md|doc|docx|pdf|xlsx|xls|csv|pptx|ppt|png|jpg|jpeg|bmp|tif|tiff|webp)$/i;
@@ -137,8 +135,14 @@
   window.addEventListener("beforeunload", event => {
     if (creation && !creation.error || [...uploadQueues.values()].some(batches => batches.some(batch => ["queued", "uploading", "error"].includes(batch.state)))) { event.preventDefault(); event.returnValue = ""; }
   });
-  function syncEgress() { $("#kb-external").checked = Boolean(bases.find(kb => kb.id === current)?.external_allowed); }
-  function selectedScope(d) { return d.all ? null : [...d.selected]; }
+  // 外发授权是本库最重要的设置：标题旁常驻状态，点开设置弹窗即可切换。
+  function syncEgress() {
+    const allowed = Boolean(bases.find(kb => kb.id === current)?.external_allowed);
+    $("#kb-external").checked = allowed;
+    const chip = $("#kb-egress-chip");
+    chip.dataset.allowed = String(allowed);
+    chip.querySelector("span").textContent = allowed ? "已允许外部模型问答" : "外部模型问答未开启";
+  }
   function renderFileTree() {
     const d = draft(), query = $("#kb-file-search").value.trim().toLowerCase();
     const root = {dirs:new Map(), files:[]};
@@ -157,11 +161,10 @@
         const key = `kb-folder:${current}:${path}/${name}`;
         return `<details class="kb-folder" data-disclosure="${escapeHtml(key)}" ${disclosureOpen(key, true)}><summary>${fileIcon("folder")}<span>${escapeHtml(name)}</span></summary><div>${branch(child, path + "/" + name)}</div></details>`;
       }).join("") + node.files.sort((a,b) => a.name.localeCompare(b.name,"zh")).map(({doc, name}) => `<div class="kb-tree-row" data-kb-doc="${escapeHtml(doc.id)}">
-        ${!d.all ? `<input type="checkbox" aria-label="单次问答纳入 ${escapeHtml(doc.title)}" data-kb-scope="${escapeHtml(doc.id)}" ${d.selected.has(doc.id) ? "checked" : ""}>` : `<input class="hidden" type="checkbox" data-kb-scope="${escapeHtml(doc.id)}" checked disabled>`}
         <button type="button" class="kb-tree-file" data-kb-document="${escapeHtml(doc.id)}" aria-pressed="${d.fileKey === `doc:${doc.id}`}" title="${escapeHtml(doc.relative_path || doc.title)}">${fileIcon(doc.title.split(".").at(-1))}<span><strong>${escapeHtml(name)}</strong><small>修订 ${doc.revision} · ${doc.index_status === "ready" ? "已有有效索引" : "尚无有效索引"}</small></span>${doc.workspace_update ? '<span class="kb-update-dot" title="工作区有更新">•</span>' : ""}</button></div>`).join("");
     }
     const html = branch(root) || `<p class="muted small kb-tree-empty">${query ? "没有匹配的文件" : "当前库暂无文档，请添加资料，系统将自动处理入库。"}</p>`;
-    const signature = JSON.stringify([current,d.documents,query,d.all,[...d.selected],d.fileKey]);
+    const signature = JSON.stringify([current,d.documents,query,d.fileKey]);
     if (fileTreeSignature !== signature) { $("#kb-documents").innerHTML = html; fileTreeSignature = signature; }
     const jobs = d.jobs || [], count = (d.documents || []).length;
     $("#kb-library-summary").textContent = `${count} 份文档 · ${jobs.filter(job => ["queued","parsing","indexing"].includes(job.status)).length} 份处理中 · ${jobs.filter(job => job.status === "failed").length} 份处理失败`;
@@ -187,14 +190,17 @@
       if (!parts.length) parts.push("未识别章节标题");
       let children = root, node;
       for (const title of parts) {
-        if (!children.has(title)) children.set(title, {title, children:new Map(), indices:new Set()});
-        node = children.get(title); node.indices.add(row.index); children = node.children;
+        if (!children.has(title)) children.set(title, {title, children:new Map(), own:0, preview:""});
+        node = children.get(title); children = node.children;
       }
+      // 摘录取本节自身的第一个片段；片段数只记在最末级章节，父级不再重复累计。
+      node.own++;
+      if (!node.preview && row.preview) node.preview = row.preview;
     }
-    function branch(nodes) {
-      return `<ul>${[...nodes.values()].map(node => `<li><div class="kb-outline-row"><span title="${escapeHtml(node.title)}">${escapeHtml(node.title)}</span><small>${node.indices.size} 个片段</small></div>${node.children.size ? branch(node.children) : ""}</li>`).join("")}</ul>`;
+    function branch(nodes, depth) {
+      return `<ul>${[...nodes.values()].map(node => `<li><div class="kb-outline-row" data-depth="${depth}"><div class="kb-outline-text"><span class="kb-outline-title" title="${escapeHtml(node.title)}">${escapeHtml(node.title)}</span>${node.preview ? `<span class="kb-outline-preview">${escapeHtml(node.preview)}</span>` : ""}</div>${!node.children.size && node.own > 1 ? `<small class="kb-outline-count" title="本节 ${node.own} 个片段">${node.own}</small>` : ""}</div>${node.children.size ? branch(node.children, depth + 1) : ""}</li>`).join("")}</ul>`;
     }
-    return branch(root);
+    return branch(root, 0);
   }
   async function inspectFile(key, versionId = null, force = false) {
     const id = current, rev = revision, d = draft(id);
@@ -249,11 +255,10 @@
   $("#kb-inspector").addEventListener("change", event => { if (event.target.id === "kb-inspect-version") inspectFile(draft().fileKey, event.target.value, true); });
   $("#kb-open-upload").addEventListener("click", () => { draft().target = null; restore(); $("#kb-upload-error").textContent = ""; $("#kb-upload-dialog").showModal(); });
   $("#kb-upload-close").addEventListener("click", () => $("#kb-upload-dialog").close());
-  $("#kb-open-settings").addEventListener("click", () => {
-    const settings = $("#kb-library-settings"); settings.open = !settings.open;
-    if (settings.open) { const summary = settings.querySelector("summary"); summary.scrollIntoView({block:"start"}); summary.focus({preventScroll:true}); }
-  });
-  $("#kb-library-settings").addEventListener("toggle", () => $("#kb-open-settings").setAttribute("aria-expanded", String($("#kb-library-settings").open)));
+  function openSettings() { syncEgress(); $("#kb-settings-status").textContent = ""; $("#kb-settings-dialog").showModal(); }
+  $("#kb-open-settings").addEventListener("click", openSettings);
+  $("#kb-egress-chip").addEventListener("click", openSettings);
+  $("#kb-settings-close").addEventListener("click", () => $("#kb-settings-dialog").close());
   $("#kb-pick-files").addEventListener("click", () => $("#kb-files").click());
   $("#kb-pick-folder").addEventListener("click", () => $("#kb-add-folder").click());
   function renderUploadSelection() {
@@ -279,13 +284,8 @@
   $("#kb-to-chat").addEventListener("click", async () => { const id = current; await activateTab("chat"); await loadChatBases(); $("#chat-kb").value = id; $("#chat-kb").dispatchEvent(new Event("change")); $("#input").focus(); });
   function restore() {
     const d = draft();
-    $("#kb-question").value = d.question;
-    $("#kb-private").value = d.privateText;
-    $("#kb-all").checked = d.all;
     syncEgress();
-    $("#kb-partial").checked = false;
     $("#kb-upload").disabled = d.uploading;
-    $("#kb-ask").disabled = d.asking;
     $("#kb-update-target").textContent = d.target ? `正在更新《${d.target.title}》，仅选择一份文件；旧有效版本保留到新索引完成。` : "新文件将作为独立来源纳入当前库。";
     $("#kb-cancel-update").classList.toggle("hidden", !d.target);
     const files = new DataTransfer();
@@ -293,16 +293,9 @@
     $("#kb-files").files = files.files;
     renderUploadSelection();
     message(d.message);
-    renderResult(d.result);
   }
   function renderDocuments(documents) {
-    const d = draft();
-    const valid = new Set(documents.map(doc => doc.id));
-    d.selected = new Set([...d.selected].filter(id => valid.has(id)));
-    if (d.result?.evidence?.some(item => !documents.some(doc => doc.id === item.document_id && doc.active_version_id === item.version_id))) {
-      d.result.stale = true; renderResult(d.result);
-    }
-    d.documents = documents;
+    draft().documents = documents;
     renderFileTree();
   }
   function renderJobs(jobs) {
@@ -330,7 +323,7 @@
   }
   async function choose(id) {
     revision++; clearTimeout(timer);
-    $("#kb-source").close();
+    $("#kb-source").close(); $("#kb-settings-dialog").close();
     current = id;
     inspectionSequence++; inspectionSignature = ""; fileTreeSignature = "";
     $("#kb-file-search").value = "";
@@ -342,7 +335,7 @@
     if (id) { restore(); await refresh(); }
     else message("");
   }
-  window.pauseKnowledge = () => { revision++; clearTimeout(timer); $("#kb-source").close(); $("#kb-create-dialog").close(); $("#kb-upload-dialog").close(); inspectionSequence++; inspectionSignature = ""; };
+  window.pauseKnowledge = () => { revision++; clearTimeout(timer); $("#kb-source").close(); $("#kb-settings-dialog").close(); $("#kb-create-dialog").close(); $("#kb-upload-dialog").close(); inspectionSequence++; inspectionSignature = ""; };
   window.loadKnowledge = async () => {
     const rev = ++revision;
     try {
@@ -363,10 +356,11 @@
     try {
       await api(`/knowledge-bases/${id}/egress`, {method:"PUT", json:{allowed}});
       const kb = bases.find(item => item.id === id); if (kb) kb.external_allowed = allowed;
-      renderBaseCards();
-      message(allowed ? "已允许本知识库外发，之后提问不再逐次确认；可随时关闭。" : "已关闭本知识库外发，之后只在本地核验依据。", id);
+      renderBaseCards(); if (current === id) syncEgress();
+      const note = allowed ? "已允许本知识库外发，之后提问不再逐次确认；可随时关闭。" : "已关闭本知识库外发，之后只在本地核验依据。";
+      message(note, id); if (current === id) $("#kb-settings-status").textContent = note;
       if (typeof loadChatBases === "function") loadChatBases().catch(() => {});
-    } catch (error) { message(error.message, id); syncEgress(); }
+    } catch (error) { message(error.message, id); if (current === id) { $("#kb-settings-status").textContent = error.message; syncEgress(); } }
     finally { $("#kb-external").disabled = false; }
   });
   $("#kb-create-form").addEventListener("submit", async event => {
@@ -396,15 +390,12 @@
     catch (error) { if (creation) { creation.error = `${error.message}。所选资料仍保留在本页，请先刷新知识库列表核对创建结果，再返回填写。`; renderLibraryState(); } else message(error.message); }
     finally { $("#kb-create").disabled = false; }
   });
-  $("#kb-question").addEventListener("input", () => { draft().question = $("#kb-question").value; invalidate(); });
-  $("#kb-private").addEventListener("input", () => { draft().privateText = $("#kb-private").value; invalidate(); });
   $("#kb-files").addEventListener("change", () => selectUploadFiles([...$("#kb-files").files]));
   $("#kb-add-folder").addEventListener("change", event => {
     if (draft().target) { $("#kb-upload-error").textContent = "更新已有文档时，请选择对应的一份文件。"; event.target.value = ""; return; }
     selectUploadFiles([...event.target.files]);
     event.target.value = "";
   });
-  $("#kb-all").addEventListener("change", () => { const d = draft(); d.all = $("#kb-all").checked; if (!d.all) d.selected = new Set((d.documents || []).map(doc => doc.id)); invalidate(); renderDocuments(d.documents || []); });
   $("#kb-cancel-update").addEventListener("click", () => { draft().target = null; restore(); });
   $("#kb-upload").addEventListener("click", async () => {
     const id = current, d = draft(id), files = [...d.files], target = d.target;
@@ -425,7 +416,6 @@
     } catch (error) { message(error.message, id); }
     finally { d.uploading = false; if (current === id) $("#kb-upload").disabled = false; }
   });
-  $("#kb-documents").addEventListener("change", event => { const id = event.target.dataset.kbScope; if (id) { event.target.checked ? draft().selected.add(id) : draft().selected.delete(id); invalidate(); } });
   $("#kb-content").addEventListener("click", async event => {
     const file = event.target.closest("[data-kb-document]");
     if (file) { inspectFile(`doc:${file.dataset.kbDocument}`); return; }
@@ -456,41 +446,6 @@
       const job = button.dataset.kbRetry || button.dataset.kbReparse;
       await api(`/knowledge-bases/${id}/imports/${job}/retry`, {method:"POST", json:{reparse:Boolean(button.dataset.kbReparse)}});
       if (active(id, rev)) await refresh();
-    } catch (error) { message(error.message, id); }
-  });
-  function renderResult(result) {
-    if (!result) { $("#kb-result").replaceChildren(); return; }
-    $("#kb-result").innerHTML = `<h4>${escapeHtml(statuses[result.status] || result.status)}</h4><div class="markdown">${renderMaterialMarkdown(result.answer || "")}</div>
-      ${result.stale ? '<p class="danger small">引用所对应的文档已更新或移出，请重新检索；旧引用仍可核对原版本。</p>' : ""}
-      ${(result.warnings || []).map(note => `<p class="danger small">${escapeHtml(note)}</p>`).join("")}
-      ${result.model_called && result.egress ? `<p class="muted small">本次已将问题与 ${egressParts(result.egress)}经规则处理后发送给外部生成服务。</p>` : ""}
-      ${(result.evidence || []).length ? '<h4>核对原文与版本</h4>' : ""}
-      ${(result.evidence || []).map((item, i) => item.origin === "workspace"
-        ? `<button class="ghost small" data-ws-material="${item.material_id}">依据${i+1} · 工作区 · ${escapeHtml(item.source.title)}</button>`
-        : `<button class="ghost small" data-kb-reference="${escapeHtml(item.reference)}">依据${i+1} · ${item.origin ? "知识库 · " : ""}${escapeHtml(item.source.title)}</button>`).join("")}`;
-  }
-  $("#kb-ask").addEventListener("click", async () => {
-    const id = current, d = draft(id), seq = ++d.seq;
-    if (!d.question.trim()) return message("请输入问题。", id);
-    const json = {question:d.question, document_ids:selectedScope(d),
-      allow_partial:$("#kb-partial").checked, private_values:d.privateText.split("\n").map(line => line.trim()).filter(Boolean)};
-    d.asking = true; $("#kb-ask").disabled = true; message("正在核验当前范围的依据。", id);
-    try { const result = await api(`/knowledge-bases/${id}/answer`, {method:"POST", json}); if (seq === d.seq) { d.result = result; if (current === id) renderResult(result); } }
-    catch (error) { message(error.message, id); }
-    finally { d.asking = false; if (current === id) { $("#kb-ask").disabled = false; message(d.message === "正在核验当前范围的依据。" ? "核验已完成，请核对回答与原文。" : d.message, id); } }
-  });
-  $("#kb-result").addEventListener("click", async event => {
-    const material = event.target.closest("[data-ws-material]");
-    if (material) { showMaterialDetail(Number(material.dataset.wsMaterial)); return; }  // 工作区依据：打开材料
-    const button = event.target.closest("[data-kb-reference]"); if (!button) return;
-    const id = current, rev = revision;
-    try {
-      const item = await api(`/knowledge-bases/${id}/references/${encodeURIComponent(button.dataset.kbReference)}`);
-      if (!active(id, rev)) return;
-      $("#kb-source-title").textContent = item.source.title;
-      $("#kb-source-info").textContent = `技术版本 ${item.number} · 业务版本 ${item.business_version || "未提供"} · ${item.section || "章节未确定"} · ${item.status === "current" ? "当前有效版本" : item.status === "historical" ? "历史版本" : "来源已变化或不可用"}`;
-      $("#kb-source-text").textContent = item.content ?? "来源已删除或变化，旧引用不会指向新内容。";
-      $("#kb-source").showModal();
     } catch (error) { message(error.message, id); }
   });
   $("#kb-source-close").addEventListener("click", () => $("#kb-source").close());

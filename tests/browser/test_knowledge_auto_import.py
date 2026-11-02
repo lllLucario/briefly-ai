@@ -15,7 +15,7 @@ def test_uploaded_file_publishes_without_confirmation_request(web_page):
     import_file(p, "# 制度\n正式员工出差须在预订前审批。\n\n" + "这段正文不应在文件骨架里展示。" * 450)
     expect(p.locator("#kb-preview, #kb-confirm, #kb-preview-checked")).to_have_count(0)
     expect(p.locator(".kb-outline")).to_contain_text("制度")
-    expect(p.locator(".kb-outline")).not_to_contain_text("这段正文不应在文件骨架里展示。")
+    assert len(p.locator(".kb-outline-preview").inner_text()) <= 61  # 只有一行短摘录，不展开正文
     assert sent == []
     expect(p.locator("#kb-external")).not_to_be_checked()
 

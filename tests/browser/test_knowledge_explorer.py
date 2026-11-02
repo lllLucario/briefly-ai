@@ -20,7 +20,10 @@ def test_document_outline_is_compact_and_has_no_body(web_page):
     expect(p.locator(".kb-file-stats")).to_contain_text("512")
     expect(p.locator(".kb-outline-row")).to_have_count(1)  # 同一章节的多片合为骨干一行
     expect(p.locator(".kb-chunk-card, .kb-inspect-pager, #kb-inspector pre")).to_have_count(0)
-    expect(p.locator(".kb-outline")).not_to_contain_text("原创虚构资料，请对照原文核对。")
+    # 骨架只附一行短摘录帮助理解本节内容，不展开长片段；片段数只标在末级章节。
+    expect(p.locator(".kb-outline-preview")).to_contain_text("正式员工出差须在预订前审批")
+    assert len(p.locator(".kb-outline-preview").inner_text()) <= 61
+    expect(p.locator(".kb-outline-count")).to_have_attribute("title", __import__("re").compile(r"本节 \d+ 个片段"))
     p.locator("#kb-file-search").fill("不存在的文件")
     expect(p.locator("#kb-documents")).to_contain_text("没有匹配的文件")
     p.locator("#kb-file-search").fill("")
