@@ -513,9 +513,9 @@ def add_source_summary(results):
         out.write("\n来源正确（实际引用来源＋冲突说明，规则判分）：\n\n")
         for split, count in data["source_summary"].items():
             out.write(f"- {split}：{count['correct']}/{count['runs']}；来源错误 {count['incorrect']} 次。\n")
-        out.write("\n冲突题两种口径的通过（产品待定；主表按“还要求说明以哪版为准”）：\n\n")
+        out.write("\n冲突题口径（主表按场景表态：问制度、问哪版优先须说明以知识库为准，处理自己的稿子只须指出不同）：\n\n")
         for name, count in data["conflict_rules"].items():
-            out.write(f"- {name}：还要求说明以哪版为准 {count['priority']}；只要求指出冲突 {count['noted']}。\n")
+            out.write(f"- {name}：按场景表态 {count['priority']}；对照（只要求指出冲突） {count['noted']}。\n")
 
 
 def validate_workspace(store, files):
@@ -531,7 +531,9 @@ CONFLICT_NOTED = re.compile(r"不同|不一致|差异|差别|冲突|改为|改�
 _FORMAL = r"(?:知识库|正式版|正式制度|正式课件|正式方案|发布版)"
 CONFLICT_PRIORITY = re.compile(rf"以.{{0,35}}{_FORMAL}.{{0,12}}为(?:准|据|依据)|(?:应|须|需要|优先|仍)按.{{0,20}}{_FORMAL}"
                                rf"|按.{{0,6}}{_FORMAL}.{{0,30}}为准")  # “按正式课件，应以‘30日’为准”
-# 冲突题的两种口径（产品待定）：priority 要求指出不同并说明以知识库正式版为准；noted 只要求指出不同
+# 冲突题口径（2026-11-02 用户定为按场景表态）：priority＝按题目的 scene 要求——问制度（regulation）、问哪版优先
+# （which_first）须指出不同并说明以知识库正式版为准，处理自己的稿子（own_work）只须指出不同；noted＝一律只要求指出不同，
+# 作为对照保留
 CONFLICT_RULES = ("priority", "noted")
 
 
@@ -570,7 +572,7 @@ def score_source(case, answer, references, titles=None, conflict="priority"):
         correct = correct and all(cites(g["doc"]) for g in gold)
     if source == "conflict":
         correct = correct and bool(CONFLICT_NOTED.search(answer))
-        if conflict == "priority":
+        if conflict == "priority" and case.get("scene") != "own_work":
             correct = correct and bool(CONFLICT_PRIORITY.search(answer))
     return correct
 

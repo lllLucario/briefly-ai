@@ -251,3 +251,10 @@ def test_kept_revision_is_not_squeezed_out_by_knowledge_notes(world, monkeypatch
     bundle = world.qa.bundle(world.kb.id, ["值班主管客诉到场"])
     assert sum(e["origin"] == "workspace" for e in bundle["evidence"]) >= 2
     assert BagEncoder().token_length(bundle["payload_text"]) <= 3000
+
+
+def test_joint_rules_state_priority_by_scene():
+    # 2026-11-02 用户确定：问制度以知识库为准、处理自己的稿子以工作区为准、问哪版优先直接回答；不替用户裁决只留给同类依据
+    assert "现行以知识库已发布版为准" in JOINT_RULES and "以工作区为准" in JOINT_RULES
+    assert "未发布的改动不能当作现行规定" in JOINT_RULES and "要生效需走发布" in JOINT_RULES
+    assert "同为知识库或同为工作区" in JOINT_RULES and "不替用户裁决" in JOINT_RULES

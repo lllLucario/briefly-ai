@@ -177,3 +177,11 @@ def test_not_mentioned_wording_counts_as_abstain():
 def test_semicolon_separated_citations_are_recognized():
     from briefly.knowledge.qa import cited_numbers
     assert cited_numbers("第八步是处理遗留问题〔依据9；依据1〕") == [9, 1]
+
+
+@pytest.mark.parametrize("scene,expected", [("regulation", False), ("which_first", False), ("own_work", True)])
+def test_conflict_priority_depends_on_scene(scene, expected):
+    # 按场景表态：处理自己的稿子只须指出不同，问制度、问哪版优先须说明以知识库为准
+    case = dict(source="conflict", abstain=False, scene=scene)
+    refs = [{"label": "依据1", "origin": "knowledge"}, {"label": "依据2", "origin": "workspace"}]
+    assert qa.score_source(case, "知识库写30日〔依据1〕，你的稿子写32日〔依据2〕，两处不同。", refs) is expected
