@@ -438,6 +438,25 @@ class KnowledgeService:
                 start=original["start"], end=original["end"], page=None, content=chunk.content if chunk and not reason else None,
                 table_header=_table_header(chunk) if chunk and not reason else None)
 
+    def outline(self, kb_id, doc_id, version_id):
+        """只返回章节/片段骨架；不把全文或长片段发送给浏览器。"""
+        with self._session() as s:
+            doc, version = self._version(s, kb_id, doc_id, version_id)
+            material, reason = self._material(s, version)
+            if material:
+                content = s.scalar(select(Material.content).where(Material.id == material.id))
+                if content is None or hashlib.sha256(content.encode()).hexdigest() != material.content_hash:
+                    reason = "source_changed"
+            publication = s.get(KnowledgePublication, doc.id)
+            status = reason or ("current" if publication and publication.version_id == version.id else "historical" if publication else "not_indexed")
+            items = []
+            for chunk in version.chunk_manifest:
+                limits = {**chunk.get("constraints", {}),
+                          **constraints(version.source_snapshot.get("parse_quality", {}), chunk["start"], chunk["end"]),
+                          **(constraints(material.parse_report, chunk["start"], chunk["end"]) if material else {})}
+                items.append(dict(index=chunk["index"], section=None if reason or "section_attribution" in limits else chunk["section"], constraints=limits))
+            return dict(total=len(items), items=items, status=status)
+
     def resolve_reference(self, kb_id, reference):
         parts = reference.split(":")
         if len(parts) != 4 or parts[0] != "kbref":

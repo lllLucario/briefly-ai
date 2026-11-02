@@ -71,24 +71,22 @@ def test_invalid_reference_and_whitespace_name(client):
     assert client.post(f"/knowledge-bases/{kb}/documents",json={"material_id":99999}).status_code==404
 
 
-def test_chunk_page_bounds_scope_and_source_integrity(client):
+def test_outline_scope_and_source_integrity_without_content(client):
     from sqlalchemy.orm import Session
     from briefly.materials import Material
-    kb = client.post("/knowledge-bases", json={"name":"预览库"}).json()["id"]
+    kb = client.post("/knowledge-bases", json={"name":"结构库"}).json()["id"]
     other = client.post("/knowledge-bases", json={"name":"其他库"}).json()["id"]
     mat = material(client, "多段原文", "第一章\n" + "这是用于检索的原创虚构材料。" * 500)
     attached = client.post(f"/knowledge-bases/{kb}/documents", json={"material_id":mat}).json()
     doc, version = attached["document"]["id"], attached["version"]["id"]
-    path = f"/knowledge-bases/{kb}/documents/{doc}/versions/{version}/chunks"
-    page = client.get(path, params={"limit":1}).json()
-    assert page["total"] > 1 and len(page["items"]) == 1
-    first = page["items"][0]
-    assert first == client.get(path + "/1").json()
-    assert first["content"] and first["status"] == "not_indexed"
-    assert client.get(path, params={"offset":page["total"]}).json()["items"] == []
-    assert client.get(path, params={"offset":1,"limit":1}).json()["items"][0]["chunk"] != first["chunk"]
-    assert client.get(path, params={"limit":51}).status_code == 422
-    assert client.get(path, params={"offset":-1}).status_code == 422
+    path = f"/knowledge-bases/{kb}/documents/{doc}/versions/{version}/outline"
+    outline = client.get(path).json()
+    assert outline["total"] > 1 and len(outline["items"]) == outline["total"]
+    assert all("content" not in row and "section" in row for row in outline["items"])
+    assert outline["status"] == "not_indexed"
+    assert client.get(path.replace("/outline", "/chunks")).status_code == 404
+    original = client.get(path.replace("/outline", "/chunks/1")).json()
+    assert original["content"] and original["reference"]  # 问答引用原文仍可读取
     assert client.get(path.replace(kb,other,1)).status_code == 404
     assert client.get(path.replace(version,"missing",1)).status_code == 404
     second = material(client, "其他文档", "另一份独立原文")
@@ -98,14 +96,21 @@ def test_chunk_page_bounds_scope_and_source_integrity(client):
         session.get(Material, mat).content = "被修改的正文"
         session.get(Material, mat).content_hash = "0" * 64
         session.commit()
-    changed = client.get(path, params={"limit":1}).json()["items"][0]
-    assert changed["content"] is None and changed["status"] == "source_changed"
+    changed = client.get(path).json()
+    assert changed["status"] == "source_changed"
+    assert all(row["section"] is None for row in changed["items"])
+    with Session(client.app.state.store.engine) as session:
+        session.delete(session.get(Material, mat))
+        session.commit()
+    deleted = client.get(path).json()
+    assert deleted["status"] == "source_deleted"
+    assert all(row["section"] is None for row in deleted["items"])
 
 
 def test_folder_paths_are_persistent_distinct_and_validated_before_enqueue(client, monkeypatch):
     import json
     from briefly.knowledge.ingestion import ImportService
-    monkeypatch.setattr(ImportService, "parse", lambda *args: None)
+    monkeypatch.setattr(ImportService, "process", lambda *args: None)
     kb = client.post("/knowledge-bases", json={"name":"目录库"}).json()["id"]
     path = f"/knowledge-bases/{kb}/imports"
     files = [("files",("制度.txt",b"one","text/plain")),("files",("制度.txt",b"two","text/plain"))]

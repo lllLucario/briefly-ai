@@ -1,4 +1,4 @@
-"""逐文件持久任务、预览确认与租约；失败重试沿用同一回执。"""
+"""逐文件自动解析、索引发布与租约；失败重试沿用同一回执。"""
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -106,6 +106,13 @@ class ImportService:
                 raise KnowledgeNotFound("导入任务不在当前知识库")
             return job
 
+    def pending_ids(self, kb_id):
+        """旧交接任务接续不受网页最近100条记录的展示上限限制。"""
+        with self.knowledge._session() as s:
+            self.knowledge._kb(s, kb_id)
+            return list(s.scalars(select(KnowledgeImport.id).where(KnowledgeImport.kb_id == kb_id,
+                KnowledgeImport.status.in_(["queued", "preview"])).order_by(KnowledgeImport.created_at)))
+
     def _guard(self, s, job_id, token):
         result = s.execute(update(KnowledgeImport).where(KnowledgeImport.id == job_id,
             KnowledgeImport.lease_token == token, KnowledgeImport.lease_until > utcnow(),
@@ -200,7 +207,7 @@ class ImportService:
                                 report_snapshot=doc.report))
                             s.flush()
                     except IntegrityError:
-                        pass  # 同契约另一worker已缓存；不影响本任务预览。
+                        pass  # 同契约另一worker已缓存；不影响本任务解析结果。
             tick = perf_counter()
             encoder = self.encoder_factory()
             metrics["encoder_load_seconds"] = round(perf_counter() - tick, 6)
@@ -210,53 +217,65 @@ class ImportService:
                     tokens=job.tokens, report={**material.parse_report, **doc.report})
             finally:
                 metrics["slicing_seconds"] = round(perf_counter() - tick, 6)
-                metrics["parse_preview_total_seconds"] = round(perf_counter() - started, 6)
+                metrics["prepare_total_seconds"] = round(perf_counter() - started, 6)
                 metrics["force_reparse"] = False
                 self._metrics(job_id, token, metrics)
-            preview = self._summary(material, config, slices, encoder.identity)
-            preview["markdown"] = doc.markdown
+            prepared = self._summary(material, config, slices, encoder.identity)
+            prepared["markdown"] = doc.markdown
             from .evidence import quality_snapshot
-            preview["structure_report"] = quality_snapshot(doc.report)
-            preview["digest"] = fingerprint(preview)
+            prepared["structure_report"] = quality_snapshot(doc.report)
+            prepared["digest"] = fingerprint(prepared)
             with self.knowledge._session.begin() as s:
                 self._guard(s, job_id, token)
                 row = s.get(KnowledgeImport, job_id)
-                row.material_id, row.preview, row.status = material.id, preview, "preview"
+                row.material_id, row.prepared, row.status = material.id, prepared, "preview"
                 row.lease_token, row.lease_until = None, None
         return self.get(kb_id, job_id)
 
-    def preview_chunks(self, kb_id, job_id, *, offset=0, limit=10):
+    def process(self, kb_id, job_id):
+        """自动接续解析与索引；旧preview状态仅作兼容的内部交接点。"""
         job = self.get(kb_id, job_id)
-        if not job.preview or job.material_id is None:
-            raise KnowledgeConflict("任务尚无有效预览")
-        if offset < 0 or not 1 <= limit <= 50:
-            raise ValueError("预览分页无效")
-        material = self.store.get(job.material_id, workspace=False)
-        if material.content_hash != job.preview["content_hash"]:
-            raise KnowledgeConflict("预览源材料已变化")
-        from .evidence import constraints
-        return [dict(**chunk, content=material.content[chunk["start"]:chunk["end"]],
-                     constraints=constraints(material.parse_report, chunk["start"], chunk["end"]))
-                for chunk in job.preview["chunks"][offset:offset+limit]]
+        if job.status == "ready":
+            return job
+        if job.status == "queued":
+            job = self.parse(kb_id, job_id)
+        if job.status == "preview":
+            return self.build_index(kb_id, job_id)
+        raise KnowledgeConflict("任务正在处理或需要先重试失败文件")
 
-    def confirm(self, kb_id, job_id, digest):
+    def outline(self, kb_id, job_id):
         job = self.get(kb_id, job_id)
-        if job.status == "ready" and job.preview and job.preview["digest"] == digest:
+        if not job.prepared or job.material_id is None:
+            return dict(total=0, items=[], status=job.status)
+        material = self.store.get(job.material_id, workspace=False)
+        if material.content_hash != job.prepared["content_hash"] or hashlib.sha256(material.content.encode()).hexdigest() != material.content_hash:
+            raise KnowledgeConflict("解析来源已变化，请重新解析")
+        from .evidence import constraints
+        items = []
+        for chunk in job.prepared["chunks"]:
+            limits = {**constraints(job.prepared.get("structure_report", {}), chunk["start"], chunk["end"]),
+                      **constraints(material.parse_report, chunk["start"], chunk["end"])}
+            items.append(dict(index=chunk["index"], section=None if "section_attribution" in limits else chunk["section"], constraints=limits))
+        return dict(total=len(items), items=items, status=job.status)
+
+    def build_index(self, kb_id, job_id):
+        job = self.get(kb_id, job_id)
+        if job.status == "ready":
             return job  # 幂等回执，不重复向量化
-        if not job.preview or job.preview["digest"] != digest:
-            raise KnowledgeConflict("预览已变化，请重新核对后确认")
         with self._lease(kb_id, job_id, "preview", "indexing") as token:
             job = self.get(kb_id, job_id)
+            if not job.prepared or fingerprint({k:v for k,v in job.prepared.items() if k != "digest"}) != job.prepared.get("digest"):
+                raise KnowledgeConflict("解析交接数据已变化，请重新解析")
             metrics = self.processing(kb_id, job_id)
             material = self.store.get(job.material_id, workspace=False)
             encoder = self.encoder_factory()
             tick = perf_counter()
-            config, slices = token_slices(material.content, job.filename, job.preview["markdown"], encoder,
-                tokens=job.tokens, report={**material.parse_report, **job.preview.get("structure_report", {})})
-            metrics["confirm_slice_seconds"] = round(perf_counter() - tick, 6)
+            config, slices = token_slices(material.content, job.filename, job.prepared["markdown"], encoder,
+                tokens=job.tokens, report={**material.parse_report, **job.prepared.get("structure_report", {})})
+            metrics["index_slice_seconds"] = round(perf_counter() - tick, 6)
             summary = self._summary(material, config, slices, encoder.identity)
-            if any(summary[key] != job.preview[key] for key in summary):
-                raise KnowledgeConflict("源材料、模型或切片配置已变化，必须重新预览")
+            if any(summary[key] != job.prepared[key] for key in summary):
+                raise KnowledgeConflict("源材料、模型或切片配置已变化，必须重新解析")
             # 新知识版本提交也必须在同一事务核对任务租约。
             guard = lambda s: self._guard(s, job_id, token)
             if job.version_id:
@@ -266,7 +285,7 @@ class ImportService:
                     if doc.revision != version.number:
                         raise KnowledgeConflict("文档已有新版本，旧任务不能重新发布")
                     if version.content_hash != material.content_hash or version.chunk_config != config:
-                        raise KnowledgeConflict("重试版本与新预览不一致，请作为新版本导入")
+                        raise KnowledgeConflict("重试版本与新解析数据不一致，请作为新版本导入")
             else:
                 def save_version(s, version_id):
                     s.get(KnowledgeImport, job_id).version_id = version_id
@@ -298,11 +317,11 @@ class ImportService:
             if reparse:
                 if not self._payload(job_id).is_file():
                     raise KnowledgeConflict("上传暂存已不存在，请重新上传")
-                row.preview = None
+                row.prepared = None
                 record = s.get(KnowledgeImportMetrics, job_id)
                 values = {**(record.values if record else {}), "force_reparse": True}
                 s.merge(KnowledgeImportMetrics(import_id=job_id, values=values))
-            row.status = "preview" if row.preview and row.material_id else "queued"
+            row.status = "preview" if row.prepared and row.material_id else "queued"
             row.error, row.error_code = None, None
         return self.get(kb_id, job_id)
 

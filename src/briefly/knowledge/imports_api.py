@@ -1,21 +1,17 @@
-"""知识导入API；有界逐文件读取、异步处理、显式预览确认。"""
+"""知识导入API；有界逐文件读取、异步处理、自动解析并建立索引。"""
 from pathlib import Path
 import json
 from threading import Lock
 from typing import Annotated
 
 from fastapi import BackgroundTasks, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from .. import config
 from ..llm import create_local_embeddings
 from .index import LocalIndex
 from .ingestion import ImportService
 from .service import KnowledgeConflict, KnowledgeNotFound
-
-
-class ConfirmIn(BaseModel):
-    digest: str = Field(min_length=64, max_length=64)
 
 
 class RetryIn(BaseModel):
@@ -25,12 +21,11 @@ class RetryIn(BaseModel):
 def job_out(job):
     return dict(id=job.id, kb_id=job.kb_id, filename=job.filename, source_key=job.source_key,
         relative_path=job.source_key.removeprefix("upload:") if job.source_key.startswith("upload:") else None,
-        status=job.status, error_code=job.error_code, error=job.error,
+        status="indexing" if job.status == "preview" else job.status, error_code=job.error_code, error=job.error,
         material_id=job.material_id, version_id=job.version_id, generation_id=job.generation_id,
         tokens=job.tokens, expected_revision=job.expected_revision,
-        preview_digest=job.preview["digest"] if job.preview else None,
-        chunk_count=len(job.preview["chunks"]) if job.preview else None,
-        chunk_config=job.preview["config"] if job.preview else None)
+        chunk_count=len(job.prepared["chunks"]) if job.prepared else None,
+        chunk_config=job.prepared["config"] if job.prepared else None)
 
 
 def register(app):
@@ -49,7 +44,9 @@ def register(app):
 
     def run(action, *args):
         try:
-            action(*args)
+            result = action(*args)
+            if result is not None and result.status == "ready":
+                app.state.store.notify_changed()
         except Exception:
             # 失败状态已由持久任务记录；不让一个文件阻止后台批次后续文件。
             pass
@@ -106,8 +103,8 @@ def register(app):
                     request_key=f"{request_key}:{number}", tokens=tokens, source_key=source_key or ("upload:" + paths[number] if paths[number] else None),
                     expected_revision=expected_revision, business_version=business_version)
                 result.append(job_out(job))
-                if job.status == "queued":
-                    background.add_task(run, service.parse, kb_id, job.id)
+                if job.status in {"queued", "preview"}:
+                    background.add_task(run, service.process, kb_id, job.id)
             except ValueError as exc:
                 if isinstance(exc, KnowledgeConflict):
                     raise
@@ -118,33 +115,17 @@ def register(app):
     def jobs(kb_id: str, background: BackgroundTasks):
         service.recover_expired()
         rows = service.jobs(kb_id)
-        for job in rows:
-            if job.status == "queued":
-                background.add_task(run, service.parse, kb_id, job.id)
+        for job_id in service.pending_ids(kb_id):
+            background.add_task(run, service.process, kb_id, job_id)
         return [job_out(job) for job in rows]
 
-    @app.get("/knowledge-bases/{kb_id}/imports/{job_id}/chunks", tags=["知识库"])
-    def preview(kb_id: str, job_id: str, offset: int = 0, limit: int = 10):
-        try:
-            return service.preview_chunks(kb_id, job_id, offset=offset, limit=limit)
-        except (KnowledgeConflict, KnowledgeNotFound):
-            raise
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-
-    @app.post("/knowledge-bases/{kb_id}/imports/{job_id}/confirm", status_code=202, tags=["知识库"])
-    def confirm(kb_id: str, job_id: str, body: ConfirmIn, background: BackgroundTasks):
-        job = service.get(kb_id, job_id)
-        if not job.preview or job.preview["digest"] != body.digest or job.status not in {"preview", "ready"}:
-            raise KnowledgeConflict("任务或预览已变化，请刷新后核对")
-        if job.status == "preview":
-            background.add_task(run, service.confirm, kb_id, job_id, body.digest)
-            background.add_task(app.state.store.notify_changed)  # 新发布的版本：检查工作区里的疑似重复与改稿
-        return job_out(job)
+    @app.get("/knowledge-bases/{kb_id}/imports/{job_id}/outline", tags=["知识库"])
+    def outline(kb_id: str, job_id: str):
+        return service.outline(kb_id, job_id)
 
     @app.post("/knowledge-bases/{kb_id}/imports/{job_id}/retry", tags=["知识库"])
     def retry(kb_id: str, job_id: str, body: RetryIn, background: BackgroundTasks):
         job = service.retry(kb_id, job_id, reparse=body.reparse)
-        if job.status == "queued":
-            background.add_task(run, service.parse, kb_id, job_id)
+        if job.status in {"queued", "preview"}:
+            background.add_task(run, service.process, kb_id, job_id)
         return job_out(job)

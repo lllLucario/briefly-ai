@@ -39,13 +39,12 @@ def test_mixed_files_preview_confirm_and_receipts(imports):
         svc.parse(kb.id, bad.id)
     assert svc.get(kb.id, bad.id).status == "failed"
     preview = svc.get(kb.id, job.id)
-    assert "住宿上限650元" in svc.preview_chunks(kb.id, job.id)[0]["content"]
-    assert svc.knowledge.scope([kb.id])["status"] == "empty_library"  # 确认前不纳入知识库
-    with pytest.raises(KnowledgeConflict):
-        svc.confirm(kb.id, job.id, "stale")
-    result = svc.confirm(kb.id, job.id, preview.preview["digest"])
+    assert "住宿上限650元" in svc.store.get(preview.material_id, workspace=False).content
+    assert svc.knowledge.scope([kb.id])["status"] == "empty_library"  # 内部解析阶段尚未发布
+    assert not hasattr(svc, "confirm")
+    result = svc.build_index(kb.id, job.id)
     assert result.status == "ready" and result.version_id and result.generation_id
-    assert svc.confirm(kb.id, job.id, preview.preview["digest"]).generation_id == result.generation_id
+    assert svc.build_index(kb.id, job.id).generation_id == result.generation_id
     assert svc.lifecycle.validate_scope([kb.id], Encoder())["status"] == "ready"
     assert svc.retry(kb.id, bad.id).status == "queued"
     with Session(engine) as s:
@@ -54,7 +53,7 @@ def test_mixed_files_preview_confirm_and_receipts(imports):
         svc.enqueue(kb.id, "different.md", b"text", request_key="request:0")
     other = svc.knowledge.create("其他库")
     with pytest.raises(KnowledgeNotFound):
-        svc.preview_chunks(other.id, job.id)
+        svc.outline(other.id, job.id)
 
 
 def test_index_retry_reuses_version_and_keeps_preview(imports):
@@ -66,12 +65,12 @@ def test_index_retry_reuses_version_and_keeps_preview(imports):
             raise RuntimeError("fixture failure")
     svc.encoder_factory = Failing
     with pytest.raises(RuntimeError):
-        svc.confirm(kb.id, job.id, preview.preview["digest"])
+        svc.build_index(kb.id, job.id)
     failed = svc.get(kb.id, job.id)
     assert failed.status == "failed" and failed.version_id
     assert svc.retry(kb.id, job.id).status == "preview"
     svc.encoder_factory = Encoder
-    assert svc.confirm(kb.id, job.id, preview.preview["digest"]).status == "ready"
+    assert svc.build_index(kb.id, job.id).status == "ready"
     with Session(engine) as s:
         assert len(list(s.scalars(select(KnowledgeVersion)))) == 1
 
@@ -99,8 +98,8 @@ def test_model_changed_after_preview_requires_new_preview(imports):
     class Changed(Encoder):
         identity = {**Encoder.identity, "revision": "changed"}
     svc.encoder_factory = Changed
-    with pytest.raises(KnowledgeConflict, match="重新预览"):
-        svc.confirm(kb.id, job.id, preview.preview["digest"])
+    with pytest.raises(KnowledgeConflict, match="重新解析"):
+        svc.build_index(kb.id, job.id)
     assert svc.get(kb.id, job.id).status == "failed"
 
 
@@ -113,16 +112,16 @@ def test_parse_cache_survives_restart_and_budget_change(imports):
     svc.parser, svc.parser_identity = parser, "fixture-parser/v1"
     first, _ = svc.enqueue(kb.id, "a.txt", b"actual raw source " * 80, request_key="one", tokens=256)
     a = svc.parse(kb.id, first.id)
-    svc.confirm(kb.id, first.id, a.preview["digest"])
+    svc.build_index(kb.id, first.id)
     reopened = ImportService(engine, svc.directory, svc.lifecycle.index, Encoder,
                              parser=parser, parser_identity="fixture-parser/v1")
     second, _ = reopened.enqueue(kb.id, "a.txt", b"actual raw source " * 80,
         request_key="two", tokens=512, expected_revision=1)
     b = reopened.parse(kb.id, second.id)
     assert len(calls) == 1 and reopened.processing(kb.id, second.id)["cache_hit"]
-    assert a.preview["content_hash"] == b.preview["content_hash"]
-    assert a.preview["config"] != b.preview["config"]
-    assert reopened.confirm(kb.id, second.id, b.preview["digest"]).status == "ready"
+    assert a.prepared["content_hash"] == b.prepared["content_hash"]
+    assert a.prepared["config"] != b.prepared["config"]
+    assert reopened.build_index(kb.id, second.id).status == "ready"
     assert svc.knowledge.resolve_reference(kb.id, svc.knowledge.chunk(kb.id,
         svc.knowledge.documents(kb.id)[0].id, svc.get(kb.id, first.id).version_id, 1)["reference"])["status"] == "historical"
 
@@ -167,7 +166,7 @@ def test_valid_parse_cached_even_when_slicing_fails_and_keeps_quality(imports):
     second, _ = svc.enqueue(kb.id, "a.md", b"source", request_key="two", tokens=512)
     preview = svc.parse(kb.id, second.id)
     assert len(calls) == 1 and svc.processing(kb.id, second.id)["cache_hit"]
-    assert svc.preview_chunks(kb.id, second.id)[0]["constraints"]["cell_attribution"] == "unverified"
+    assert svc.outline(kb.id, second.id)["items"][0]["constraints"]["cell_attribution"] == "unverified"
     assert preview.status == "preview"
 
 
@@ -181,7 +180,7 @@ def test_cache_inherits_new_quality_and_refuses_corrupt_material(imports):
         s.get(Material, first.material_id).parse_report = {"table_structure_status": "partial"}
     two, _ = svc.enqueue(kb.id, "a.txt", b"original", request_key="two")
     svc.parse(kb.id, two.id)
-    assert svc.preview_chunks(kb.id, two.id)[0]["constraints"]["cell_attribution"] == "unverified"
+    assert svc.outline(kb.id, two.id)["items"][0]["constraints"]["cell_attribution"] == "unverified"
     with Session(engine) as s, s.begin():
         s.get(Material, first.material_id).content = "tampered"
     three, _ = svc.enqueue(kb.id, "a.txt", b"original", request_key="three")
@@ -211,3 +210,18 @@ def test_native_parser_contract_changes_with_backend(monkeypatch):
     one = parser_identity()
     monkeypatch.setattr(config, "DOC_PARSER", "convert")
     assert parser_identity() != one
+
+
+def test_internal_prepared_fingerprint_cannot_be_bypassed_by_auto_index(imports):
+    engine, svc, kb = imports
+    job, _ = svc.enqueue(kb.id, "policy.txt", b"original source", request_key="corrupt")
+    svc.parse(kb.id, job.id)
+    with Session(engine) as session, session.begin():
+        row = session.get(KnowledgeImport, job.id)
+        row.prepared = {**row.prepared, "digest":"0" * 64}
+    with pytest.raises(KnowledgeConflict, match="解析交接数据"):
+        svc.process(kb.id, job.id)
+    assert svc.get(kb.id, job.id).status == "failed"
+    assert svc.knowledge.scope([kb.id])["status"] == "empty_library"
+    assert svc.retry(kb.id, job.id, reparse=True).status == "queued"
+    assert svc.process(kb.id, job.id).status == "ready"

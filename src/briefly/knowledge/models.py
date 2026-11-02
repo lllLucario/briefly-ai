@@ -121,7 +121,8 @@ class KnowledgeImport(Base):
     material_id: Mapped[int | None] = mapped_column(ForeignKey("materials.id", ondelete="SET NULL"))
     version_id: Mapped[str | None] = mapped_column(ForeignKey("knowledge_versions.id"))
     generation_id: Mapped[str | None] = mapped_column(ForeignKey("knowledge_index_generations.id"))
-    preview: Mapped[dict | None] = mapped_column(JSON)
+    # 复用旧列名及preview状态存储解析交接数据；不再表示用户审批。
+    prepared: Mapped[dict | None] = mapped_column("preview", JSON)
     lease_token: Mapped[str | None] = mapped_column(String(32))
     lease_until: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)

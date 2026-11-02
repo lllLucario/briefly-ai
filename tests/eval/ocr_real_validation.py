@@ -85,9 +85,10 @@ def main():
                 text, parsed = material.content, material.parse_report
                 info = parsed.get("ocr", {})
                 blocks = info.get("blocks", [])
-                chunks = svc.preview_chunks(kb.id, job.id, limit=50)
-                for offset in range(50, len(preview.preview["chunks"]), 50):
-                    chunks += svc.preview_chunks(kb.id, job.id, offset=offset, limit=50)
+                material = svc.store.get(preview.material_id, workspace=False)
+                headings = svc.outline(kb.id, job.id)["items"]
+                chunks = [{**chunk, "content": material.content[chunk["start"]:chunk["end"]], "constraints": headings[i]["constraints"]}
+                          for i, chunk in enumerate(preview.prepared["chunks"])]
                 event.update(
                     chars=len(text), ocr_chars=sum(b["end"] - b["start"] for b in blocks),
                     blocks=len(blocks), unconfirmed=sum(b["unconfirmed"] for b in blocks),
@@ -99,7 +100,7 @@ def main():
                     restricted_kinds=sorted({k for c in chunks for k in c["constraints"]}),
                     warnings=len(parsed.get("warnings", [])))
                 tick = perf_counter()
-                ready = svc.confirm(kb.id, job.id, preview.preview["digest"])
+                ready = svc.build_index(kb.id, job.id)
                 event.update(status=ready.status, confirm_index_seconds=round(perf_counter() - tick, 2))
                 confident = [b for b in blocks if not b["unconfirmed"]]
                 phrase = next((p for b in sorted(confident, key=lambda b: -b["chars"]) if (p := probe_phrase(text, b))), None)

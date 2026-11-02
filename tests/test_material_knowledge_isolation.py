@@ -205,8 +205,8 @@ def test_knowledge_import_is_knowledge_only_and_knowledge_qa_still_answers(tmp_p
         kb = imports.knowledge.create("制度库")
         job, _ = imports.enqueue(kb.id, "travel.md", KB_TEXT.encode(), request_key="one")
         preview = imports.parse(kb.id, job.id)
-        assert "650" in imports.preview_chunks(kb.id, job.id)[0]["content"]  # 入库预览不受隔离影响
-        assert imports.confirm(kb.id, job.id, preview.preview["digest"]).status == "ready"
+        assert "650" in imports.store.get(preview.material_id, workspace=False).content  # 入库预览不受隔离影响
+        assert imports.build_index(kb.id, job.id).status == "ready"
         store = imports.store
         material = store.get(preview.material_id, workspace=False)
         assert material.source == KNOWLEDGE

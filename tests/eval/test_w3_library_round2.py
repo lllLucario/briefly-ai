@@ -62,7 +62,7 @@ def test_run_and_rescore_round2_with_original_materials(tmp_path, monkeypatch, m
         kb = imports.knowledge.create(qa.KB_NAME)
         job, _ = imports.enqueue(kb.id, "原创制度.txt", "# 原创制度\n阅读后须提交学习记录。".encode(), request_key="N001", source_key="N001")
         preview = imports.parse(kb.id, job.id)
-        ready = imports.confirm(kb.id, job.id, preview.preview["digest"])
+        ready = imports.build_index(kb.id, job.id)
         material, _ = imports.store.add_text("个人阅读计划", "# 个人阅读计划\n个人阅读计划的讨论地点是青石会议室。", markdown=True)
         files = [dict(id="W1", material_id=material.id, title=material.title, content=material.content)]
         qa.write_json(qa.WORK / "workspace.json", dict(files=files))

@@ -146,22 +146,22 @@ def main():
                 material = imports.store.get(preview.material_id, workspace=False)
                 event.update(material_id=material.id, characters=material.char_count,
                              non_whitespace_characters=sum(not c.isspace() for c in material.content),
-                             parse_report=material.parse_report, chunks=len(preview.preview["chunks"]),
-                             content_hash=material.content_hash, markdown=preview.preview["markdown"])
+                             parse_report=material.parse_report, chunks=len(preview.prepared["chunks"]),
+                             content_hash=material.content_hash, markdown=preview.prepared["markdown"])
                 # 验证全部预览块的来源偏移/哈希；只输出计数，不展开全文。
-                chunks = preview.preview["chunks"]
+                chunks = preview.prepared["chunks"]
                 assert all(hashlib.sha256(material.content[c["start"]:c["end"]].encode()).hexdigest()
                            == c["sha256"] for c in chunks)
                 event["all_preview_hashes_valid"] = True
                 tick = perf_counter()
-                ready = imports.confirm(kb.id, job.id, preview.preview["digest"])
+                ready = imports.build_index(kb.id, job.id)
                 event["index_seconds"] = round(perf_counter() - tick, 3)
                 event.update(status=ready.status, version_id=ready.version_id)
                 document = next(d for d in imports.knowledge.documents(kb.id) if d.source_key == job.source_key)
                 event["document_id"] = document.id
                 first = imports.knowledge.chunk(kb.id, document.id, ready.version_id, chunks[0]["index"])
                 event["constraints"] = first["constraints"]
-                event["confirm_replay_status"] = imports.confirm(kb.id, job.id, preview.preview["digest"]).status
+                event["confirm_replay_status"] = imports.build_index(kb.id, job.id).status
             except Exception as exc:
                 event.update(status=imports.get(kb.id, job.id).status if job else "rejected",
                              error_type=type(exc).__name__, error=str(exc)[:1000])

@@ -1,6 +1,6 @@
 """知识库入库、范围召回、原文引用与问答；不提供伪造索引就绪的入口。"""
 from typing import Annotated
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -174,18 +174,10 @@ def register(app: FastAPI,model_factory):
     def chunk(kb_id: str, doc_id: str, version_id: str, index: int):
         return service.chunk(kb_id, doc_id, version_id, index)
 
-    @app.get("/knowledge-bases/{kb_id}/documents/{doc_id}/versions/{version_id}/chunks", tags=["知识库"],
-             summary="分页查看指定版本原文片段，保留来源核验与质量限制")
-    def chunks(kb_id: str, doc_id: str, version_id: str,
-               offset: int = Query(default=0, ge=0), limit: int = Query(default=10, ge=1, le=50)):
-        _, versions, _ = service.versions(kb_id, doc_id)
-        version = next((version for version in versions if version.id == version_id), None)
-        if version is None:
-            raise KnowledgeNotFound("版本不属于当前文档")
-        # 复用现有引用读取，逐片保留原件指纹核验、历史版本标记和严格质量限制。
-        rows = [service.chunk(kb_id, doc_id, version_id, item["index"])
-                for item in version.chunk_manifest[offset:offset + limit]]
-        return dict(total=len(version.chunk_manifest), offset=offset, items=rows)
+    @app.get("/knowledge-bases/{kb_id}/documents/{doc_id}/versions/{version_id}/outline", tags=["知识库"],
+             summary="查看指定版本文件骨架，不返回片段正文")
+    def outline(kb_id: str, doc_id: str, version_id: str):
+        return service.outline(kb_id, doc_id, version_id)
 
     @app.get("/knowledge-bases/{kb_id}/references/{reference}", tags=["知识库"])
     def reference(kb_id: str, reference: str):

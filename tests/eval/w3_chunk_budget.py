@@ -103,11 +103,11 @@ def main():
                         request_key=f"{name}:{number}", source_key=f"{name}/{path.name}", tokens=tokens)
                     item["job_id"] = job.id
                     preview = imports.parse(kb.id, job.id)
-                    item["chunks"] = len(preview.preview["chunks"])
-                    ready = imports.confirm(kb.id, job.id, preview.preview["digest"])
+                    item["chunks"] = len(preview.prepared["chunks"])
+                    ready = imports.build_index(kb.id, job.id)
                     document = next(d for d in imports.knowledge.documents(kb.id) if d.source_key == job.source_key)
                     item.update(status=ready.status, document_id=document.id, version_id=ready.version_id,
-                        content_hash=preview.preview["content_hash"], chunk_config=preview.preview["config"])
+                        content_hash=preview.prepared["content_hash"], chunk_config=preview.prepared["config"])
                     # 每个实际编码输入均在预算内，重叠只影响正文范围，不篡改原文。
                     from sqlalchemy import select
                     from briefly.knowledge.models import KnowledgeChunk

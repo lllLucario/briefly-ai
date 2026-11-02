@@ -370,11 +370,11 @@ def test_image_and_scan_flow_through_preview_confirm_and_search(engine, tmp_path
         for name, data in (("预订规定.png", picture((500, 200))), ("旁注.png", picture((500, 260)))):
             job, _ = service.enqueue(kb.id, name, data, request_key=name)
             assert service.parse(kb.id, job.id).status == "preview"
-            chunks = service.preview_chunks(kb.id, job.id)
+            chunks = service.outline(kb.id, job.id)["items"]
             expected = {"ocr_text": "unverified"} if name == "旁注.png" else {}
             assert all(chunk["constraints"] == expected for chunk in chunks)
-            preview = service.get(kb.id, job.id).preview
-            assert service.confirm(kb.id, job.id, preview["digest"]).status == "ready"
+            preview = service.get(kb.id, job.id).prepared
+            assert service.build_index(kb.id, job.id).status == "ready"
         hits = RetrievalService(service).search(kb.id, "会议室预订")["evidence"]
         assert any("会议室预订须提前一天" in hit["content"] and ocr.OPEN in hit["content"] for hit in hits)
         restricted = [hit for hit in RetrievalService(service).search(kb.id, "旁注")["evidence"] if "潦草" in hit["content"]]

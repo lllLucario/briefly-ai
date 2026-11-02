@@ -128,10 +128,10 @@ def build(root: Path) -> None:
                 path = pdf
             job, _ = imports.enqueue(kb.id, path.name, path.read_bytes(), request_key=doc["id"], source_key=doc["id"])
             preview = imports.parse(kb.id, job.id)
-            ready = imports.confirm(kb.id, job.id, preview.preview["digest"])
+            ready = imports.build_index(kb.id, job.id)
             manifest[doc["id"]] = dict(file=path.name, format=doc["format"], status=ready.status,
-                                       chunks=len(preview.preview["chunks"]))
-            print(doc["id"], path.name, ready.status, len(preview.preview["chunks"]), flush=True)
+                                       chunks=len(preview.prepared["chunks"]))
+            print(doc["id"], path.name, ready.status, len(preview.prepared["chunks"]), flush=True)
         (root / "manifest.json").write_text(json.dumps(dict(kb_id=kb.id, documents=manifest), ensure_ascii=False, indent=1),
                                             encoding="utf-8")
     finally:

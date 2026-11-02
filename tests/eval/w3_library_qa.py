@@ -253,9 +253,9 @@ def build(root: Path, resume=False) -> None:
             try:
                 job, _ = imports.enqueue(kb.id, path.name, data, request_key=entry["id"], source_key=entry["id"])
                 preview = imports.parse(kb.id, job.id)
-                ready = imports.confirm(kb.id, job.id, preview.preview["digest"])
+                ready = imports.build_index(kb.id, job.id)
                 report = imports.store.get(ready.material_id, workspace=False).parse_report
-                record.update(status=ready.status, chunks=len(preview.preview["chunks"]),
+                record.update(status=ready.status, chunks=len(preview.prepared["chunks"]),
                               table_structure=report.get("table_structure_status"),
                               partial_ranges=len(report.get("table_partial_ranges") or []),
                               converted=report.get("conversion"))

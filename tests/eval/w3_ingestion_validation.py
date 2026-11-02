@@ -57,8 +57,8 @@ def main():
             try:
                 job, _ = svc.enqueue(kb.id, name, data, request_key=f"validation:{number}")
                 preview = svc.parse(kb.id, job.id)
-                event["chunks"] = len(preview.preview["chunks"])
-                ready = svc.confirm(kb.id, job.id, preview.preview["digest"])
+                event["chunks"] = len(preview.prepared["chunks"])
+                ready = svc.build_index(kb.id, job.id)
                 version = svc.knowledge.versions(kb.id, next(d.id for d in svc.knowledge.documents(kb.id) if d.source_key == job.source_key))[1][-1]
                 item = svc.knowledge.chunk(kb.id, version.document_id, version.id, 1)
                 event.update(status=ready.status, content_hash=version.content_hash, constraints=item["constraints"])
