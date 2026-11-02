@@ -11,12 +11,15 @@ pytestmark = pytest.mark.browser
 
 def open_knowledge(page):
     page.locator('.tabs [data-tab="knowledge"]').click()
-    expect(page.locator("#kb-name")).to_be_visible()
+    expect(page.locator("#kb-empty-create:visible, #kb-open-create:visible")).to_be_visible()
 
 
 def create(page, name):
-    page.locator("#kb-name").fill(name)
-    page.locator("#kb-create").click()
+    # 这些用例需要空库作为范围/错误测试的前置数据；创建弹窗必须带文件，另有完整交互用例。
+    response = page.request.post(page.url.rstrip("/") + "/knowledge-bases", data={"name": name})
+    assert response.ok
+    page.evaluate("() => window.loadKnowledge()")
+    page.locator("#kb-select").select_option(response.json()["id"])
     expect(page.locator("#kb-select option:checked")).to_have_text(name)
     return page.locator("#kb-select").input_value()
 

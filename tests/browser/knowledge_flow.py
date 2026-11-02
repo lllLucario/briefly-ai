@@ -14,11 +14,11 @@ def run_knowledge_journey(page, *, screenshot: Path):
     page.locator('.tabs [data-tab="knowledge"]').click()
     cases = []
     for index, (name, filename, content, question, required) in enumerate(SCENARIOS, 1):
+        page.locator("#kb-empty-create" if index == 1 and page.locator("#kb-empty").is_visible() else "#kb-open-create").click()
         page.locator("#kb-name").fill(name)
+        page.locator("#kb-create-files").set_input_files(dict(name=filename, mimeType="text/markdown", buffer=content.encode()))
         page.locator("#kb-create").click()
         expect(page.locator("#kb-select option:checked")).to_have_text(name)
-        page.locator("#kb-files").set_input_files(dict(name=filename, mimeType="text/markdown", buffer=content.encode()))
-        page.locator("#kb-upload").click()
         expect(page.locator("#kb-jobs")).to_contain_text("等待核对切片", timeout=30000)
         page.locator("[data-kb-preview]").click()
         expect(page.locator("#kb-preview-body")).to_contain_text(content.split("\n", 1)[1])
