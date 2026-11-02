@@ -1,5 +1,6 @@
 """知识导入API；有界逐文件读取、异步处理、显式预览确认。"""
 from pathlib import Path
+import json
 from threading import Lock
 from typing import Annotated
 
@@ -23,6 +24,7 @@ class RetryIn(BaseModel):
 
 def job_out(job):
     return dict(id=job.id, kb_id=job.kb_id, filename=job.filename, source_key=job.source_key,
+        relative_path=job.source_key.removeprefix("upload:") if job.source_key.startswith("upload:") else None,
         status=job.status, error_code=job.error_code, error=job.error,
         material_id=job.material_id, version_id=job.version_id, generation_id=job.generation_id,
         tokens=job.tokens, expected_revision=job.expected_revision,
@@ -57,6 +59,7 @@ def register(app):
                files: Annotated[list[UploadFile], File()],
                request_key: Annotated[str, Form(min_length=1, max_length=160)],
                tokens: Annotated[int, Form(ge=32, le=1024)] = 512,
+               relative_paths: Annotated[str | None, Form(max_length=10000)] = None,
                expected_revision: Annotated[int, Form(ge=0)] = 0,
                source_key: Annotated[str | None, Form(max_length=200)] = None,
                business_version: Annotated[str | None, Form(max_length=100)] = None):
@@ -70,6 +73,23 @@ def register(app):
             raise HTTPException(400, "每批1～16份文件，显式更新来源时每次一份")
         if sum(file.size or 0 for file in files) > 50 * 1024 * 1024:
             raise HTTPException(413, "批次超过50MB，请分批提交")
+        paths = [None] * len(files)
+        if relative_paths is not None:
+            try:
+                paths = json.loads(relative_paths)
+                if not isinstance(paths, list) or len(paths) != len(files):
+                    raise ValueError
+                for file, path in zip(files, paths):
+                    if not isinstance(path, str):
+                        raise ValueError
+                    if path and (len(path) > 193 or "\\" in path or ":" in path or "\x00" in path
+                                 or any(part in {"", ".", ".."} for part in path.split("/"))
+                                 or path.split("/")[-1] != Path(file.filename or "").name):
+                        raise ValueError
+            except (ValueError, TypeError):
+                raise HTTPException(400, "文件相对路径无效：须与文件名对应，不含绝对路径或上级目录，长度不超过193字符") from None
+            if source_key and any(paths):
+                raise HTTPException(400, "更新已有来源时不能另行指定目录")
         result, total = [], 0
         for number, file in enumerate(files):
             data = bytearray()
@@ -83,7 +103,7 @@ def register(app):
                     break
             try:
                 job, _ = service.enqueue(kb_id, file.filename or "未命名", bytes(data),
-                    request_key=f"{request_key}:{number}", tokens=tokens, source_key=source_key,
+                    request_key=f"{request_key}:{number}", tokens=tokens, source_key=source_key or ("upload:" + paths[number] if paths[number] else None),
                     expected_revision=expected_revision, business_version=business_version)
                 result.append(job_out(job))
                 if job.status == "queued":
