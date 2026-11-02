@@ -132,8 +132,9 @@
     if (!batch || batch.state !== "error") return;
     batch.state = "queued"; runUploads(current);
   });
+  // 浏览器的离开提示无法自定义，只在资料确实在传输时拦截；失败待重试的批次关掉网页后重新上传即可。
   window.addEventListener("beforeunload", event => {
-    if (creation && !creation.error || [...uploadQueues.values()].some(batches => batches.some(batch => ["queued", "uploading", "error"].includes(batch.state)))) { event.preventDefault(); event.returnValue = ""; }
+    if (creation && !creation.error || [...uploadQueues.values()].some(batches => batches.some(batch => ["queued", "uploading"].includes(batch.state)))) { event.preventDefault(); event.returnValue = ""; }
   });
   // 外发授权是本库最重要的设置：标题旁常驻状态，点开设置弹窗即可切换。
   function syncEgress() {

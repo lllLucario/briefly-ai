@@ -136,3 +136,24 @@ def test_create_dialog_fits_and_does_not_change_other_pages(web_page, width):
     for tab in ["todos", "chat", "materials", "weekly", "knowledge"]:
         p.locator(f'.tabs [data-tab="{tab}"]').click()
         expect(p.locator(f"#tab-{tab}")).to_be_visible()
+
+
+def leave_blocked(page):
+    return page.evaluate("() => { const e = new Event('beforeunload', {cancelable:true}); window.dispatchEvent(e); return e.defaultPrevented; }")
+
+
+def test_leave_prompt_only_while_files_are_uploading(web_page):
+    """浏览器离开提示无法自定义：只在传输中拦截，上传失败待重试时不再拦截。"""
+    p = web_page
+    start(p)
+    p.locator("#kb-name").fill("离开提示")
+    p.locator("#kb-create-files").set_input_files(file())
+    held = []
+    p.route("**/knowledge-bases/*/imports", lambda route: held.append(route) if route.request.method == "POST" else route.continue_())
+    with p.expect_request(lambda request: request.method == "POST" and request.url.endswith("/imports")):
+        p.locator("#kb-create").click()
+    expect(p.locator("#kb-transfers")).to_contain_text("正在上传")
+    assert leave_blocked(p)
+    held[0].fulfill(status=503, content_type="application/json", body='{"detail":"上传暂不可用"}')
+    expect(p.locator("#kb-transfers")).to_contain_text("上传暂不可用")
+    assert not leave_blocked(p)
