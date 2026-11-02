@@ -30,18 +30,13 @@ def import_file(page, content="# 制度\n正式员工出差须在预订前审批
         page.locator("#kb-open-upload").click()
     page.locator("#kb-files").set_input_files({"name":"制度.md", "mimeType":"text/markdown", "buffer":content.encode()})
     page.locator("#kb-upload").click()
-    expect(page.locator("#kb-jobs")).to_contain_text("等待核对切片", timeout=20000)
-    page.locator("[data-kb-preview]").first.click()
-    expect(page.locator("#kb-preview")).to_be_visible()
-    expect(page.locator("#kb-preview-body")).to_contain_text("预订前审批")
-    expect(page.locator("#kb-confirm")).to_be_disabled()
-    page.locator("#kb-preview-checked").check()
-    page.locator("#kb-confirm").click()
-    expect(page.locator("#kb-preview")).not_to_be_visible()
-    expect(page.locator("[data-kb-job]").first).to_contain_text("已完成", timeout=20000)
+    expect(page.locator("[data-kb-job]").first).to_contain_text("已完成", timeout=30000)
+    expect(page.locator("#kb-preview, #kb-confirm")).to_have_count(0)
+    page.locator("[data-kb-document]").first.click()
+    expect(page.locator(".kb-outline-row").first).to_be_visible()
 
 
-def test_import_confirm_external_choice_and_original_reference(web_page):
+def test_auto_import_external_choice_and_original_reference(web_page):
     page = web_page
     open_knowledge(page)
     expect(page.locator("#kb-tokens")).to_have_value("512")

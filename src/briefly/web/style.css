@@ -1175,9 +1175,8 @@ button.note-toggle { width: 100%; min-height: 62px; display: flex; align-items: 
 .knowledge-consent{display:block;margin:16px 0 8px;line-height:1.6}
 #kb-result{margin-top:20px;overflow-wrap:anywhere}
 #kb-result button{margin:4px}
-#kb-preview,#kb-source{width:min(860px,92vw);max-height:85vh;overflow:auto}
-#kb-preview article{padding:12px 0;border-bottom:1px solid var(--line)}
-#kb-preview pre,#kb-source pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;line-height:1.7}
+#kb-source{width:min(860px,92vw);max-height:85vh;overflow:auto}
+#kb-source pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;line-height:1.7}
 @media(max-width:420px){.tabs{gap:2px}.tabs button{padding:6px 4px;gap:3px}.tabs .icon{display:none}}
 
 /* 知识库创建：空状态引导、资料选择与页面中的真实上传进度。 */
@@ -1287,13 +1286,7 @@ button.note-toggle { width: 100%; min-height: 62px; display: flex; align-items: 
 .kb-file-stats label { display: flex; gap: 8px; align-items: center; margin-left: auto; }
 .kb-file-stats select { font-size: 12px; max-width: 100%; }
 .kb-file-actions { margin-bottom: 16px; }
-.kb-chunk-card { border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; margin: 14px 0; }
-.kb-chunk-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
-.kb-chunk-heading > span { padding: 2px 8px; background: var(--accent-soft); color: var(--accent); border-radius: 5px; }
-.kb-chunk-card h4 { font-size: 14px; margin: 12px 0; overflow-wrap: anywhere; }
-.kb-chunk-card pre { font: inherit; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.9; margin-bottom: 0; }
 .kb-quality-note { border-left: 2px solid var(--warn-line); background: var(--warn-bg); padding: 8px 10px; font-size: 12px; }
-.kb-inspect-pager { display: flex; align-items: center; justify-content: center; gap: 12px; padding-top: 10px; font-size: 12px; color: var(--muted); }
 .kb-settings { margin: 18px -20px -20px; padding: 16px 20px; border-top: 1px solid var(--line); border-radius: 0 0 var(--radius) var(--radius); background: var(--bg); font-size: 13px; }
 .kb-settings > summary { color: var(--muted); }
 .kb-settings > .knowledge-section { border: 0; padding-bottom: 0; }
@@ -1315,10 +1308,13 @@ button.note-toggle { width: 100%; min-height: 62px; display: flex; align-items: 
   .kb-inspector-head { flex-wrap: wrap; }
   .kb-file-stats label { margin-left: 0; min-width: 0; width: 100%; }
   .kb-file-stats select { min-width: 0; }
-  .kb-chunk-card { padding: 14px; }
-  .kb-chunk-heading { flex-wrap: wrap; }
   .kb-content-heading { align-items: flex-start; }
   .kb-content-heading > .row { width: 100%; }
-  .kb-inspect-pager { gap: 6px; font-size: 11px; }
-  .kb-inspect-pager button { padding: 5px 8px; }
 }
+
+/* 文件骨架：只显示有序章节标题，重复切片归并计数，不显示正文。 */
+.kb-outline ul { list-style: none; margin: 0; padding: 0; }
+.kb-outline li > ul { margin-left: 10px; padding-left: 18px; border-left: 1px solid var(--line); }
+.kb-outline-row { display: flex; align-items: baseline; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.kb-outline-row > span { flex: 1; min-width: 0; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.kb-outline-row small { flex: none; color: var(--muted); font-size: 11px; }

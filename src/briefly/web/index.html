@@ -493,9 +493,9 @@
       <div id="kb-empty" class="kb-empty hidden">
         <div class="workspace-empty"><span class="empty-icon"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg></span>
           <p class="eyebrow">从一份可靠的资料开始</p><h2>让企业资料，<br>成为随时可查的知识。</h2>
-          <p>把制度、项目资料或产品手册放在一起。<br>核对原文后，助理就能带着依据回答问题。</p>
+          <p>把制度、项目资料或产品手册放在一起。<br>处理完成后，助理即可带着依据回答问题。</p>
           <button id="kb-empty-create" class="primary"><svg class="icon action-icon" aria-hidden="true"><use href="#i-plus"/></svg>创建第一个知识库</button>
-          <div class="empty-flow"><span>选择资料</span><i>→</i><span>核对原文片段</span><i>→</i><span>确认入库</span></div>
+          <div class="empty-flow"><span>选择资料</span><i>→</i><span>自动解析</span><i>→</i><span>建立索引</span></div>
           <small class="muted">支持选择多个文件，也可以一次选择整个文件夹。</small>
         </div>
       </div>
@@ -508,7 +508,7 @@
           <aside class="kb-file-panel" aria-label="知识库文件"><div class="kb-tree-heading"><h3>文件与文件夹</h3><label class="kb-tree-search"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg><input id="kb-file-search" type="search" placeholder="查找文件" aria-label="查找知识库文件"></label></div>
             <div id="kb-documents"></div><details id="kb-import-history" open><summary>导入记录 <span id="kb-import-count"></span></summary><div id="kb-jobs" aria-live="polite"></div></details>
           </aside>
-          <section id="kb-inspector" class="kb-inspector" aria-label="文件片段预览" aria-live="polite"><div class="kb-inspector-empty"><span class="empty-icon"><svg class="icon" aria-hidden="true"><use href="#i-report"/></svg></span><h3>从左侧选择一份文件</h3><p class="muted">在这里查看标题、原文片段和入库状态。</p></div></section>
+          <section id="kb-inspector" class="kb-inspector" aria-label="文件结构" aria-live="polite"><div class="kb-inspector-empty"><span class="empty-icon"><svg class="icon" aria-hidden="true"><use href="#i-report"/></svg></span><h3>从左侧选择一份文件</h3><p class="muted">在这里了解章节、标题与入库状态。</p></div></section>
         </div>
         <details id="kb-library-settings" class="kb-settings"><summary>本库设置 · 授权、检索范围与单次问答</summary><section class="knowledge-section"><h3>单次问答</h3>
           <p class="muted small">日常提问与连续追问可使用上方「向助理提问」。此处保留单次核验及其范围设置。</p>
@@ -525,7 +525,7 @@
   </main>
   <dialog id="kb-upload-dialog" aria-labelledby="kb-upload-title"><div class="kb-create-heading"><h3 id="kb-upload-title">添加资料</h3><button id="kb-upload-close" class="ghost" aria-label="关闭添加资料">×</button></div>
         <section class="knowledge-section">
-          <p class="muted small">每批最多16份、合计50MB。解析后先核对切片，再确认建立索引。结构未确认的资料会保留复核提醒。</p>
+          <p class="muted small">每批最多16份、合计50MB。上传后自动解析、切片并建立索引。结构未确认的资料会保留复核提醒。</p>
           <p id="kb-update-target" class="muted small"></p>
           <div class="kb-file-zone"><svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg><strong>添加文件或整个文件夹</strong><p>文件夹会包含其中支持的文件及子文件夹。</p>
             <div class="row gap wrap"><button id="kb-pick-files" type="button" class="ghost">选择文件</button><button id="kb-pick-folder" type="button" class="ghost">选择文件夹</button></div>
@@ -536,7 +536,7 @@
           <div id="kb-upload-selection" aria-live="polite"></div>
           <div class="row gap wrap kb-upload-footer">
             <label class="stack">切片目标<input id="kb-tokens" type="number" min="32" max="512" value="512" aria-label="切片目标token数"></label>
-            <button id="kb-upload" class="primary">上传并预览</button><button id="kb-cancel-update" class="ghost hidden">取消更新</button></div>
+            <button id="kb-upload" class="primary">上传并入库</button><button id="kb-cancel-update" class="ghost hidden">取消更新</button></div>
           <p id="kb-upload-error" class="danger small" role="alert"></p>
         </section>
   </dialog>
@@ -550,16 +550,11 @@
         <small class="muted">支持 Word、PDF、Excel、PPT、文本和图片。多个文件自动分批上传。</small>
       </div>
       <div id="kb-create-selection" aria-live="polite"></div>
-      <div class="kb-slice-setting"><label for="kb-create-tokens">切片目标</label><details class="kb-help"><summary aria-label="了解切片目标">?</summary><p>系统会把长文档拆成便于检索的小片段。这里设置每段的目标长度，单位是模型使用的文本计量单位（token），不等于字数。默认 512，通常无需修改；标题和上下文也会计入长度，表格会尽量保留完整行。上传后仍需核对原文片段，确认后才建立可检索的索引。</p></details>
+      <div class="kb-slice-setting"><label for="kb-create-tokens">切片目标</label><details class="kb-help"><summary aria-label="了解切片目标">?</summary><p>系统会把长文档拆成便于检索的小片段。这里设置每段的目标长度，单位是模型使用的文本计量单位（token），不等于字数。默认 512，通常无需修改；标题和上下文也会计入长度，表格会尽量保留完整行。上传后会自动解析、切片并建立索引，无需审批；解析质量限制仍会保留。</p></details>
         <input id="kb-create-tokens" type="number" min="32" max="512" value="512" required><span class="muted small">推荐保留默认值 512</span></div>
       <p id="kb-create-error" class="danger small" role="alert"></p>
       <div class="row gap end"><button id="kb-create-cancel" type="button" class="ghost">取消</button><button id="kb-create" type="submit" class="primary">创建并上传</button></div>
     </form>
-  </dialog>
-  <dialog id="kb-preview" aria-labelledby="kb-preview-title"><h3 id="kb-preview-title">核对原文切片</h3><p id="kb-preview-info" class="muted small"></p><p id="kb-preview-state" class="notice hidden" role="status"></p><div id="kb-preview-body"></div>
-    <div class="row gap"><button id="kb-preview-prev" class="ghost">上一页</button><button id="kb-preview-next" class="ghost">下一页</button></div>
-    <p id="kb-preview-error" role="status"></p><label id="kb-preview-review"><input id="kb-preview-checked" type="checkbox"> 已核对预览和切片配置，确认建立索引</label>
-    <div class="row gap end"><button id="kb-preview-close" class="ghost">关闭</button><button id="kb-confirm" class="primary" disabled>确认入库</button></div>
   </dialog>
   <dialog id="kb-source"><h3 id="kb-source-title"></h3><p id="kb-source-info" class="muted small"></p><pre id="kb-source-text"></pre><div class="row end"><button id="kb-source-close" class="primary">关闭</button></div></dialog>
 

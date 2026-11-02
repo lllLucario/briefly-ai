@@ -2,8 +2,8 @@
 "use strict";
 (() => {
   const drafts = new Map();
-  let current = "", revision = 0, timer = null, preview = null;
-  const names = {queued:"等待解析", parsing:"解析中", preview:"等待核对切片", indexing:"建立索引中", ready:"已完成", failed:"处理失败", rejected:"未接收"};
+  let current = "", revision = 0, timer = null;
+  const names = {queued:"等待解析", parsing:"解析中", preview:"准备建立索引", indexing:"建立索引中", ready:"已完成", failed:"处理失败", rejected:"未接收"};
   const statuses = {answered:"草稿回答", partial_answer:"部分可答", insufficient_evidence:"依据不足", needs_review:"需要复核", external_authorization_required:"本库未允许外发", located:"文档定位", blocked:"已拦截", incomplete_scope:"部分资料未就绪", not_ready:"资料未就绪", empty_scope:"范围为空", empty_library:"库内暂无可用资料", workflow_required:"请使用完整材料流程", clarification_required:"请补充问题", no_candidates:"没有召回依据", low_relevance:"没有直接相关的内容"};
   function draft(id = current) {
     if (!drafts.has(id)) drafts.set(id, {question:"", privateText:"", all:true, selected:new Set(), files:[], seq:0, result:null, message:"", uploading:false, asking:false, target:null});
@@ -71,9 +71,9 @@
   });
   // 网络传输进度来自浏览器，不用解析耗时推算百分比。分批仍沿用原接口限制及幂等标识。
   async function uploadBatch(kbId, batch, changed) {
-    if (batch.files.some(file => file.webkitRelativePath)) {
-      folderSupport ||= api("/openapi.json").then(schema => Boolean(schema.paths["/knowledge-bases/{kb_id}/documents/{doc_id}/versions/{version_id}/chunks"]));
-      if (!await folderSupport) throw new Error("当前服务尚未更新文件夹目录功能，文件尚未发送。请更新服务后重试此批。");
+    {
+      folderSupport ||= api("/openapi.json").then(schema => Boolean(schema.paths["/knowledge-bases/{kb_id}/documents/{doc_id}/versions/{version_id}/outline"]));
+      if (!await folderSupport) throw new Error("当前服务尚未启用自动入库，文件尚未发送。请更新服务后重试此批。");
     }
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest(), form = new FormData();
@@ -96,7 +96,7 @@
     if (id !== current) return;
     const batches = uploadQueues.get(id) || [];
     const pending = batches.some(batch => ["queued", "uploading"].includes(batch.state));
-    $("#kb-transfers").innerHTML = (pending ? '<p class="muted small">正在上传资料，请保持此网页打开；可以切换页面继续其他工作。解析完成后仍需逐份核对，再确认入库。</p>' : '') + batches.filter(batch => batch.state !== "received" || batch.rejected?.length).map(batch => `<article class="kb-transfer" data-kb-transfer="${batch.key}"><strong>${escapeHtml(batch.title)}</strong><span>${batch.state === "queued" ? "等待上传" : batch.state === "uploading" ? batch.percent === 100 ? "文件已传输，等待服务接收结果" : `正在上传${batch.percent == null ? "" : ` · ${batch.percent}%`}` : batch.state === "error" ? "上传未完成" : "部分文件未接收"}</span>
+    $("#kb-transfers").innerHTML = (pending ? '<p class="muted small">正在上传资料，请保持此网页打开；可以切换页面继续其他工作。接收完成后会自动解析并建立索引，无需审批。</p>' : '') + batches.filter(batch => batch.state !== "received" || batch.rejected?.length).map(batch => `<article class="kb-transfer" data-kb-transfer="${batch.key}"><strong>${escapeHtml(batch.title)}</strong><span>${batch.state === "queued" ? "等待上传" : batch.state === "uploading" ? batch.percent === 100 ? "文件已传输，等待服务接收结果" : `正在上传${batch.percent == null ? "" : ` · ${batch.percent}%`}` : batch.state === "error" ? "上传未完成" : "部分文件未接收"}</span>
       ${batch.state === "uploading" ? `<progress max="100" ${batch.percent == null ? "" : `value="${batch.percent}"`} aria-label="本批文件传输进度"></progress>` : ""}
       ${batch.error ? `<p class="danger small">${escapeHtml(batch.error)}</p><button class="ghost small" data-kb-transfer-retry="${batch.key}">重试此批</button>` : ""}
       ${(batch.rejected || []).map(file => `<p class="danger small">${escapeHtml(file.filename)}：${escapeHtml(file.error)}</p>`).join("")}</article>`).join("");
@@ -160,11 +160,11 @@
         ${!d.all ? `<input type="checkbox" aria-label="单次问答纳入 ${escapeHtml(doc.title)}" data-kb-scope="${escapeHtml(doc.id)}" ${d.selected.has(doc.id) ? "checked" : ""}>` : `<input class="hidden" type="checkbox" data-kb-scope="${escapeHtml(doc.id)}" checked disabled>`}
         <button type="button" class="kb-tree-file" data-kb-document="${escapeHtml(doc.id)}" aria-pressed="${d.fileKey === `doc:${doc.id}`}" title="${escapeHtml(doc.relative_path || doc.title)}">${fileIcon(doc.title.split(".").at(-1))}<span><strong>${escapeHtml(name)}</strong><small>修订 ${doc.revision} · ${doc.index_status === "ready" ? "已有有效索引" : "尚无有效索引"}</small></span>${doc.workspace_update ? '<span class="kb-update-dot" title="工作区有更新">•</span>' : ""}</button></div>`).join("");
     }
-    const html = branch(root) || `<p class="muted small kb-tree-empty">${query ? "没有匹配的文件" : "当前库暂无文档，请先上传并核对切片。"}</p>`;
+    const html = branch(root) || `<p class="muted small kb-tree-empty">${query ? "没有匹配的文件" : "当前库暂无文档，请添加资料，系统将自动处理入库。"}</p>`;
     const signature = JSON.stringify([current,d.documents,query,d.all,[...d.selected],d.fileKey]);
     if (fileTreeSignature !== signature) { $("#kb-documents").innerHTML = html; fileTreeSignature = signature; }
     const jobs = d.jobs || [], count = (d.documents || []).length;
-    $("#kb-library-summary").textContent = `${count} 份文档 · ${jobs.filter(job => ["queued","parsing","indexing"].includes(job.status)).length} 份处理中 · ${jobs.filter(job => job.status === "preview").length} 份待核对`;
+    $("#kb-library-summary").textContent = `${count} 份文档 · ${jobs.filter(job => ["queued","parsing","indexing"].includes(job.status)).length} 份处理中 · ${jobs.filter(job => job.status === "failed").length} 份处理失败`;
   }
   function inspectSelection() {
     const d = draft();
@@ -177,71 +177,76 @@
     if (!exists) d.fileKey = d.documents?.length ? `doc:${d.documents[0].id}` : d.jobs?.length ? `job:${d.jobs[0].id}` : null;
     renderFileTree();
     if (d.fileKey) inspectFile(d.fileKey);
-    else { inspectionSequence++; inspectionSignature = ""; $("#kb-inspector").innerHTML = '<div class="kb-inspector-empty"><span class="empty-icon">' + uiIcon("report") + '</span><h3>从左侧选择一份文件</h3><p class="muted">添加资料后，可在这里查看标题与原文片段。</p><button class="primary" data-kb-add-empty>添加资料</button></div>'; }
+    else { inspectionSequence++; inspectionSignature = ""; $("#kb-inspector").innerHTML = '<div class="kb-inspector-empty"><span class="empty-icon">' + uiIcon("report") + '</span><h3>从左侧选择一份文件</h3><p class="muted">添加资料后，可在这里查看章节与文件结构。</p><button class="primary" data-kb-add-empty>添加资料</button></div>'; }
   }
-  async function inspectFile(key, offset = 0, versionId = null, force = false) {
+  function renderOutline(rows) {
+    if (!rows.length) return '<p class="muted kb-tree-empty">暂未生成文件结构。</p>';
+    const root = new Map();
+    for (const row of rows) {
+      const parts = row.section ? row.section.split(" > ").map(part => part.trim()).filter(Boolean) : ["未识别章节标题"];
+      if (!parts.length) parts.push("未识别章节标题");
+      let children = root, node;
+      for (const title of parts) {
+        if (!children.has(title)) children.set(title, {title, children:new Map(), indices:new Set()});
+        node = children.get(title); node.indices.add(row.index); children = node.children;
+      }
+    }
+    function branch(nodes) {
+      return `<ul>${[...nodes.values()].map(node => `<li><div class="kb-outline-row"><span title="${escapeHtml(node.title)}">${escapeHtml(node.title)}</span><small>${node.indices.size} 个片段</small></div>${node.children.size ? branch(node.children) : ""}</li>`).join("")}</ul>`;
+    }
+    return branch(root);
+  }
+  async function inspectFile(key, versionId = null, force = false) {
     const id = current, rev = revision, d = draft(id);
     const doc = d.documents?.find(doc => key === `doc:${doc.id}`);
     const job = d.jobs?.find(job => key === `job:${job.id}`);
     if (!doc && !job) return;
-    if (d.fileKey !== key) { d.fileKey = key; d.fileOffset = 0; d.fileVersion = null; }
-    else if (!force) { offset = d.fileOffset || 0; versionId = d.fileVersion || null; }
-    d.fileOffset = offset; d.fileVersion = versionId;
-    const signature = JSON.stringify([id,key,doc?.revision,doc?.workspace_update,job?.status,job?.preview_digest,offset,versionId]);
+    if (d.fileKey !== key) { d.fileKey = key; d.fileVersion = null; }
+    else if (!force) { versionId = d.fileVersion || null; }
+    d.fileVersion = versionId;
+    const signature = JSON.stringify([id,key,doc?.revision,doc?.workspace_update,job?.status,job?.chunk_count,versionId]);
     if (!force && inspectionSignature === signature) return;
     inspectionSignature = signature;
     const seq = ++inspectionSequence, pane = $("#kb-inspector");
-    pane.setAttribute("aria-busy", "true"); pane.innerHTML = '<p class="muted">正在读取文件片段…</p>'; renderFileTree();
+    pane.setAttribute("aria-busy", "true"); pane.innerHTML = '<p class="muted">正在读取文件结构…</p>'; renderFileTree();
     try {
-      let version, versions = [], rows = [], total = 0;
+      let version, versions = [], rows = [], total = 0, outlineStatus = "";
       if (doc) {
         const detail = await api(`/knowledge-bases/${id}/documents/${doc.id}/versions`);
         versions = detail.versions;
         version = versions.find(item => item.id === (versionId || detail.active_version_id)) || versions.at(-1);
         if (version) {
-          const prefix = `/knowledge-bases/${id}/documents/${doc.id}/versions/${version.id}/chunks`;
-          let page;
-          try { page = await api(`${prefix}?offset=${offset}&limit=10`); }
-          catch (error) {
-            if (error.status !== 404) throw error;
-            // 已运行的旧服务尚未重启时，沿用原逐片接口完成预览。
-            const count = Math.max(0, Math.min(10, version.chunk_count - offset));
-            page = {total:version.chunk_count, items:await Promise.all(Array.from({length:count}, (_, i) => api(`${prefix}/${offset+i+1}`)))};
-          }
-          rows = page.items; total = page.total;
+          const outline = await api(`/knowledge-bases/${id}/documents/${doc.id}/versions/${version.id}/outline`);
+          rows = outline.items; total = outline.total; outlineStatus = outline.status;
         }
-      } else if (job.preview_digest) {
-        rows = await api(`/knowledge-bases/${id}/imports/${job.id}/chunks?offset=${offset}&limit=10`); total = job.chunk_count || 0;
+      } else if (job.chunk_count) {
+        const outline = await api(`/knowledge-bases/${id}/imports/${job.id}/outline`); rows = outline.items; total = outline.total; outlineStatus = outline.status;
       }
       if (seq !== inspectionSequence || !active(id, rev)) return;
       pane.removeAttribute("aria-busy");
       const title = doc?.title || job.filename;
       const config = version?.chunk_config || job?.chunk_config;
       const state = job ? names[job.status] : version?.id === doc.active_version_id ? "当前可检索版本" : "未发布或历史版本";
-      pane.innerHTML = `<header class="kb-inspector-head"><div><p class="eyebrow">原文片段预览</p><h3>${escapeHtml(title)}</h3><p class="muted small">${escapeHtml(doc?.relative_path || job?.relative_path || title)}</p></div><span class="badge">${escapeHtml(state)}</span></header>
+      pane.innerHTML = `<header class="kb-inspector-head"><div><p class="eyebrow">文件结构</p><h3>${escapeHtml(title)}</h3><p class="muted small">${escapeHtml(doc?.relative_path || job?.relative_path || title)}</p></div><span class="badge">${escapeHtml(state)}</span></header>
         <div class="kb-file-stats"><span><b>${total}</b> 个片段</span><span>片段目标 <b>${version?.chunk_config?.parameters?.tokens || job?.tokens || config?.tokens || "—"}</b></span>${version ? `<label>版本 <select id="kb-inspect-version" aria-label="查看文件版本">${[...versions].reverse().map(item => `<option value="${escapeHtml(item.id)}" ${item.id === version.id ? "selected" : ""}>第 ${item.number} 版${item.id === doc.active_version_id ? "（当前可检索）" : "（未发布或历史）"}</option>`).join("")}</select></label>` : ""}</div>
-        <div class="row gap wrap kb-file-actions">${doc ? `<button class="ghost small" data-kb-update="${doc.id}">更新</button>${doc.index_status === "ready" ? `<button class="ghost small" data-kb-copy="${doc.id}">复制到工作区</button>` : ""}<button class="ghost small danger" data-kb-remove="${doc.id}">移出知识库</button>` : job.preview_digest ? `<button class="${job.status === "preview" ? "primary" : "ghost"} small" data-inspect-review="${job.id}">${job.status === "preview" ? "核对并确认入库" : job.status === "ready" ? "查看已入库片段" : "查看切片"}</button>` : ""}</div>
-        ${doc?.workspace_update ? `<p class="notice warn small" data-kb-workspace-update="${doc.id}">工作区有更新（${escapeHtml(fmtTime(doc.workspace_update.updated_at))}，《${escapeHtml(doc.workspace_update.title)}》），知识库仍为第 ${doc.workspace_update.version} 版。需要时请用“更新”导入新版本并核对切片，不会自动发布。</p>` : ""}
-        ${job && job.status !== "ready" ? `<p class="notice small">${job.status === "preview" ? "原文片段已生成，请核对后确认入库；当前还不能用于知识问答。" : escapeHtml(job.error || "文件正在处理，完成后会显示原文片段。")}</p>` : ""}
-        <div class="kb-chunk-list">${rows.map((row, i) => `<article class="kb-chunk-card"><div class="kb-chunk-heading"><span>片段 ${row.chunk ?? row.index ?? offset + i + 1}</span><small class="muted">原文位置 ${row.start}–${row.end}</small></div><h4>${escapeHtml(row.section || "未识别章节标题")}</h4>${Object.keys(row.constraints || {}).length ? '<p class="kb-quality-note">此片段存在需复核的结构或识别信息，使用时请对照原件。</p>' : ""}<pre>${escapeHtml(row.content ?? "原文已变化或不可用，请核对原件；这里不会用新内容替代旧片段。")}</pre></article>`).join("") || '<p class="muted kb-tree-empty">当前暂无可显示的片段。</p>'}</div>
-        ${total ? `<div class="kb-inspect-pager"><button class="ghost small" data-inspect-page="${Math.max(0,offset-10)}" ${offset === 0 ? "disabled" : ""}>上一页</button><span>${offset+1}–${Math.min(offset+10,total)} / ${total} 个片段</span><button class="ghost small" data-inspect-page="${offset+10}" ${offset+10 >= total ? "disabled" : ""}>下一页</button></div>` : ""}`;
+        <div class="row gap wrap kb-file-actions">${doc ? `<button class="ghost small" data-kb-update="${doc.id}">更新</button>${doc.index_status === "ready" ? `<button class="ghost small" data-kb-copy="${doc.id}">复制到工作区</button>` : ""}<button class="ghost small danger" data-kb-remove="${doc.id}">移出知识库</button>` : ""}</div>
+        ${doc?.workspace_update ? `<p class="notice warn small" data-kb-workspace-update="${doc.id}">工作区有更新（${escapeHtml(fmtTime(doc.workspace_update.updated_at))}，《${escapeHtml(doc.workspace_update.title)}》），知识库仍为第 ${doc.workspace_update.version} 版。需要时请用“更新”导入新版本后将自动建立索引；工作区改动不会自动同步。</p>` : ""}
+        ${job && job.status !== "ready" ? `<p class="notice small">${escapeHtml(job.error || "系统正在自动解析并建立索引，完成后即可用于知识问答。")}</p>` : ""}
+        ${rows.some(row => Object.keys(row.constraints || {}).length) ? '<p class="kb-quality-note">部分标题或识别信息存在不确定性，问答会标明相关限制。</p>' : ""}
+        ${["source_changed","source_deleted","source_missing","document_removed"].includes(outlineStatus) ? '<p class="notice warn">原文已变化或不可用，请更新文件后查看结构。</p>' : `<div class="kb-outline">${renderOutline(rows)}</div>`}`;
     } catch (error) {
       if (seq !== inspectionSequence || !active(id, rev)) return;
       pane.removeAttribute("aria-busy"); inspectionSignature = "";
-      pane.innerHTML = `<p class="danger">读取片段失败：${escapeHtml(error.message)}</p><button class="ghost" data-kb-inspect-retry>重试</button>`;
+      pane.innerHTML = `<p class="danger">读取结构失败：${escapeHtml(error.message)}</p><button class="ghost" data-kb-inspect-retry>重试</button>`;
     }
   }
   $("#kb-base-cards").addEventListener("click", event => { const button = event.target.closest("[data-kb-base]"); if (button) { $("#kb-select").value = button.dataset.kbBase; choose(button.dataset.kbBase); } });
   $("#kb-file-search").addEventListener("input", renderFileTree);
   $("#kb-inspector").addEventListener("click", event => {
     if (event.target.closest("[data-kb-add-empty]")) $("#kb-open-upload").click();
-    const review = event.target.closest("[data-inspect-review]");
-    if (review) document.querySelector(`[data-kb-preview="${review.dataset.inspectReview}"]`)?.click();
-    const page = event.target.closest("[data-inspect-page]");
-    if (page) inspectFile(draft().fileKey, Number(page.dataset.inspectPage), draft().fileVersion, true);
-    if (event.target.closest("[data-kb-inspect-retry]")) inspectFile(draft().fileKey, draft().fileOffset, draft().fileVersion, true);
+    if (event.target.closest("[data-kb-inspect-retry]")) inspectFile(draft().fileKey, draft().fileVersion, true);
   });
-  $("#kb-inspector").addEventListener("change", event => { if (event.target.id === "kb-inspect-version") inspectFile(draft().fileKey, 0, event.target.value, true); });
+  $("#kb-inspector").addEventListener("change", event => { if (event.target.id === "kb-inspect-version") inspectFile(draft().fileKey, event.target.value, true); });
   $("#kb-open-upload").addEventListener("click", () => { draft().target = null; restore(); $("#kb-upload-error").textContent = ""; $("#kb-upload-dialog").showModal(); });
   $("#kb-upload-close").addEventListener("click", () => $("#kb-upload-dialog").close());
   $("#kb-open-settings").addEventListener("click", () => {
@@ -308,8 +313,8 @@
     $("#kb-import-history").classList.toggle("hidden", !jobs.length);
     $("#kb-jobs").innerHTML = jobs.map(job => `<div class="knowledge-row" data-kb-job="${escapeHtml(job.id)}"><button class="kb-job-file" data-kb-select-job="${escapeHtml(job.id)}">${fileIcon(job.filename.split(".").at(-1))}${escapeHtml(job.relative_path || job.filename)}</button>
       <span>${escapeHtml(names[job.status] || job.status)}</span>${job.chunk_count ? `<span class="muted small">${job.chunk_count} 个原文片段</span>` : ""}
-      ${job.preview_digest ? `<button class="ghost small" data-kb-preview="${escapeHtml(job.id)}">${job.status === "ready" ? "查看已入库片段" : "查看切片"}</button>` : ""}
-      ${job.status === "failed" ? `<button class="ghost small" data-kb-retry="${escapeHtml(job.id)}">重试此文件</button><button class="ghost small" data-kb-reparse="${escapeHtml(job.id)}">重新解析预览</button>` : ""}
+
+      ${job.status === "failed" ? `<button class="ghost small" data-kb-retry="${escapeHtml(job.id)}">重试此文件</button><button class="ghost small" data-kb-reparse="${escapeHtml(job.id)}">重新解析</button>` : ""}
       ${job.error ? `<p class="danger small">${escapeHtml(job.error)}</p>` : ""}</div>`).join("");
   }
   async function refresh() {
@@ -325,7 +330,7 @@
   }
   async function choose(id) {
     revision++; clearTimeout(timer);
-    $("#kb-preview").close(); $("#kb-source").close(); preview = null;
+    $("#kb-source").close();
     current = id;
     inspectionSequence++; inspectionSignature = ""; fileTreeSignature = "";
     $("#kb-file-search").value = "";
@@ -337,7 +342,7 @@
     if (id) { restore(); await refresh(); }
     else message("");
   }
-  window.pauseKnowledge = () => { revision++; clearTimeout(timer); $("#kb-preview").close(); $("#kb-source").close(); $("#kb-create-dialog").close(); $("#kb-upload-dialog").close(); inspectionSequence++; inspectionSignature = ""; };
+  window.pauseKnowledge = () => { revision++; clearTimeout(timer); $("#kb-source").close(); $("#kb-create-dialog").close(); $("#kb-upload-dialog").close(); inspectionSequence++; inspectionSignature = ""; };
   window.loadKnowledge = async () => {
     const rev = ++revision;
     try {
@@ -415,7 +420,7 @@
     try {
       const result = await api(`/knowledge-bases/${id}/imports`, {method:"POST", body:form});
       d.files = []; d.target = null;
-      message(result.files.some(job => job.status === "rejected") ? result.files.filter(job => job.status === "rejected").map(job => `${job.filename}：${job.error}`).join("；") : "文件已接收，请核对逐文件状态与切片。", id);
+      message(result.files.some(job => job.status === "rejected") ? result.files.filter(job => job.status === "rejected").map(job => `${job.filename}：${job.error}`).join("；") : "文件已接收，正在自动处理，请查看逐文件状态。", id);
       if (current === id) { restore(); await refresh(); }
     } catch (error) { message(error.message, id); }
     finally { d.uploading = false; if (current === id) $("#kb-upload").disabled = false; }
@@ -448,53 +453,10 @@
     if (button.dataset.kbSelectJob) { inspectFile(`job:${button.dataset.kbSelectJob}`); return; }
     const id = current, rev = revision;
     try {
-      if (button.dataset.kbPreview) {
-        const job = draft().jobs.find(item => item.id === button.dataset.kbPreview);
-        preview = {kb:id, rev, job, offset:0, seq:0, loaded:false}; $("#kb-preview-checked").checked = false; $("#kb-confirm").disabled = true;
-        $("#kb-preview-error").textContent = ""; $("#kb-preview").showModal(); await previewPage();
-      } else {
-        const job = button.dataset.kbRetry || button.dataset.kbReparse;
-        await api(`/knowledge-bases/${id}/imports/${job}/retry`, {method:"POST", json:{reparse:Boolean(button.dataset.kbReparse)}});
-        if (active(id, rev)) await refresh();
-      }
-    } catch (error) { message(error.message, id); if (preview?.kb === id && $("#kb-preview").open) $("#kb-preview-error").textContent = error.message; }
-  });
-  function syncPreviewControls() {
-    const p = preview, reviewable = p?.job.status === "preview";
-    $("#kb-preview-title").textContent = reviewable ? "核对原文切片" : p?.job.status === "ready" ? "查看已入库片段" : "查看原文切片";
-    $("#kb-preview-review").classList.toggle("hidden", !reviewable);
-    $("#kb-confirm").classList.toggle("hidden", !reviewable);
-    $("#kb-preview-checked").disabled = !reviewable || !p?.loaded || Boolean(p?.submitting);
-    $("#kb-confirm").disabled = !reviewable || !p?.loaded || Boolean(p?.submitting) || !$("#kb-preview-checked").checked;
-    const notice = $("#kb-preview-state");
-    notice.classList.toggle("hidden", reviewable || !p);
-    notice.textContent = !p || reviewable ? "" : p.job.status === "ready" ? "这份文件的当次导入已完成，无需再次确认。这里可查看当次原文片段；当前有效版本以文件列表为准。" : p.job.status === "indexing" ? "正在建立索引，无需重复确认；完成后会更新文件状态。" : p.job.status === "failed" ? "这份文件处理失败。请关闭预览，在导入记录中重试或重新解析后再核对。" : "这份文件尚未进入核对阶段，请稍后查看处理状态。";
-    $("#kb-preview-prev").disabled = !p?.loaded || Boolean(p?.submitting) || p.offset === 0;
-    $("#kb-preview-next").disabled = !p?.loaded || Boolean(p?.submitting) || p.offset+10 >= p.job.chunk_count;
-  }
-  async function previewPage() {
-    const p = preview; if (!p) return;
-    const seq = ++p.seq, offset = p.offset;
-    p.loaded = false; $("#kb-preview-checked").checked = false; syncPreviewControls();
-    $("#kb-preview-body").textContent = "正在读取原文切片…";
-    const rows = await api(`/knowledge-bases/${p.kb}/imports/${p.job.id}/chunks?offset=${offset}&limit=10`);
-    if (preview !== p || p.seq !== seq || !active(p.kb, p.rev)) return;
-    p.loaded = true;
-    const overlap = p.job.chunk_config?.parameters?.overlap ?? 0;
-    $("#kb-preview-info").textContent = `${p.job.filename} · 目标 ${p.job.tokens} token，正文重叠约 ${overlap} token；表格/图形不重叠 · 第${offset+1}～${offset+rows.length}段，共${p.job.chunk_count}段。仅当前页展示原文，请按需翻页核对。`;
-    $("#kb-preview-body").innerHTML = rows.map(row => `<article><h4>${escapeHtml(row.section || "章节未确定")}</h4><pre>${escapeHtml(row.content)}</pre>${Object.keys(row.constraints).length ? '<p class="danger small">该片段有未确认的结构关系，问答时将保留复核限制。</p>' : ""}</article>`).join("");
-    syncPreviewControls();
-  }
-  $("#kb-preview-prev").addEventListener("click", () => { preview.offset = Math.max(0, preview.offset-10); previewPage().catch(error => $("#kb-preview-error").textContent = error.message); });
-  $("#kb-preview-next").addEventListener("click", () => { preview.offset += 10; previewPage().catch(error => $("#kb-preview-error").textContent = error.message); });
-  $("#kb-preview-close").addEventListener("click", () => $("#kb-preview").close());
-  $("#kb-preview-checked").addEventListener("change", syncPreviewControls);
-  $("#kb-confirm").addEventListener("click", async () => {
-    const p = preview; if (!p?.loaded || p.job.status !== "preview" || p.submitting || !$("#kb-preview-checked").checked) return;
-    p.submitting = true; syncPreviewControls();
-    try { await api(`/knowledge-bases/${p.kb}/imports/${p.job.id}/confirm`, {method:"POST", json:{digest:p.job.preview_digest}}); if (preview === p) $("#kb-preview").close(); if (active(p.kb, p.rev)) await refresh(); }
-    catch (error) { if (preview === p) $("#kb-preview-error").textContent = error.message; }
-    finally { p.submitting = false; if (preview === p) syncPreviewControls(); }
+      const job = button.dataset.kbRetry || button.dataset.kbReparse;
+      await api(`/knowledge-bases/${id}/imports/${job}/retry`, {method:"POST", json:{reparse:Boolean(button.dataset.kbReparse)}});
+      if (active(id, rev)) await refresh();
+    } catch (error) { message(error.message, id); }
   });
   function renderResult(result) {
     if (!result) { $("#kb-result").replaceChildren(); return; }

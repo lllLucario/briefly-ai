@@ -25,7 +25,7 @@ def test_create_needs_files_and_help_explains_default(web_page):
     expect(p.locator("#kb-create-tokens")).to_have_value("512")
     p.locator(".kb-help summary").click()
     expect(p.locator(".kb-help")).to_contain_text("不等于字数")
-    expect(p.locator(".kb-help")).to_contain_text("确认后才建立可检索的索引")
+    expect(p.locator(".kb-help")).to_contain_text("无需审批")
     p.locator("#kb-create").click()
     expect(p.locator("#kb-create-error")).to_contain_text("至少选择一份")
     assert p.request.get(p.url.rstrip("/") + "/knowledge-bases").json() == []
@@ -37,14 +37,15 @@ def test_create_needs_files_and_help_explains_default(web_page):
     assert p.request.get(p.url.rstrip("/") + "/knowledge-bases").json() == []
 
 
-def test_create_closes_before_upload_and_keeps_preview_confirmation(web_page):
+def test_create_closes_before_upload_and_indexes_automatically(web_page):
     p = web_page
     start(p)
     p.locator("#kb-name").fill("办公制度")
     p.locator("#kb-create-files").set_input_files(file())
     held = []
     p.route("**/knowledge-bases/*/imports", lambda route: held.append(route) if route.request.method == "POST" else route.continue_())
-    p.locator("#kb-create").click()
+    with p.expect_request(lambda request: request.method == "POST" and request.url.endswith("/imports")):
+        p.locator("#kb-create").click()
     expect(p.locator("#kb-create-dialog")).to_be_hidden()
     expect(p.locator("#kb-select option:checked")).to_have_text("办公制度")
     expect(p.locator("#kb-transfers")).to_contain_text("制度.md")
@@ -54,14 +55,10 @@ def test_create_closes_before_upload_and_keeps_preview_confirmation(web_page):
     p.locator('.tabs [data-tab="materials"]').click()
     held[0].continue_()
     p.locator('.tabs [data-tab="knowledge"]').click()
-    expect(p.locator("#kb-jobs")).to_contain_text("等待核对切片", timeout=30000)
-    assert p.request.get(p.url.rstrip("/") + f'/knowledge-bases/{p.locator("#kb-select").input_value()}/documents').json() == []
-    p.locator("[data-kb-preview]").click()
-    expect(p.locator("#kb-preview-body")).to_contain_text("预订前审批")
-    expect(p.locator("#kb-confirm")).to_be_disabled()
-    p.locator("#kb-preview-checked").check()
-    p.locator("#kb-confirm").click()
     expect(p.locator("#kb-jobs")).to_contain_text("已完成", timeout=30000)
+    documents = p.request.get(p.url.rstrip("/") + f'/knowledge-bases/{p.locator("#kb-select").input_value()}/documents').json()
+    assert len(documents) == 1 and documents[0]["index_status"] == "ready"
+    expect(p.locator("#kb-preview, #kb-confirm")).to_have_count(0)
     expect(p.locator("#kb-external")).not_to_be_checked()
 
 
