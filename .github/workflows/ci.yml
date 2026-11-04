@@ -1,0 +1,45 @@
+# 主任务：每次 push 和 PR，按锁文件安装后跑检索门禁和全量测试。不配置真实密钥，测试进程禁止连接本机以外的地址。
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BRIEFLY_API_KEY: fake-key-for-ci  # 假值：真调模型只会失败，不会计费
+  PYTHONUTF8: "1"
+
+jobs:
+  test:
+    name: pytest (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]  # Windows 是开发环境，Linux 是将来的部署环境，两边都跑
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.13.7"
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: 按锁文件安装（锁文件过期时失败）
+        run: uv sync --locked --all-extras
+
+      - name: 确认 sqlite 能加载 sqlite-vec，FTS5 可用
+        run: uv run --no-sync python -c "import sqlite3, sqlite_vec; db = sqlite3.connect(':memory:'); db.enable_load_extension(True); sqlite_vec.load(db); db.execute('CREATE VIRTUAL TABLE t USING fts5(x)'); print(sqlite3.sqlite_version, db.execute('select vec_version()').fetchone()[0])"
+
+      - name: 检索门禁（不允许跳过）
+        run: uv run --no-sync python -m pytest tests/test_retrieval_gate.py tests/test_retrieval_gate_compare.py tests/test_no_external_network.py -W error
+
+      - name: 全量测试
+        run: uv run --no-sync python -m pytest -W error -rs

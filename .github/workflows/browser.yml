@@ -1,0 +1,45 @@
+# 浏览器回归：只在网页或浏览器用例变化时跑（假模型、隔离数据、只允许同源请求）。
+name: Browser
+
+on:
+  push:
+    paths:
+      - "src/briefly/web/**"
+      - "tests/browser/**"
+      - ".github/workflows/browser.yml"
+  pull_request:
+    paths:
+      - "src/briefly/web/**"
+      - "tests/browser/**"
+      - ".github/workflows/browser.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BRIEFLY_API_KEY: fake-key-for-ci
+  PYTHONUTF8: "1"
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.13.7"
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: 按锁文件安装
+        run: uv sync --locked --all-extras
+
+      - name: 安装 Chromium
+        run: uv run --no-sync playwright install --with-deps chromium
+
+      - name: 浏览器回归
+        run: uv run --no-sync python -m pytest tests/browser --run-browser -W error
