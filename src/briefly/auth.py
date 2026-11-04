@@ -62,7 +62,8 @@ def session_value(token: str, expires_at: int) -> str:
 
 def session_valid(token: str, value: str | None) -> bool:
     expires, _, signature = (value or "").partition(".")
-    if not expires.isascii() or not expires.isdigit():
+    # 先限制长度：超长数字转换时 Python 会抛异常，未登录的人就能刷出 500 和错误日志
+    if len(expires) > 20 or not expires.isascii() or not expires.isdigit():
         return False
     expires_at = int(expires)
     return (hmac.compare_digest(signature.encode(), _session_signature(token, expires_at).encode())
@@ -197,7 +198,8 @@ def register(app: FastAPI, web_dir) -> None:
         wait = throttle.retry_after(client)
         if wait:
             return _error(429, f"尝试次数过多，请约 {wait} 秒后再试。", "too_many_attempts", {"Retry-After": str(wait)})
-        if not token_matches(token, body.token.strip().encode()):
+        # JSON 里的单独代理字符无法按 UTF-8 编码；替换后走“令牌错误”，同样计入限速，不抛异常
+        if not token_matches(token, body.token.strip().encode("utf-8", "replace")):
             throttle.failed(client)
             log.warning("登录失败：访问令牌不正确")
             return _error(401, "访问令牌不正确。", "invalid_token")

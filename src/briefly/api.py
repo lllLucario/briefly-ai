@@ -636,7 +636,10 @@ def serve() -> None:
     """命令行入口 briefly-api：启动后端服务。"""
     import uvicorn
 
-    level = configure_logging()
+    try:
+        level = configure_logging()
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     refusal = auth.startup_refusal(config.HOST, config.ACCESS_TOKEN)
     if refusal:
         raise SystemExit(refusal)

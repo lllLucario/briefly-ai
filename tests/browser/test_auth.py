@@ -26,6 +26,7 @@ def secured(tmp_path):
             yield page, context, url
             assert not errors, errors
         finally:
+            context.unroute_all(behavior="ignoreErrors")  # 用例结束时可能还有被拦截的请求，别让关闭等它们
             context.close()
             browser.close()
 
@@ -69,8 +70,9 @@ def test_expired_session_redirects_to_login_on_next_action(secured):
     page.goto(url)
     login(page)
     expect(page.locator("#logout")).to_be_visible()
+    page.wait_for_load_state("networkidle")  # 初始化请求要先结束，否则它们拿到 401 就先跳走了，测不到“下一步操作”
     context.clear_cookies()
-    page.locator('[data-tab="materials"]').click()
+    page.locator('.tabs [data-tab="materials"]').click()
     expect(page).to_have_url(f"{url}/login")
 
 
@@ -93,6 +95,64 @@ def test_knowledge_upload_with_expired_session_is_not_silent(secured):
     assert "/login" not in page.url  # 不自动跳走，待传的文件还在
 
 
+def relogin_in_new_tab(context, url):
+    tab = context.new_page()
+    tab.goto(url)
+    login(tab)
+    tab.wait_for_url(f"{url}/")
+    tab.close()
+
+
+def test_upload_after_real_expiry_stays_and_retry_after_relogin_succeeds(secured):
+    """真实清 Cookie、不拦截请求：/openapi.json 也是 401，不能跳走丢文件。"""
+    from playwright.sync_api import expect
+
+    page, context, url = secured
+    page.goto(url)
+    login(page)
+    expect(page.locator("#logout")).to_be_visible()
+    assert context.request.post(f"{url}/knowledge-bases", data={"name": "已有库"}).ok
+    page.locator('.tabs [data-tab="knowledge"]').click()
+    expect(page.locator("#kb-open-upload")).to_be_visible()
+    page.locator("#kb-open-upload").click()
+    page.locator("#kb-files").set_input_files(dict(name="制度.md", mimeType="text/markdown", buffer=b"# x\ny"))
+    context.clear_cookies()
+    page.locator("#kb-upload").click()
+    transfers = page.locator("#kb-transfers")
+    expect(transfers).to_contain_text("登录已过期")
+    expect(transfers).to_contain_text("制度.md")
+    expect(transfers.locator('a[href="/login"]')).to_be_visible()
+    assert page.url.startswith(f"{url}/") and "/login" not in page.url
+    relogin_in_new_tab(context, url)
+    transfers.locator("[data-kb-transfer-retry]").click()
+    expect(page.locator("#kb-jobs")).to_contain_text("制度.md", timeout=30000)
+    expect(transfers).not_to_contain_text("登录已过期")
+
+
+def test_create_after_real_expiry_keeps_selected_files(secured):
+    from playwright.sync_api import expect
+
+    page, context, url = secured
+    page.goto(url)
+    login(page)
+    expect(page.locator("#logout")).to_be_visible()
+    page.locator('.tabs [data-tab="knowledge"]').click()
+    page.locator("#kb-empty-create").click()
+    page.locator("#kb-name").fill("过期新建")
+    page.locator("#kb-create-files").set_input_files(dict(name="手册.md", mimeType="text/markdown", buffer=b"# x\ny"))
+    context.clear_cookies()
+    page.locator("#kb-create").click()
+    progress = page.locator("#kb-create-progress")
+    expect(progress).to_contain_text("登录已过期")
+    expect(progress.locator('a[href="/login"]')).to_be_visible()
+    assert "/login" not in page.url
+    page.locator("#kb-create-edit").click()
+    expect(page.locator("#kb-create-selection")).to_contain_text("手册.md")
+    relogin_in_new_tab(context, url)
+    page.locator("#kb-create").click()
+    expect(page.locator("#kb-jobs")).to_contain_text("手册.md", timeout=30000)
+
+
 def test_real_upload_endpoint_returns_auth_required_after_expiry(secured):
     from playwright.sync_api import expect
 
@@ -100,19 +160,12 @@ def test_real_upload_endpoint_returns_auth_required_after_expiry(secured):
     page.goto(url)
     login(page)
     expect(page.locator("#logout")).to_be_visible()
+    page.wait_for_load_state("networkidle")  # 否则初始化请求拿到 401 会在用例收尾时跳转，撞上关闭浏览器后可能卡死
     context.clear_cookies()
-    result = page.evaluate("""async () => {
-      const form = new FormData();
-      form.append("files", new File(["x"], "a.txt"));
-      return await new Promise(resolve => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("POST", "/knowledge-bases/1/imports");
-        xhr.onload = () => resolve({status: xhr.status, code: JSON.parse(xhr.responseText).code});
-        xhr.onerror = () => resolve({status: 0});
-        xhr.send(form);
-      });
-    }""")
-    assert result == {"status": 401, "code": "auth_required"}
+    response = context.request.post(f"{url}/knowledge-bases/1/imports", timeout=10000,
+                                    multipart=dict(files=dict(name="a.txt", mimeType="text/plain", buffer=b"x")))
+    assert response.status == 401
+    assert response.json()["code"] == "auth_required"
 
 
 def test_no_logout_entry_without_token(web_page):

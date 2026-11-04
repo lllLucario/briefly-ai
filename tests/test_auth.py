@@ -143,6 +143,20 @@ def test_non_ascii_session_value_rejected():
     assert auth.session_valid(TOKEN, None) is False
 
 
+def test_oversized_cookie_is_401_not_500(client, caplog):
+    """超长数字超过 Python 的整数位数上限：不能让未登录的人刷出 500 和错误日志。"""
+    client.cookies.set(COOKIE_NAME, "9" * 5000 + ".x")
+    response = client.get("/materials")
+    assert response.status_code == 401
+    assert not [r for r in caplog.records if r.levelno >= 40]
+
+
+def test_lone_surrogate_login_token_is_not_500(client):
+    response = client.post("/auth/login", content=b'{"token": "\\ud800"}', headers={"Content-Type": "application/json"})
+    assert response.status_code == 401
+    assert response.json()["code"] == "invalid_token"
+
+
 def test_rotating_token_invalidates_existing_session(client, monkeypatch):
     client.post("/auth/login", json={"token": TOKEN})
     assert client.get("/materials").status_code == 200

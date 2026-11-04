@@ -224,9 +224,39 @@ def test_configure_logging_keeps_third_party_quiet(capsys):
     assert "secret" not in out and "请求正文" not in out and "本项目" in out
 
 
-def test_configure_logging_rejects_unknown_level():
+@pytest.mark.parametrize("bad", ["LOUD", "NOTSET", "TRACE", "5"])
+def test_configure_logging_rejects_unknown_level(bad):
     with pytest.raises(ValueError, match="BRIEFLY_LOG_LEVEL"):
-        configure_logging(level="LOUD", log_file="")
+        configure_logging(level=bad, log_file="")
+
+
+@pytest.mark.parametrize("given, name", [
+    ("debug", "DEBUG"), ("INFO", "INFO"), ("warning", "WARNING"), ("WARN", "WARNING"), ("warn", "WARNING"),
+    ("ERROR", "ERROR"), ("CRITICAL", "CRITICAL"), ("FATAL", "CRITICAL"), (" info ", "INFO"),
+])
+def test_every_accepted_level_is_accepted_by_uvicorn(given, name):
+    """级别名会传给 uvicorn：WARN 曾让服务启动失败。"""
+    import uvicorn
+
+    assert configure_logging(level=given, log_file="") == name
+    uvicorn.Config(lambda: None, log_config=None, log_level=name.lower()).configure_logging()
+
+
+def test_serve_explains_invalid_log_level(monkeypatch):
+    from briefly.api import serve
+
+    monkeypatch.setattr(config, "LOG_LEVEL", "LOUD")
+    with pytest.raises(SystemExit, match="BRIEFLY_LOG_LEVEL"):
+        serve()
+
+
+def test_cli_explains_invalid_log_level(monkeypatch):
+    from briefly import cli
+
+    monkeypatch.setattr(config, "LOG_LEVEL", "LOUD")
+    monkeypatch.setattr(sys, "argv", ["briefly"])
+    with pytest.raises(SystemExit, match="BRIEFLY_LOG_LEVEL"):
+        cli.main()
 
 
 def test_console_handler_survives_unencodable_text():

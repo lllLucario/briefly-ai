@@ -26,6 +26,10 @@ _VALID_REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
 _BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
 _RECORD_FIELDS = set(logging.makeLogRecord({}).__dict__) | {"message", "asctime", "taskName"}
 INTERNAL_ERROR = "服务内部出错，请稍后重试；如果持续出现，请把追踪号发给维护人员。"
+# 只放 uvicorn 也支持的级别：级别名会原样传给它，不认识的名字会让服务启动失败
+_LEVELS = {"DEBUG": logging.DEBUG, "INFO": logging.INFO, "WARNING": logging.WARNING,
+           "ERROR": logging.ERROR, "CRITICAL": logging.CRITICAL}
+_LEVEL_ALIASES = {"WARN": "WARNING", "FATAL": "CRITICAL"}
 
 request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("briefly_request_id", default=None)
 
@@ -83,9 +87,10 @@ def configure_logging(*, level: str | None = None, stream: str = "stdout", log_f
     只由 serve() 和命令行入口调用，create_app() 不调用，否则会影响测试。
     """
     name = (level or config.LOG_LEVEL or "INFO").strip().upper()
-    number = logging.getLevelNamesMapping().get(name)
+    name = _LEVEL_ALIASES.get(name, name)
+    number = _LEVELS.get(name)
     if number is None:
-        raise ValueError(f"BRIEFLY_LOG_LEVEL 取值无效：{name}，可选 DEBUG、INFO、WARNING、ERROR")
+        raise ValueError(f"BRIEFLY_LOG_LEVEL 取值无效：{name}，可选 {'、'.join(_LEVELS)}")
     root = logging.getLogger()
     for handler in [h for h in root.handlers if getattr(h, "_briefly", False)]:
         root.removeHandler(handler)

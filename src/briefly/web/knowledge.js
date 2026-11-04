@@ -30,7 +30,7 @@
     box.classList.toggle("hidden", !creation);
     $("#kb-open-create").disabled = Boolean(creation && !creation.error);
     if (!creation) return box.replaceChildren();
-    box.innerHTML = `<strong>${creation.error ? "创建未完成" : "正在创建知识库"} · ${escapeHtml(creation.name)}</strong><p>${escapeHtml(creation.error || "创建完成后开始上传所选资料。请保持此网页打开。")}</p>${creation.error ? '<div class="row gap"><button class="ghost small" id="kb-create-refresh">刷新列表核对</button><button class="ghost small" id="kb-create-edit">返回填写</button></div>' : ''}`;
+    box.innerHTML = `<strong>${creation.error ? "创建未完成" : "正在创建知识库"} · ${escapeHtml(creation.name)}</strong><p>${escapeHtml(creation.error || "创建完成后开始上传所选资料。请保持此网页打开。")}</p>${creation.error === CREATE_EXPIRED ? LOGIN_LINK : ""}${creation.error ? '<div class="row gap"><button class="ghost small" id="kb-create-refresh">刷新列表核对</button><button class="ghost small" id="kb-create-edit">返回填写</button></div>' : ''}`;
   }
   function renderSelection() {
     $("#kb-create-selection").innerHTML = `${createFiles.length ? `<div class="kb-selection-head"><strong>已选 ${createFiles.length} 份资料</strong><button type="button" class="ghost small" data-kb-clear-files>清空</button></div><ul class="kb-selected-files">${createFiles.map((file, i) => `<li><span>${escapeHtml(file.webkitRelativePath || file.name)}</span><small class="muted">${(file.size / 1024).toFixed(1)} KB</small><button type="button" class="ghost small" data-kb-remove-file="${i}" aria-label="移除 ${escapeHtml(file.name)}">×</button></li>`).join("")}</ul>` : '<p class="muted small">尚未选择资料，请至少添加一个文件。</p>'}
@@ -68,11 +68,18 @@
     if (event.target.closest("#kb-create-refresh")) window.loadKnowledge();
   });
   // 网络传输进度来自浏览器，不用解析耗时推算百分比。分批仍沿用原接口限制及幂等标识。
-  // 不自动跳转：跳走会丢掉等待上传的文件。这批没有发送成功，提示用户刷新后登录再传。
-  const SESSION_EXPIRED = "登录已过期，这批文件没有上传。请刷新页面重新登录后再上传。";
+  // 文件只在页面内存里，刷新或跳转就丢了，所以留在本页，到新标签页登录后回来重试。
+  const SESSION_EXPIRED = "登录已过期，这批文件没有上传，仍保留在本页。请在新标签页登录后，回到这里重试。";
+  const CREATE_EXPIRED = "登录已过期，知识库没有创建，所选资料仍保留在本页。请在新标签页登录后，点“返回填写”再提交。";
+  const LOGIN_LINK = '<a href="/login" target="_blank" rel="noopener">在新标签页登录</a>';
+  window.holdLoginRedirect = () => Boolean(creation) || createFiles.length > 0
+    || [...drafts.values()].some(d => d.files?.length)
+    || [...uploadQueues.values()].some(batches => batches.some(batch => batch.files.length));
   async function uploadBatch(kbId, batch, changed) {
     {
-      folderSupport ||= api("/openapi.json").then(schema => Boolean(schema.paths["/knowledge-bases/{kb_id}/documents/{doc_id}/versions/{version_id}/outline"]));
+      // 失败的结果不缓存，否则重新登录后重试还会失败
+      folderSupport ||= api("/openapi.json").then(schema => Boolean(schema.paths["/knowledge-bases/{kb_id}/documents/{doc_id}/versions/{version_id}/outline"]))
+        .catch(error => { folderSupport = null; throw error; });
       if (!await folderSupport) throw new Error("当前服务尚未启用自动入库，文件尚未发送。请更新服务后重试此批。");
     }
     return new Promise((resolve, reject) => {
@@ -101,7 +108,7 @@
     const pending = batches.some(batch => ["queued", "uploading"].includes(batch.state));
     $("#kb-transfers").innerHTML = (pending ? '<p class="muted small">正在上传资料，请保持此网页打开；可以切换页面继续其他工作。接收完成后会自动解析并建立索引，无需审批。</p>' : '') + batches.filter(batch => batch.state !== "received" || batch.rejected?.length).map(batch => `<article class="kb-transfer" data-kb-transfer="${batch.key}"><strong>${escapeHtml(batch.title)}</strong><span>${batch.state === "queued" ? "等待上传" : batch.state === "uploading" ? batch.percent === 100 ? "文件已传输，等待服务接收结果" : `正在上传${batch.percent == null ? "" : ` · ${batch.percent}%`}` : batch.state === "error" ? "上传未完成" : "部分文件未接收"}</span>
       ${batch.state === "uploading" ? `<progress max="100" ${batch.percent == null ? "" : `value="${batch.percent}"`} aria-label="本批文件传输进度"></progress>` : ""}
-      ${batch.error ? `<p class="danger small">${escapeHtml(batch.error)}</p><button class="ghost small" data-kb-transfer-retry="${batch.key}">重试此批</button>` : ""}
+      ${batch.error ? `<p class="danger small">${escapeHtml(batch.error)}</p>${batch.error === SESSION_EXPIRED ? LOGIN_LINK : ""}<button class="ghost small" data-kb-transfer-retry="${batch.key}">重试此批</button>` : ""}
       ${(batch.rejected || []).map(file => `<p class="danger small">${escapeHtml(file.filename)}：${escapeHtml(file.error)}</p>`).join("")}</article>`).join("");
   }
   async function runUploads(id) {
@@ -114,7 +121,7 @@
         const result = await uploadBatch(id, batch, () => renderUploads(id));
         batch.state = "received"; batch.rejected = result.files.filter(file => file.status === "rejected");
         batch.files = []; // 服务器已接收的文件不再保留浏览器内存副本。
-      } catch (error) { batch.state = "error"; batch.error = error.message; }
+      } catch (error) { batch.state = "error"; batch.error = error.authRequired ? SESSION_EXPIRED : error.message; }
       renderUploads(id);
       if (active(id)) await refresh();
     }
@@ -394,7 +401,7 @@
       renderLibraryState();
       enqueueUploads(kb.id, files, tokens);
     }
-    catch (error) { if (creation) { creation.error = `${error.message}。所选资料仍保留在本页，请先刷新知识库列表核对创建结果，再返回填写。`; renderLibraryState(); } else message(error.message); }
+    catch (error) { if (creation) { creation.error = error.authRequired ? CREATE_EXPIRED : `${error.message}。所选资料仍保留在本页，请先刷新知识库列表核对创建结果，再返回填写。`; renderLibraryState(); } else message(error.message); }
     finally { $("#kb-create").disabled = false; }
   });
   $("#kb-files").addEventListener("change", () => selectUploadFiles([...$("#kb-files").files]));
@@ -420,7 +427,7 @@
       d.files = []; d.target = null;
       message(result.files.some(job => job.status === "rejected") ? result.files.filter(job => job.status === "rejected").map(job => `${job.filename}：${job.error}`).join("；") : "文件已接收，正在自动处理，请查看逐文件状态。", id);
       if (current === id) { restore(); await refresh(); }
-    } catch (error) { message(error.message, id); }
+    } catch (error) { message(error.authRequired ? SESSION_EXPIRED : error.message, id); }
     finally { d.uploading = false; if (current === id) $("#kb-upload").disabled = false; }
   });
   $("#kb-content").addEventListener("click", async event => {
