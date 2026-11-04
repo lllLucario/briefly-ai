@@ -68,6 +68,8 @@
     if (event.target.closest("#kb-create-refresh")) window.loadKnowledge();
   });
   // 网络传输进度来自浏览器，不用解析耗时推算百分比。分批仍沿用原接口限制及幂等标识。
+  // 不自动跳转：跳走会丢掉等待上传的文件。这批没有发送成功，提示用户刷新后登录再传。
+  const SESSION_EXPIRED = "登录已过期，这批文件没有上传。请刷新页面重新登录后再上传。";
   async function uploadBatch(kbId, batch, changed) {
     {
       folderSupport ||= api("/openapi.json").then(schema => Boolean(schema.paths["/knowledge-bases/{kb_id}/documents/{doc_id}/versions/{version_id}/outline"]));
@@ -84,9 +86,12 @@
         let result;
         try { result = JSON.parse(xhr.responseText); } catch (_) { reject(new Error("服务响应无法读取，请核对任务列表后重试此批。")); return; }
         if (xhr.status >= 200 && xhr.status < 300) resolve(result);
+        else if (xhr.status === 401 && result.code === "auth_required") reject(new Error(SESSION_EXPIRED));
         else reject(new Error(typeof result.detail === "string" ? result.detail : "上传未完成，请核对任务列表后重试此批。"));
       };
-      xhr.onerror = () => reject(new Error("连接中断，接收结果待核对。请检查任务列表后重试此批；重试沿用原上传编号。"));
+      // 服务端不读完就拒绝时，大文件上传在浏览器里表现为断线：查一次登录状态，区分开真正的断线
+      xhr.onerror = () => fetch("/auth/status").then(resp => resp.status === 401).catch(() => false).then(expired =>
+        reject(new Error(expired ? SESSION_EXPIRED : "连接中断，接收结果待核对。请检查任务列表后重试此批；重试沿用原上传编号。")));
       xhr.send(form);
     });
   }

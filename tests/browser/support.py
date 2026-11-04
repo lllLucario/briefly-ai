@@ -96,10 +96,11 @@ def fake_model():
 
 
 @contextmanager
-def live_app(root: Path, model_factory=fake_model, embeddings_factory=None):
-    """只监听随机本地端口；不启用定时、真实飞书或邮件，退出关闭线程和数据库。"""
+def live_app(root: Path, model_factory=fake_model, embeddings_factory=None, access_token=""):
+    """只监听随机本地端口；不启用定时、真实飞书或邮件，退出关闭线程和数据库。默认不要求登录，不受本机 .env 影响。"""
     root.mkdir(parents=True, exist_ok=True)
-    overrides = dict(DB_PATH=str(root/"chat.db"), TRACKING_DIR=str(root/"tracking"),
+    overrides = dict(ACCESS_TOKEN=access_token, ALLOWED_HOSTS=config.DEFAULT_ALLOWED_HOSTS.split(","),
+                     DB_PATH=str(root/"chat.db"), TRACKING_DIR=str(root/"tracking"),
                      FEISHU_APP_ID="", FEISHU_APP_SECRET="", FEISHU_USER_TOKEN_FILE=str(root/"no-token.json"),
                      SMTP_USER="", SMTP_PASSWORD="", KNOWLEDGE_DIR=str(root/"knowledge"), EMBEDDING_DIR="")
     original = {k:getattr(config,k) for k in overrides}
@@ -145,7 +146,7 @@ def live_app(root: Path, model_factory=fake_model, embeddings_factory=None):
                 if not thread.is_alive():
                     raise RuntimeError("隔离网页服务未能启动")
                 try:
-                    if client.get("/skills").status_code == 200:
+                    if client.get("/healthz").status_code == 200:
                         break
                 except httpx.HTTPError:
                     pass

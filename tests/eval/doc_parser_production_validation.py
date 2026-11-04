@@ -44,7 +44,9 @@ def main():
     def forbidden(*args,**kwargs):raise AssertionError('本实验不得调用模型')
     engine=create_db_engine('sqlite://')
     try:
-        with TestClient(create_app(MaterialStore(engine),model_factory=forbidden,agent_factory=forbidden)) as client:
+        from briefly import config
+        config.ACCESS_TOKEN = ""  # 走查不受本机 .env 的令牌影响
+        with TestClient(create_app(MaterialStore(engine),model_factory=forbidden,agent_factory=forbidden), base_url="http://127.0.0.1") as client:
             result=client.post('/materials/upload',files={'file':('中文合并表格.doc',inputs[2])})
             assert result.status_code==201,result.text
             material=result.json()['material']

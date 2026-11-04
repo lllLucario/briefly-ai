@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 - Briefly AI</title>
+  <link rel="stylesheet" href="/web/style.css">
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <h1>Briefly AI</h1>
+    <p class="muted">请输入访问令牌。令牌由部署这个服务的人设置（BRIEFLY_ACCESS_TOKEN）。</p>
+    <form id="login-form" novalidate>
+      <label for="login-token">访问令牌</label>
+      <input id="login-token" type="password" autocomplete="current-password" autofocus>
+      <div id="login-msg" class="notice error hidden" role="alert"></div>
+      <button id="login-submit" type="submit">登录</button>
+    </form>
+  </main>
+  <script src="/web/login.js"></script>
+</body>
+</html>

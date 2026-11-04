@@ -174,7 +174,9 @@ def concurrency(folder, output):
     engine = create_db_engine('sqlite:///'+str((output/'concurrency.sqlite3').resolve()).replace('\\','/'))
     records = []
     try:
-        with TestClient(create_app(MaterialStore(engine), model_factory=forbidden, agent_factory=forbidden)) as client:
+        from briefly import config
+        config.ACCESS_TOKEN = ""  # 走查不受本机 .env 的令牌影响
+        with TestClient(create_app(MaterialStore(engine), model_factory=forbidden, agent_factory=forbidden), base_url="http://127.0.0.1") as client:
             # 先确认普通上传在本轮没有DOC时的响应，再测同一服务并发DOC。
             def request(name, method, path, **kwargs):
                 start = time.perf_counter()

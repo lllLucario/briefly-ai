@@ -21,7 +21,7 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMes
 from pydantic import BaseModel
 
 from . import api_docs as docs
-from . import config, mail
+from . import auth, config, mail
 from .agent import Agent, new_thread_id, sqlite_checkpointer
 from .context_builder import SYSTEM_REPLY
 from .db import create_db_engine
@@ -625,7 +625,9 @@ def create_app(
     def index():
         return FileResponse(WEB_DIR / "index.html")
 
+    auth.register(app, WEB_DIR)  # 登录页、登录和退出接口
     app.mount("/web", StaticFiles(directory=WEB_DIR), name="web")
+    app.add_middleware(auth.AuthMiddleware)  # 默认拒绝：白名单之外都要登录，新增的路由也不会漏
     app.add_middleware(RequestContextMiddleware)  # 最后添加的在最外层：其他中间件的日志和错误也带追踪号
     return app
 
@@ -635,6 +637,10 @@ def serve() -> None:
     import uvicorn
 
     level = configure_logging()
+    refusal = auth.startup_refusal(config.HOST, config.ACCESS_TOKEN)
+    if refusal:
+        raise SystemExit(refusal)
+    auth.log_startup_state(config.HOST, config.ACCESS_TOKEN)
     # uvicorn 的日志交给上面的配置统一输出；访问日志由 RequestContextMiddleware 记（带追踪号，不记查询参数）
     uvicorn.run(create_app(tracking_scheduler=config.TRACKING_SCHEDULER), host=config.HOST, port=config.PORT,
                 log_config=None, log_level=level.lower(), access_log=False)

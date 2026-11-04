@@ -31,7 +31,9 @@ from briefly.parse_process import load_isolated
 assert Path(briefly.__file__).resolve().is_relative_to(Path.cwd())
 engine = create_db_engine('sqlite://')
 try:
-    with TestClient(create_app(MaterialStore(engine))) as client:
+    from briefly import config
+    config.ACCESS_TOKEN = ""  # 走查不受本机 .env 的令牌影响
+    with TestClient(create_app(MaterialStore(engine)), base_url="http://127.0.0.1") as client:
         assert client.get('/').status_code == 200
         assert client.get('/web/knowledge.js').status_code == 200
         kb = client.post('/knowledge-bases', json={'name':'wheel-smoke'}).json()['id']

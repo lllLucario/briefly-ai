@@ -35,7 +35,7 @@ def current_request_id() -> str | None:
 
 
 def _secret_values() -> list[str]:
-    return [s for s in (config.API_KEY, config.FEISHU_APP_SECRET, config.SMTP_PASSWORD) if s]
+    return [s for s in (config.API_KEY, config.FEISHU_APP_SECRET, config.SMTP_PASSWORD, config.ACCESS_TOKEN) if s]
 
 
 class JsonFormatter(logging.Formatter):

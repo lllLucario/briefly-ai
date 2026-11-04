@@ -46,6 +46,13 @@ def _no_office_profile_template(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _auth_defaults(monkeypatch):
+    """开发者本机 .env 里的令牌不影响测试；TestClient 默认的 Host 是 testserver，只在测试里允许，不放宽生产默认值。"""
+    monkeypatch.setattr(config, "ACCESS_TOKEN", "")
+    monkeypatch.setattr(config, "ALLOWED_HOSTS", [*config.DEFAULT_ALLOWED_HOSTS.split(","), "testserver"])
+
+
+@pytest.fixture(autouse=True)
 def _restore_logging():
     """configure_logging 改的是全局状态（命令行入口的测试也会调用）：每个测试后恢复，不影响后面的 caplog。"""
     import logging

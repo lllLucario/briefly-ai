@@ -62,7 +62,9 @@ def main():
     try:
         config.DOC_PARSER='auto'
         legacy_word.convert_doc=loaders._docling_converter=forbidden
-        with TestClient(create_app(MaterialStore(engine),model_factory=forbidden,agent_factory=forbidden)) as client:
+        from briefly import config
+        config.ACCESS_TOKEN = ""  # 走查不受本机 .env 的令牌影响
+        with TestClient(create_app(MaterialStore(engine),model_factory=forbidden,agent_factory=forbidden), base_url="http://127.0.0.1") as client:
             response=client.post('/materials/upload',files={'file':(source.name,source.read_bytes())})
             assert response.status_code==201,response.text
             material=response.json()['material']

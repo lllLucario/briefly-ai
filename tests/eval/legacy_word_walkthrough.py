@@ -55,7 +55,9 @@ def main():
         raise AssertionError("元数据上传流程不应调用模型")
     engine=create_db_engine("sqlite://")
     try:
-        with TestClient(create_app(MaterialStore(engine),model_factory=forbidden,agent_factory=forbidden)) as client:
+        from briefly import config
+        config.ACCESS_TOKEN = ""  # 走查不受本机 .env 的令牌影响
+        with TestClient(create_app(MaterialStore(engine),model_factory=forbidden,agent_factory=forbidden), base_url="http://127.0.0.1") as client:
             response=client.post("/materials/upload",files={"file":(legacy.name,legacy.read_bytes())})
             assert response.status_code==201,response.text
             record=dict(checks=checks,report=parsed.report,upload=response.json(),resources_read=False,

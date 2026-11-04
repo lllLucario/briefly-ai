@@ -44,6 +44,7 @@ class Env:
         self.db = tmp / "app.db"
         self.env = {
             **os.environ,
+            "BRIEFLY_ACCESS_TOKEN": "",  # 走查用脚本直接调接口；空值优先于本机 .env 里的令牌
             "DATABASE_URL": f"sqlite:///{self.db.as_posix()}",
             "BRIEFLY_DB_PATH": str(tmp / "briefly.db"),
             "BRIEFLY_TRACKING_DIR": str(tmp / "store"),

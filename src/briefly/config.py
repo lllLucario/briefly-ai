@@ -125,6 +125,13 @@ CONTEXT_RETRIES = int(os.getenv("BRIEFLY_CONTEXT_RETRIES", "1"))
 # 后端服务监听地址；默认只在本机访问
 HOST = os.getenv("BRIEFLY_HOST", "127.0.0.1")
 PORT = int(os.getenv("BRIEFLY_PORT", "8000"))
+# 访问令牌：设了就强制登录（网页登录或 Authorization: Bearer）；没设时只能绑定本机地址，不要求登录
+ACCESS_TOKEN = os.getenv("BRIEFLY_ACCESS_TOKEN", "").strip()
+# 网页登录的有效期（天）
+SESSION_DAYS = float(os.getenv("BRIEFLY_SESSION_DAYS", "7"))
+# 允许的访问主机名（逗号分隔，不含端口），其他 Host 一律拒绝，防 DNS 重绑定。不管有没有令牌都生效
+DEFAULT_ALLOWED_HOSTS = "localhost,127.0.0.1,[::1]"
+ALLOWED_HOSTS = [h.strip().lower() for h in (os.getenv("BRIEFLY_ALLOWED_HOSTS") or DEFAULT_ALLOWED_HOSTS).split(",") if h.strip()]
 # 日志：每行一条 JSON。级别留空时服务用 INFO、命令行用 WARNING（命令行的输出是给人看的）；
 # 只对本项目的日志生效，第三方库最低 WARNING。文件留空时只输出到标准输出（命令行是标准错误）
 LOG_LEVEL = os.getenv("BRIEFLY_LOG_LEVEL", "")

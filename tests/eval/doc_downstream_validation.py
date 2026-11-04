@@ -17,7 +17,9 @@ def main():
     legacy_word.convert_doc=loaders._docling_converter=forbidden
     engine=create_db_engine('sqlite://');store=MaterialStore(engine);records=[]
     try:
-        with TestClient(create_app(store,model_factory=forbidden,agent_factory=forbidden)) as client:
+        from briefly import config
+        config.ACCESS_TOKEN = ""  # 走查不受本机 .env 的令牌影响
+        with TestClient(create_app(store,model_factory=forbidden,agent_factory=forbidden), base_url="http://127.0.0.1") as client:
             response=client.post('/materials/upload',files={'file':(path.name,payload)});assert response.status_code==201,response.text
             mid=response.json()['material']['id'];material=client.get(f'/materials/{mid}').json();report=material['parse_report']
             assert report['document_quality']['status']=='partial'

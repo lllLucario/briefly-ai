@@ -31,6 +31,11 @@ async function api(path, options = {}) {
       body = await resp.json();
       if (body.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
     } catch (_) { /* 非 JSON 错误 */ }
+    // 只认机器码：飞书未授权也是 401，那种情况要留在页面上提示连接飞书
+    if (resp.status === 401 && body?.code === "auth_required") {
+      location.assign("/login");
+      return new Promise(() => {}); // 页面正在离开：调用方不用再处理，也不闪一下错误提示
+    }
     const requestId = body?.request_id || resp.headers.get("X-Request-ID");
     // 服务端错误附上追踪号，用户可以选中复制给维护人员；4xx 是用户能自己处理的提示，只放在 err.requestId 上
     const err = new Error(resp.status >= 500 && requestId ? `${detail}（追踪号：${requestId}）` : detail);
@@ -1399,6 +1404,13 @@ $("#inbox").addEventListener("click", async (e) => {
   await api("/notifications/read", { method: "POST", json: { ids: [Number(b.dataset.read)] } });
   loadInbox();
 });
+
+// 退出入口只在启用访问令牌时显示
+$("#logout").addEventListener("click", async () => {
+  try { await api("/auth/logout", { method: "POST" }); location.assign("/login"); }
+  catch (err) { uiAlert(err.message); }
+});
+api("/auth/status").then((s) => $("#logout").classList.toggle("hidden", !s.enabled)).catch(() => {});
 
 // ---------- 启动 ----------
 (async function init() {
