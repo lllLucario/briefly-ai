@@ -216,6 +216,8 @@ def test_query_count_does_not_grow_with_rows(client):
         while len(client.get("/materials").json()) < n_total:
             mid = add(client, f"材料{len(client.get('/materials').json())}")
             client.post(f"/todos/{parent}/materials", json={"material_id": mid})
+        # 监听器挂在整个 engine 上：添加材料后的后台同步（疑似重复检测）也会被计入，先等它结束，只数这次请求
+        client.app.state.store.workspace_index.wait()
         statements = []
         listener = lambda *args: statements.append(args[2])  # noqa: E731
         event.listen(engine, "before_cursor_execute", listener)
