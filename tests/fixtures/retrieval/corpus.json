@@ -1,0 +1,77 @@
+{
+  "_说明": "检索门禁的虚构语料：公司、制度和数字都是编的，可以入 Git。concepts 是假编码器的同义词表：同一概念的词映射到同一个向量轴，所以换说法也能语义命中。",
+  "concepts": {
+    "住宿": ["住宿", "酒店", "宾馆", "下榻"],
+    "审批": ["审批", "核准", "批复"],
+    "发票": ["发票", "票据"],
+    "设备": ["设备", "机房", "硬件"],
+    "工资": ["工资"],
+    "车辆": ["车辆"]
+  },
+  "documents": [
+    {
+      "key": "travel",
+      "title": "星河差旅办法",
+      "passages": [
+        {"id": "travel-both", "section": "星河差旅办法 > 第三条", "text": "住宿审批须在出发前完成，发票回来后再提交。"},
+        {"id": "travel-synonym", "section": "星河差旅办法 > 第四条", "text": "下榻宾馆须经部门核准，每夜不超过650元。"},
+        {"id": "travel-deposit", "section": "星河差旅办法 > 第五条", "text": "宾馆押金由个人垫付，退房后归还。"}
+      ]
+    },
+    {
+      "key": "device",
+      "title": "星河设备保管规定",
+      "passages": [
+        {"id": "device-code", "section": "星河保管规定 > 第一条", "text": "编号Q77的投影仪归行政部保管，硬件故障先报修。"},
+        {"id": "device-patrol", "section": "星河保管规定 > 第二条", "text": "机房巡检每周一次，由运维值班员记录。"},
+        {"id": "device-split-chars", "section": "星河保管规定 > 第三条", "text": "巡视路线图放在门口，检查表每月归档。"},
+        {"id": "device-error", "section": "星河保管规定 > 第四条", "text": "硬件故障代码E403表示电源模块过热，须停机冷却。"}
+      ]
+    },
+    {
+      "key": "salary",
+      "title": "星河薪酬结构",
+      "passages": [
+        {"id": "row-24b", "section": "薪酬结构总表 > 第1行（薪酬等级：24级；薪档：B）", "text": "标准工资 9100 元"},
+        {"id": "row-3a", "section": "薪酬结构总表 > 第2行（薪酬等级：3级；薪档：A）", "text": "标准工资 5200 元"},
+        {"id": "row-3b", "section": "薪酬结构总表 > 第3行（薪酬等级：3级；薪档：B）", "text": "标准工资 5600 元"},
+        {"id": "row-24a", "section": "薪酬结构总表 > 第4行（薪酬等级：24级；薪档：A）", "text": "标准工资 8800 元"}
+      ]
+    }
+  ],
+  "filler": {
+    "_说明": "不属于任何概念的填充片段，数量超过每路候选上限（20），这样与查询无关的片段才会被挤出语义路，才有“只有词法命中”。",
+    "key": "notice",
+    "title": "星河例行通知",
+    "count": 24,
+    "first_number": 101,
+    "section": "例行通知 > 第{number}号",
+    "text": "第{number}号例行通知：本周没有其他安排，请照常办公。"
+  },
+  "outside": {
+    "_说明": "另一个知识库：内容比范围内的片段更贴合查询，数量也超过每路候选上限，用来检验范围过滤发生在截取之前。",
+    "key": "outside",
+    "title": "外库干扰资料",
+    "count": 25,
+    "text": "外库干扰{number}：住宿审批、宾馆押金、编号Q77、代码E403、机房巡检，一律999元。"
+  },
+  "tiny": {
+    "key": "tiny",
+    "title": "小库唯一资料",
+    "section": "小库 > 唯一条款",
+    "text": "投影幕布放在三楼仓库。"
+  },
+  "versioned": {
+    "key": "versioned",
+    "title": "星河车辆制度",
+    "section": "星河车辆制度 > 押金",
+    "old": "车辆押金标准旧版为500元。",
+    "new": "车辆押金标准新版为650元。"
+  },
+  "route_cases": [
+    {"id": "两路都命中", "question": "宾馆押金", "top": "travel-deposit", "routes": ["lexical", "semantic"]},
+    {"id": "只有向量命中（同义词）", "question": "酒店开销", "top": "travel-deposit", "routes": ["semantic"], "no_lexical_candidates": true},
+    {"id": "只有词法命中（英文编号）", "question": "E403", "top": "device-error", "routes": ["lexical"]},
+    {"id": "只有词法命中（中文二元组）", "question": "巡检", "top": "device-patrol", "routes": ["lexical"]}
+  ]
+}

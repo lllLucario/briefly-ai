@@ -84,6 +84,7 @@ def test_bad_daily_time_is_rejected(env, monkeypatch):
 
 def test_failed_scan_is_retried_after_interval_then_given_up(env, monkeypatch):
     tracked(env)
+    working_run = env.svc.scanner._run
     monkeypatch.setattr(env.svc.scanner, "_run", lambda *a, **k: 1 / 0)
     assert "失败" in run_due_daily(env.svc, at(14, 18, 1))[0]
     assert run_due_daily(env.svc, at(14, 18, 2)) == []  # 等重试间隔，不立即重试
@@ -97,7 +98,8 @@ def test_failed_scan_is_retried_after_interval_then_given_up(env, monkeypatch):
     assert [r.attempt for r in daily_runs(env)] == [3, 2, 1]
     assert all(r.status == FAILED for r in daily_runs(env))
 
-    monkeypatch.undo()
+    # 只恢复扫描，不用 monkeypatch.undo()：它会连带撤销上面的时区配置，结果随机器时区变化
+    monkeypatch.setattr(env.svc.scanner, "_run", working_run)
     monkeypatch.setattr(config, "TRACKING_SETTLE_SECONDS", 0)
     assert "每日扫描完成" in run_due_daily(env.svc, at(15, 18, 1))[0]  # 第二天恢复正常
 

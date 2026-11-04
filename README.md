@@ -62,6 +62,15 @@ cp .env.example .env
 
 `rag` 是知识库问答所需的本地 Embedding 与向量索引，`ocr` 是扫描件和图片文字识别；只用五项办公能力时可以只装 `.[dev]`。
 
+**锁定依赖（可复现安装，CI 用的就是这种方式）**：`uv.lock` 锁定了全部依赖和可选依赖 `dev`、`rag`、`ocr`、`browser`，覆盖 Python 3.14 的 Linux 和 Windows，其他平台或 Python 版本用上面的 pip 方式。需要先[安装 uv](https://docs.astral.sh/uv/getting-started/installation/)：
+
+```bash
+uv sync --locked --all-extras   # 按锁文件创建 .venv，锁文件过期时报错
+uv lock --check                 # 只检查 uv.lock 是否和 pyproject.toml 一致
+uv lock                         # 改过 pyproject.toml 的依赖后更新锁文件，已锁定的版本不变
+uv lock --upgrade-package httpx # 只升级某个包
+```
+
 ### 2. 配置模型
 
 编辑项目根目录的 `.env`：

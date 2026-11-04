@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -75,3 +76,45 @@ def _no_real_ocr(monkeypatch):
     monkeypatch.setattr(config, "OCR", "off")
     monkeypatch.setattr(ocr, "_engine", None)
     monkeypatch.setattr(ocr, "DEADLINE", None)
+
+
+# ---- 联网禁令：自动测试不得连接本机以外的地址（真实模型、飞书、SMTP 都算），本机和 CI 都生效 ----
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "", None}
+_external_network_attempts = []
+
+
+def _deny_external_network(event, args):
+    """审计钩子能看到本进程所有 socket 连接和域名解析；子进程（Playwright 的浏览器等）不在此列。
+    抛 AssertionError 而不是 OSError，避免被业务代码的网络错误处理吃掉；另记一笔，就算被更宽的 except 吃掉也会在收尾时报错。"""
+    if event == "socket.connect":
+        host = args[1][0] if isinstance(args[1], tuple) else None  # 非元组是 Unix 套接字路径
+    elif event == "socket.getaddrinfo":
+        host = args[0]
+    else:
+        return
+    if isinstance(host, bytes):
+        host = host.decode("ascii", "replace")
+    if host not in _LOOPBACK_HOSTS:
+        _external_network_attempts.append(f"{event}: {host}（{os.getenv('PYTEST_CURRENT_TEST')}）")
+        raise AssertionError(f"测试不得连接外部地址：{host}")
+
+
+sys.addaudithook(_deny_external_network)
+
+
+@pytest.fixture
+def external_network_attempts():
+    return _external_network_attempts
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_external_network_attempted():
+    yield
+    assert not _external_network_attempts, f"测试尝试连接外部地址：{_external_network_attempts}"
+
+
+@pytest.fixture(autouse=True)
+def _no_real_feishu_credentials(monkeypatch):
+    """本机 .env 里的飞书凭证不进测试：否则定时提醒的用例会真的连飞书（CI 没有凭证，以前只在本机发生）。"""
+    for name in ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_NOTIFY_USER", "FEISHU_FOLDER_TOKEN"):
+        monkeypatch.setattr(config, name, "")

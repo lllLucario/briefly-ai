@@ -11,6 +11,8 @@ pytestmark = pytest.mark.browser
 def open_knowledge(page):
     page.locator('.tabs [data-tab="knowledge"]').click()
     expect(page.locator("#kb-empty-create:visible, #kb-open-create:visible")).to_be_visible()
+    # 按钮可见时，切页触发的加载可能还没返回；它返回后会重绘列表并关掉上传弹窗。这里等一轮完整加载，后续操作才不和它抢。
+    page.evaluate("() => window.loadKnowledge()")
 
 
 def create(page, name):
