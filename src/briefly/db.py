@@ -33,7 +33,8 @@ def create_db_engine(url: str | None = None) -> Engine:
             kwargs["poolclass"] = StaticPool  # 所有连接共用同一个内存库
         else:
             Path(url.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)
-    engine = create_engine(url, **kwargs)
+    # 不让数据库异常的文字带上 SQL 参数（材料正文、问题原文），这些异常可能进日志
+    engine = create_engine(url, hide_parameters=True, **kwargs)
     if engine.dialect.name == "sqlite":
         event.listen(engine, "connect", _enable_foreign_keys)
     Base.metadata.create_all(engine)

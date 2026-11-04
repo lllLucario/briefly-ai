@@ -66,7 +66,7 @@ class _Item(BaseModel):
     def _lenient_attribute(cls, value):
         if value in ("date", "amount", "quantity", "status", "owner", "progress", ""):
             return value
-        log.info("提取结果的 attribute 取值不合法（%r），已置空", value)
+        log.info("提取结果的 attribute 取值不合法（长度 %s），已置空", len(str(value)))
         return ""
 
     @field_validator("importance", mode="before")
@@ -75,7 +75,7 @@ class _Item(BaseModel):
         mapping = {"高": "high", "中": "medium", "低": "low", "重要": "high", "一般": "medium", "次要": "low"}
         value = mapping.get(str(value).strip(), str(value).strip().lower()) if value is not None else "medium"
         if value not in ("high", "medium", "low"):
-            log.info("提取结果的 importance 取值不合法（%r），按 medium 处理", value)
+            log.info("提取结果的 importance 取值不合法（长度 %s），按 medium 处理", len(value))
             return "medium"
         return value
 

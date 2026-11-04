@@ -9,11 +9,16 @@ class ModelConfigurationError(RuntimeError):
     """模型配置缺失；可直接向用户显示，不包含配置值。"""
 
 
-def create_chat_model(*, max_retries: int | None = None, timeout: float | None = None) -> BaseChatModel:
-    missing = [name for name, value in (
+def missing_model_config() -> list[str]:
+    """缺少的模型配置项名称，不含配置值。"""
+    return [name for name, value in (
         ("BRIEFLY_API_KEY（或 OPENAI_API_KEY）", config.API_KEY),
         ("BRIEFLY_MODEL", config.MODEL),
     ) if not value or not value.strip()]
+
+
+def create_chat_model(*, max_retries: int | None = None, timeout: float | None = None) -> BaseChatModel:
+    missing = missing_model_config()
     if missing:
         raise ModelConfigurationError(
             f"模型配置不完整：缺少 {'、'.join(missing)}。请在 .env 中设置后重启服务；材料管理等不需要模型的功能仍可使用。"

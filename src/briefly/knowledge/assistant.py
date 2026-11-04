@@ -190,7 +190,7 @@ class KnowledgeSearchGuard(AgentMiddleware):
         questions = self._questions(request)
         if not questions:
             return response
-        log.warning("已选知识库的资料提问未检索就作答，丢弃草稿，补检索：%s", questions)
+        log.warning("已选知识库的资料提问未检索就作答，丢弃草稿，补检索 %s 个问题", len(questions))
         call = dict(name="search_knowledge", args=dict(questions=questions), id=f"call_guard_{uuid.uuid4().hex[:12]}", type="tool_call")
         forced = AIMessage("", id=answer.id, tool_calls=[call],
                            response_metadata={**answer.response_metadata, "forced_search": True})

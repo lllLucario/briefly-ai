@@ -331,7 +331,7 @@ class EvidenceBuilder:
                 raise ValueError("输出格式不对")
             return draft, 1, tokens
         except Exception as e:
-            log.warning("候选记录描述生成失败，改用要点拼接: %s", e)
+            log.warning("候选记录描述生成失败，改用要点拼接: %s", type(e).__name__)
             points = "；".join(i.point for i in items[:5])
             more = f"等 {len(items)} 项" if len(items) > 5 else ""
             return EvidenceDraft(title=f"修改《{name}》"[:20], description=f"{points}{more}。", category="other"), 1, tokens

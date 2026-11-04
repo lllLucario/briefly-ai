@@ -125,6 +125,10 @@ CONTEXT_RETRIES = int(os.getenv("BRIEFLY_CONTEXT_RETRIES", "1"))
 # 后端服务监听地址；默认只在本机访问
 HOST = os.getenv("BRIEFLY_HOST", "127.0.0.1")
 PORT = int(os.getenv("BRIEFLY_PORT", "8000"))
+# 日志：每行一条 JSON。级别留空时服务用 INFO、命令行用 WARNING（命令行的输出是给人看的）；
+# 只对本项目的日志生效，第三方库最低 WARNING。文件留空时只输出到标准输出（命令行是标准错误）
+LOG_LEVEL = os.getenv("BRIEFLY_LOG_LEVEL", "")
+LOG_FILE = os.getenv("BRIEFLY_LOG_FILE", "")
 
 # Map-Reduce 提炼：逐块提取的并发数、单块失败后的重试次数、最终合成时工作项的 token 预算（超出则先分批合并）
 MAP_CONCURRENCY = int(os.getenv("BRIEFLY_MAP_CONCURRENCY", "4"))

@@ -215,7 +215,7 @@ class Compactor:
         try:
             memory = SessionMemory.model_validate(row.data)
         except Exception as e:
-            log.warning("会话记忆 v%s 格式不对，忽略: %s", row.version, e)
+            log.warning("会话记忆 v%s 格式不对，忽略: %s", row.version, type(e).__name__)  # 校验错误的文字带原内容
             return None, 0
         return memory, checkpoint_index(messages, row.compacted_message_id, row.compacted_count)
 
@@ -281,7 +281,7 @@ class Compactor:
             try:
                 response = extractor.invoke(messages)
             except Exception as e:
-                log.warning("会话压缩调用失败（第 %s 次）: %s", attempt + 1, e)
+                log.warning("会话压缩调用失败（第 %s 次）: %s", attempt + 1, type(e).__name__)
                 continue
             raw = response["raw"]
             usage = getattr(raw, "usage_metadata", None) or {}
@@ -300,5 +300,5 @@ class Compactor:
             )
             if response["parsed"] is not None:
                 return response["parsed"]
-            log.warning("会话压缩输出格式不对（第 %s 次）: %s", attempt + 1, response.get("parsing_error"))
+            log.warning("会话压缩输出格式不对（第 %s 次）: %s", attempt + 1, type(response.get("parsing_error")).__name__)
         return None

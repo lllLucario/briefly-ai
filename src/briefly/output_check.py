@@ -187,7 +187,7 @@ class InternalTermCheck(AgentMiddleware):
         if state.get("retried"):
             self._mark(answer, terms, missing, too_long, fidelity, dates, claims, limit)
             return response
-        log.warning("回答检查未通过（内部信息 %s，缺少的冲突说法 %s，超出字数上限 %s，事实/编号问题 %s 项，日期换算错误 %s 处，虚报操作成功 %s 处），重试一次", terms, missing, limit if too_long else None,len(fidelity), len(dates), len(claims))
+        log.warning("回答检查未通过（内部信息 %s 项，缺少的冲突说法 %s 项，超出字数上限 %s，事实/编号问题 %s 项，日期换算错误 %s 处，虚报操作成功 %s 处），重试一次", len(terms), len(missing), limit if too_long else None, len(fidelity), len(dates), len(claims))
         hints = []
         if claims:
             hints.append("【系统检查】你声称已经保存、发送或修改业务数据，但你只有只读工具，没有执行这些操作的能力。请重写：待办需在结构化预览中由用户勾选确认保存，正式周报需在周报页审核生成；邮件等外发需由用户在对应页面明确操作。不要声称操作已完成，也不要把检查说明写进回答。只输出完整回答。")

@@ -394,7 +394,7 @@ def classify(model: BaseChatModel, conflicts: list[FactConflict], items: list[Wo
         )
         judgments = getattr(result, "judgments", []) or []
     except Exception as e:
-        log.warning("冲突归类失败，全部按未解决处理，未确认的主体候选丢弃: %s", e)
+        log.warning("冲突归类失败，全部按未解决处理，未确认的主体候选丢弃: %s", type(e).__name__)
         conflicts[:] = [c for c in conflicts if not c.needs_identity]
         return 1
     judged = set()

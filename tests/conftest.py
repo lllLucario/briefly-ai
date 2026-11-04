@@ -46,6 +46,21 @@ def _no_office_profile_template(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _restore_logging():
+    """configure_logging 改的是全局状态（命令行入口的测试也会调用）：每个测试后恢复，不影响后面的 caplog。"""
+    import logging
+
+    root, ours = logging.getLogger(), logging.getLogger("briefly")
+    before = list(root.handlers), root.level, ours.level
+    yield
+    for handler in [h for h in root.handlers if h not in before[0]]:
+        root.removeHandler(handler)
+        handler.close()
+    root.setLevel(before[1])
+    ours.setLevel(before[2])
+
+
+@pytest.fixture(autouse=True)
 def _no_real_ocr(monkeypatch):
     """单元测试不跑真实图片文字识别（慢，且结果随模型变化）：默认关闭；OCR 用例自己打开并注入替身引擎。"""
     from briefly import ocr

@@ -416,7 +416,7 @@ class Agent:
         try:
             return self.compactor.maybe_compact(thread_id, self.history_of(thread_id), run_id)
         except Exception as e:
-            log.warning("会话压缩失败: %s", e)
+            log.warning("会话压缩失败: %s", type(e).__name__)
             return False
 
     def _preflight(self, text: str) -> tuple[str, list[int]]:

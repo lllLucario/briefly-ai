@@ -10,6 +10,7 @@ from .feishu.client import default_client
 from .feishu.service import import_link
 from .materials import MaterialStore
 from .llm import ModelConfigurationError, create_chat_model
+from .logs import configure_logging
 from .skills import SKILLS
 
 REPL_HELP = (
@@ -98,6 +99,8 @@ def repl(agent: Agent, skill: str | None) -> None:
 
 
 def main() -> None:
+    # 标准输出留给结果（可能被重定向成文件），日志走标准错误，默认只显示警告以上
+    configure_logging(level=config.LOG_LEVEL or "WARNING", stream="stderr")
     if sys.argv[1:2] == ["track"]:  # 追踪文件；子命令与“briefly 文件路径”的用法分开解析
         from .tracking.cli import main as track_main
 

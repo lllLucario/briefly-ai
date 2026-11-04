@@ -31,7 +31,10 @@ async function api(path, options = {}) {
       body = await resp.json();
       if (body.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
     } catch (_) { /* 非 JSON 错误 */ }
-    const err = new Error(detail);
+    const requestId = body?.request_id || resp.headers.get("X-Request-ID");
+    // 服务端错误附上追踪号，用户可以选中复制给维护人员；4xx 是用户能自己处理的提示，只放在 err.requestId 上
+    const err = new Error(resp.status >= 500 && requestId ? `${detail}（追踪号：${requestId}）` : detail);
+    err.requestId = requestId;
     err.status = resp.status;
     err.threadId = body?.thread_id || null;
     err.needsConfirm = resp.status === 409 && Boolean(body?.confirm); // 需要用户确认后带 confirm / force 重试

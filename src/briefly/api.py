@@ -26,7 +26,8 @@ from .agent import Agent, new_thread_id, sqlite_checkpointer
 from .context_builder import SYSTEM_REPLY
 from .db import create_db_engine
 from .feishu import FeishuClient, client_from_config
-from .llm import ModelConfigurationError, create_chat_model
+from .llm import ModelConfigurationError, create_chat_model, missing_model_config
+from .logs import RequestContextMiddleware, configure_logging
 from . import material_library as library
 from .materials import TRACKED, Material, MaterialNotFound, MaterialStore
 from .sessions import ChatSession, SessionStore
@@ -361,6 +362,31 @@ def create_app(
     Sessions = Annotated[SessionStore, Depends(lambda: app.state.sessions)]
     AgentDep = Annotated[Agent, Depends(get_agent)]
 
+    @app.get("/healthz", include_in_schema=False)
+    def healthz():
+        """进程活着就返回 200，不查任何依赖。"""
+        return {"status": "ok"}
+
+    @app.get("/readyz", include_in_schema=False)
+    def readyz():
+        """业务库能否连接、模型配置是否存在。不调用模型；失败时只说明哪一项没就绪，不带配置值。"""
+        checks = {"database": True, "model": True}
+        try:
+            with app.state.store.engine.connect() as connection:
+                connection.exec_driver_sql("SELECT 1")
+        except Exception:
+            log.exception("就绪检查：业务库连接失败")
+            checks["database"] = False
+        if model_factory is create_chat_model and missing_model_config():  # 注入的模型工厂不看这些配置
+            checks["model"] = False
+        if all(checks.values()):
+            return {"status": "ready", "checks": checks}
+        names = {"database": "业务数据库", "model": "模型配置"}
+        return JSONResponse(status_code=503, content={
+            "status": "not_ready", "checks": checks, "code": "not_ready",
+            "detail": "尚未就绪：" + "、".join(names[k] for k, ok in checks.items() if not ok),
+        })
+
     @app.get("/skills", tags=[docs.CHAT], response_model=list[SkillOut], summary="可指定的能力")
     def list_skills():
         return [SkillOut(name=s.name, description=s.description) for s in SKILLS.values()]
@@ -600,6 +626,7 @@ def create_app(
         return FileResponse(WEB_DIR / "index.html")
 
     app.mount("/web", StaticFiles(directory=WEB_DIR), name="web")
+    app.add_middleware(RequestContextMiddleware)  # 最后添加的在最外层：其他中间件的日志和错误也带追踪号
     return app
 
 
@@ -607,4 +634,7 @@ def serve() -> None:
     """命令行入口 briefly-api：启动后端服务。"""
     import uvicorn
 
-    uvicorn.run(create_app(tracking_scheduler=config.TRACKING_SCHEDULER), host=config.HOST, port=config.PORT)
+    level = configure_logging()
+    # uvicorn 的日志交给上面的配置统一输出；访问日志由 RequestContextMiddleware 记（带追踪号，不记查询参数）
+    uvicorn.run(create_app(tracking_scheduler=config.TRACKING_SCHEDULER), host=config.HOST, port=config.PORT,
+                log_config=None, log_level=level.lower(), access_log=False)
