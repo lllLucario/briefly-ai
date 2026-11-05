@@ -107,7 +107,7 @@ function todoItem(t) {
     <details class="todo-ticket" data-ticket="${t.id}" ${todos.expanded.has(t.id) ? "open" : ""}>
       <summary class="todo-ticket-row">
         <span class="ticket-chevron" aria-hidden="true">›</span>
-        <span class="ticket-copy"><b class="todo-name">${escapeHtml(t.title)}</b><span class="ticket-subtitle" title="${escapeHtml(summary)}">${escapeHtml(summary)}</span></span>
+        <span class="ticket-copy"><b class="todo-name" title="${escapeHtml(t.title)}">${escapeHtml(t.title)}</b><span class="ticket-subtitle" title="${escapeHtml(summary)}">${escapeHtml(summary)}</span></span>
         <span class="ticket-meta">${t.due_date ? `<span class="ticket-due ${overdue ? "overdue" : ""}">${overdue ? "已逾期 · " : ""}${shortDay(t.due_date)}</span>` : ""}${childProgress(t)}</span>
         ${todoStatusMark(t)}
       </summary>
@@ -134,9 +134,11 @@ function renderTodoList() {
   const top = rows.filter((t) => !t.parent_id || !ids.has(t.parent_id));
   const html = top.map(todoItem).join("");
   const empty = { open: "没有未完成的待办", all: "还没有待办", archived: "没有归档的待办" }[todos.filter];
+  // 引导只给真的还没有待办的人；待办都完成了、或在看归档时，一句说明就够了
+  const firstUse = !top.length && todos.filter !== "archived" && !todos.list.length;
   if (typeof statusMenu !== "undefined" && statusMenu.matches(":popover-open")) statusMenu.hidePopover();
-  $("#todo-list").innerHTML = html || `<li class="cards-empty muted">${empty}</li>`;
-  $("#todo-empty-panel").classList.toggle("hidden", Boolean(top.length));
+  $("#todo-list").innerHTML = html || (firstUse ? "" : `<li class="cards-empty muted">${empty}</li>`);
+  $("#todo-empty-panel").classList.toggle("hidden", !firstUse);
   $("#todo-count").textContent = top.length ? `${top.length} 项工作 · 点击任务行展开要点和子待办` : "";
 }
 
@@ -170,8 +172,13 @@ $("#todo-list").addEventListener("click", (e) => {
   const button = e.target.closest("[data-inline-detail]");
   if (button) openTodo(Number(button.dataset.inlineDetail));
   const trigger = e.target.closest("[data-status-menu]");
-  if (trigger) { e.preventDefault(); e.stopPropagation(); openStatusMenu(trigger); }
-
+  if (trigger) { e.preventDefault(); e.stopPropagation(); openStatusMenu(trigger); return; }
+  // 点击时就记下展开状态：toggle 事件是异步的，如果列表抢先重新渲染，它就记不到了，新行会收起来
+  const row = e.target.closest(".todo-ticket-row");
+  if (row) {
+    const id = Number(row.parentElement.dataset.ticket);
+    if (row.parentElement.open) todos.expanded.delete(id); else todos.expanded.add(id);
+  }
 });
 
 function inlineNotice(parent, text, kind = "") {
@@ -323,7 +330,7 @@ $("#new-todo").addEventListener("click", async () => {
   const r = await uiPrompt({
     title: "新建待办",
     fields: [
-      { name: "title", label: "标题", required: true, placeholder: "如 支付改造上线" },
+      { name: "title", label: "标题", required: true, placeholder: "如 支付改造上线", maxlength: 200 },
       { name: "description", label: "说明（可选）", type: "textarea", placeholder: "工作背景和目标" },
       { name: "due", label: "截止日期（可选）", type: "date" },
     ],
@@ -604,7 +611,7 @@ $("#todo-add-child").addEventListener("click", async () => {
   const r = await uiPrompt({
     title: `给“${todos.detail.title}”添加子待办`,
     fields: [
-      { name: "title", label: "标题", required: true },
+      { name: "title", label: "标题", required: true, maxlength: 200 },
       { name: "description", label: "说明（可选）", type: "textarea" },
       { name: "due", label: "截止日期（可选，可以和父待办不同）", type: "date" },
     ],

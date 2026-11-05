@@ -1,0 +1,608 @@
+"""W4-04 体验走查修复：接口失败、断网、重复提交、空状态、长文本、深色对比度。
+
+web_page 固件会断言没有未捕获的页面错误，所以这里的失败场景同时验证“不会漏成未处理的 Promise”。
+"""
+import os
+import re
+
+import pytest
+from playwright.sync_api import expect
+
+from briefly import config
+from briefly.llm import create_chat_model
+
+from .flows import send
+from .support import MEETING, live_app
+
+pytestmark = pytest.mark.browser
+
+SERVER_ERROR = {"detail": "服务内部错误", "request_id": "req-ux-1"}
+
+
+def server_error(route):
+    route.fulfill(status=500, json=SERVER_ERROR, headers={"X-Request-ID": "req-ux-1"})
+
+
+def base(page):
+    return re.match(r"https?://[^/]+", page.url)[0]
+
+
+def tab(page, name):
+    page.locator(f'.tabs [data-tab="{name}"]').click()
+
+
+def seed_todo(page, title="待办一", **fields):
+    response = page.request.post(base(page) + "/todos", data={"title": title, "status": "todo", **fields})
+    assert response.ok, response.text()
+    return response.json()
+
+
+def ready(page):
+    page.wait_for_load_state("networkidle")
+    return page
+
+
+# ---------- 断网和服务错误
+
+
+def test_offline_messages_are_chinese_and_notice_clears_after_recovery(web_page):
+    page = ready(web_page)
+    page.context.set_offline(True)
+    tab(page, "chat")
+    expect(page.locator("#session-list")).to_contain_text("连不上服务")
+    page.locator("#input").fill("断网时发送")
+    page.locator("#send").click()
+    expect(page.locator(".msg.assistant .bubble").last).to_contain_text("连不上服务")
+    expect(page.locator("#input")).to_have_value("断网时发送")  # 输入保留，恢复后可以直接重发
+    tab(page, "knowledge")
+    expect(page.locator("#kb-load-error")).to_contain_text("连不上服务")
+    tab(page, "weekly")
+    expect(page.locator("#week-msg")).to_contain_text("连不上服务")
+    assert "Failed to fetch" not in page.locator("body").inner_text()
+    # 没有专门处理的操作走全局兜底：顶部状态条提示，恢复连接后自动消失
+    tab(page, "todos")
+    page.evaluate("() => { api('/todos').then(() => {}); }")
+    expect(page.locator("#app-status")).to_contain_text("操作没有完成")
+    page.context.set_offline(False)
+    page.locator("[data-retry-todos]").click()
+    expect(page.locator("#todo-load-msg")).to_be_hidden()
+    expect(page.locator("#app-status")).to_be_hidden()
+
+
+def test_first_load_failure_still_loads_current_page_and_can_be_dismissed(web_page):
+    page = web_page
+    seed_todo(page, "能看到的待办")
+    page.route("**/chat/sessions", server_error)
+    page.route("**/knowledge-bases", server_error)
+    page.reload()
+    expect(page.locator("#todo-list")).to_contain_text("能看到的待办")
+    status = page.locator("#app-status")
+    expect(status).to_contain_text("部分内容没有加载成功")
+    expect(status).to_contain_text("追踪号：req-ux-1")
+    status.get_by_role("button", name="关闭").click()
+    expect(status).to_be_hidden()
+    # 首屏失败后切到助理页能恢复会话列表，不能一直显示空
+    expect(page.locator("#session-list")).to_contain_text("会话记录加载失败")
+    page.unroute("**/chat/sessions")
+    tab(page, "chat")
+    expect(page.locator("#session-list")).to_contain_text("还没有会话")
+
+
+def test_validation_error_is_not_raw_json(web_page):
+    page = ready(web_page)
+    page.route("**/todos", lambda route: route.fulfill(status=422, json={"detail": [{"type": "date_from_datetime_parsing", "loc": ["body", "due_date"], "msg": "Input should be a valid date"}]}) if route.request.method == "POST" else route.continue_())
+    page.locator("#new-todo").click()
+    page.locator("#ui-fields input").first.fill("校验错误")
+    page.locator("#ui-ok").click()
+    message = page.locator("#ui-message")
+    expect(message).to_contain_text("提交的内容格式不正确")
+    assert "date_from_datetime_parsing" not in message.inner_text()
+
+
+def test_action_failure_without_own_handler_reports_in_status_bar(web_page):
+    page = ready(web_page)
+    tab(page, "chat")
+    send(page, "请整理这份会议纪要")
+    page.route("**/chat/sessions/*", server_error)
+    page.locator(".session-options summary").click()
+    page.locator("#delete-session").click()
+    page.locator("#ui-ok").click()
+    expect(page.locator("#app-status")).to_contain_text("操作没有完成")
+    expect(page.locator("#app-status")).to_contain_text("追踪号：req-ux-1")
+
+
+def test_action_failure_inside_dialog_is_not_hidden_behind_it(web_page):
+    page = ready(web_page)
+    tab(page, "weekly")
+    expect(page.locator("#week-go")).to_be_enabled()
+    page.locator("#open-settings").click()
+    expect(page.locator("#settings-dialog")).to_be_visible()
+    page.route("**/weekly/items/1/sources", server_error)
+    page.evaluate("() => { showEvidenceSources(1); }")
+    expect(page.locator("#ui-dialog")).to_be_visible()
+    expect(page.locator("#ui-title")).to_have_text("操作没有完成")
+
+
+# ---------- 材料
+
+
+def test_materials_failure_shows_error_and_retry(web_page):
+    page = ready(web_page)
+    page.request.post(base(page) + "/materials", data={"title": "材料一", "content": MEETING})
+    page.route(re.compile(r"/materials(/library)?(\?.*)?$"), server_error)
+    tab(page, "materials")
+    box = page.locator("#material-rows .notice.error")
+    expect(box).to_contain_text("材料加载失败")
+    expect(box).to_contain_text("追踪号：req-ux-1")
+    page.unroute(re.compile(r"/materials(/library)?(\?.*)?$"))
+    page.locator("[data-lib-retry]").click()
+    expect(page.locator("#material-rows")).to_contain_text("材料一")
+
+
+def test_tracked_files_failure_is_not_shown_as_empty(web_page):
+    page = ready(web_page)
+    tab(page, "materials")
+    page.route("**/tracking/**", server_error)
+    page.locator('#mat-tabs [data-mt="tracked"]').click()
+    expect(page.locator("#tracking-msg")).to_contain_text("追踪的文件加载失败")
+    expect(page.locator("#tracked-label")).to_have_text("追踪信息暂时读取不到")
+    page.unroute("**/tracking/**")
+    page.locator("[data-tracking-retry]").click()
+    expect(page.locator("#tracking-msg")).to_be_hidden()
+    expect(page.locator("#tracked-label")).to_have_text("还没有追踪的文件")
+
+
+def test_double_click_save_material_sends_one_request(web_page):
+    page = ready(web_page)
+    posts = []
+    page.on("request", lambda r: posts.append(r) if r.method == "POST" and r.url.endswith("/materials") else None)
+    tab(page, "materials")
+    page.locator("#open-add").click()
+    page.locator('[data-add="paste"]').click()
+    page.locator("#paste-content").fill("连点保存的内容")
+    page.locator("#paste-form button").dblclick()
+    expect(page.locator("#add-msg")).to_contain_text("已保存")
+    page.wait_for_load_state("networkidle")
+    assert len(posts) == 1
+
+
+def test_double_click_add_tracked_path_sends_one_request(web_page, tmp_path):
+    page = ready(web_page)
+    source = tmp_path / "追踪的文件.txt"
+    source.write_text("第一版内容", encoding="utf-8")
+    posts = []
+    page.on("request", lambda r: posts.append(r) if r.method == "POST" and r.url.endswith("/tracking/sources") else None)
+    tab(page, "materials")
+    page.locator('#mat-tabs [data-mt="tracked"]').click()
+    expect(page.locator("#add-source-box")).to_have_attribute("open", "")
+    page.locator("#source-paths").fill(str(source))
+    page.locator("#source-add").dblclick()
+    expect(page.locator("#tracking-msg")).to_contain_text("已添加")
+    page.wait_for_load_state("networkidle")
+    assert len(posts) == 1
+
+
+def test_double_click_import_feishu_link_sends_one_request(web_page):
+    page = ready(web_page)
+    posts = []
+    def refuse(route):
+        posts.append(route.request)
+        route.fulfill(status=400, json={"detail": "读取失败"})
+    page.route("**/materials/feishu", refuse)
+    tab(page, "materials")
+    page.locator("#open-add").click()
+    page.locator('#add-tabs [data-add="cloud"]').click()
+    page.locator('#cloud-tabs [data-add="link"]').click()
+    page.locator("#feishu-url").fill("https://example.feishu.cn/docx/abc")
+    page.locator("#feishu-form button").dblclick()
+    expect(page.locator("#add-msg")).to_contain_text("读取失败")
+    expect(page.locator("#feishu-form button")).to_be_enabled()  # 失败后可以重试
+    page.wait_for_load_state("networkidle")
+    assert len(posts) == 1
+
+
+# ---------- 助理
+
+
+def test_failed_session_switch_stays_on_current_session(web_page):
+    page = ready(web_page)
+    tab(page, "chat")
+    send(page, "请整理这份会议纪要")
+    first_thread = page.evaluate("() => state.threadId")
+    page.locator("#new-session").click()
+    send(page, "只保留李强的行动项")
+    second_thread = page.evaluate("() => state.threadId")
+    assert first_thread != second_thread
+    page.locator("#input").fill("还没发送的草稿")
+    page.route(f"**/chat/sessions/{first_thread}", server_error)
+    page.locator(f'#session-list li[data-id="{first_thread}"]').click()
+    expect(page.locator("#chat-msg")).to_contain_text("打开会话失败")
+    expect(page.locator("#chat-msg")).to_contain_text("追踪号：req-ux-1")
+    assert page.evaluate("() => state.threadId") == second_thread
+    expect(page.locator("#input")).to_have_value("还没发送的草稿")
+    page.unroute(f"**/chat/sessions/{first_thread}")
+    page.locator(f'#session-list li[data-id="{first_thread}"]').click()
+    expect(page.locator("#chat-msg")).to_be_hidden()
+    expect(page.locator(".msg.user").first).to_contain_text("请整理这份会议纪要")
+    assert page.evaluate("() => state.threadId") == first_thread
+
+
+def test_session_error_notice_and_list_behave_on_failure(web_page):
+    page = ready(web_page)
+    tab(page, "chat")
+    send(page, "请整理这份会议纪要")
+    thread = page.evaluate("() => state.threadId")
+    page.locator("#new-session").click()
+    # 刷新列表失败时，已有的会话还能点
+    page.route("**/chat/sessions", server_error)
+    tab(page, "todos")
+    tab(page, "chat")
+    expect(page.locator("#session-list .session-error")).to_contain_text("会话记录加载失败")
+    expect(page.locator(f'#session-list li[data-id="{thread}"]')).to_be_visible()
+    # 错误行不能被单行省略截断，否则看不到重试按钮
+    assert page.locator("#session-list .session-error").evaluate("li => li.scrollWidth <= li.clientWidth")
+    expect(page.locator("[data-retry-sessions]")).to_be_visible()
+    page.unroute("**/chat/sessions")
+    # 打开失败的提示，在下一次发送时清掉
+    page.route(f"**/chat/sessions/{thread}", server_error)
+    page.locator(f'#session-list li[data-id="{thread}"]').click()
+    expect(page.locator("#chat-msg")).to_be_visible()
+    page.unroute(f"**/chat/sessions/{thread}")
+    send(page, "只保留李强的行动项")
+    expect(page.locator("#chat-msg")).to_be_hidden()
+    expect(page.locator("#session-list .session-error")).to_have_count(0)
+
+
+def test_reference_failure_is_visible(web_page):
+    from .test_knowledge import allow_egress, ask_assistant, create, import_file, open_knowledge
+
+    pytest.importorskip("sqlite_vec", reason="知识网页回归需安装.[rag]")
+    page = ready(web_page)
+    open_knowledge(page)
+    kb = create(page, "引用失败")
+    import_file(page)
+    allow_egress(page)
+    answer = ask_assistant(page, kb, "请结合制度帮我列两点出差审批注意事项")
+    page.route("**/references/**", server_error)
+    answer.locator("[data-chat-reference]").first.click()
+    expect(page.locator("#ui-title")).to_have_text("打不开原文")
+    expect(page.locator("#ui-message")).to_contain_text("追踪号：req-ux-1")
+
+
+def test_markdown_links_open_in_new_tab(web_page):
+    html = ready(web_page).evaluate("() => renderMarkdown('[说明](https://example.invalid/a)')")
+    assert 'target="_blank"' in html and "noopener" in html
+
+
+# ---------- 模型未配置
+
+
+@pytest.fixture
+def no_model_page(tmp_path, monkeypatch):
+    from playwright.sync_api import sync_playwright
+
+    monkeypatch.setattr(config, "API_KEY", "")
+    monkeypatch.setattr(config, "MODEL", "")
+    with live_app(tmp_path, model_factory=create_chat_model) as url, sync_playwright() as playwright:
+        browser = playwright.chromium.launch(channel=os.getenv("BRIEFLY_BROWSER_CHANNEL") or None)
+        context = browser.new_context(viewport={"width": 1440, "height": 1000})
+        context.route("**/*", lambda route: route.continue_() if route.request.url.startswith(url + "/") else route.abort())
+        page = context.new_page()
+        page.set_default_timeout(10000)
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        try:
+            page.goto(url)
+            yield page
+            assert not errors, errors
+        finally:
+            context.close()
+            browser.close()
+
+
+def test_missing_model_is_explained_before_sending_and_other_pages_work(no_model_page):
+    page = ready(no_model_page)
+    notice = page.locator("#model-status")
+    expect(notice).to_be_hidden()  # 待办不用模型，不打扰
+    seed_todo(page)
+    page.reload()
+    expect(page.locator("#todo-list")).to_contain_text("待办一")
+    tab(page, "chat")
+    expect(notice).to_contain_text("还没有配置模型")
+    assert "BRIEFLY_" not in notice.inner_text()
+    page.locator("#input").fill("请整理纪要")
+    page.locator("#send").click()
+    expect(page.locator(".msg.assistant .bubble").last).to_contain_text("模型配置不完整")
+    expect(page.locator("#input")).to_have_value("请整理纪要")
+    tab(page, "materials")
+    expect(notice).to_be_hidden()
+    tab(page, "weekly")
+    expect(notice).to_be_visible()
+
+
+# ---------- 周报
+
+
+def test_weekly_load_failure_offers_reload_instead_of_stuck_loading(web_page):
+    page = ready(web_page)
+    page.route("**/weekly/week*", server_error)
+    tab(page, "weekly")
+    go = page.locator("#week-go")
+    expect(go).to_have_text("重新加载")
+    expect(go).to_be_enabled()
+    expect(page.locator("#week-msg")).to_contain_text("追踪号：req-ux-1")
+    expect(page.locator(".week-steps")).to_be_hidden()
+    go.click()  # 还失败：仍可重试
+    expect(go).to_have_text("重新加载")
+    page.unroute("**/weekly/week*")
+    go.click()
+    expect(go).to_have_text("整理本周工作")
+    expect(page.locator(".week-steps")).to_be_visible()
+    expect(page.locator("#week-msg")).to_be_hidden()
+
+
+def test_generation_polling_survives_a_failed_refresh(web_page):
+    page = ready(web_page)
+    seed_todo(page)
+    tab(page, "weekly")
+    page.locator("#week-go").click()
+    expect(page.locator("#week-checklist [data-ev]")).to_have_count(1)
+    report = page.evaluate("() => weekly.current.id")
+    page.route(f"**/weekly/{report}", server_error)
+    page.evaluate("() => { weekly.current.status = 'running'; renderWeek(); }")
+    expect(page.locator("#week-msg")).to_contain_text("正在自动重试", timeout=8000)
+    page.unroute(f"**/weekly/{report}")
+    # 恢复后继续刷新到真实状态：这一周其实没有在生成
+    expect(page.locator("#week-msg")).to_be_hidden(timeout=8000)
+    expect(page.locator("#week-go")).to_have_text("确认并生成周报")
+
+
+def test_double_click_add_evidence_creates_one_record(web_page):
+    page = ready(web_page)
+    seed_todo(page)
+    tab(page, "weekly")
+    page.locator("#week-go").click()
+    expect(page.locator("#week-checklist [data-ev]")).to_have_count(1)
+    posts = []
+    page.on("request", lambda r: posts.append(r) if r.method == "POST" and r.url.endswith("/items") else None)
+    page.locator("#add-evidence").click()
+    page.locator("#ev-title").fill("补充记录")
+    page.locator("#ev-desc").fill("文件体现不了的工作")
+    page.locator("#evidence-form button.primary").dblclick()
+    expect(page.locator("#evidence-dialog")).to_be_hidden()
+    page.wait_for_load_state("networkidle")
+    assert len(posts) == 1
+
+
+def test_double_click_save_report_sends_one_request(web_page):
+    page = ready(web_page)
+    seed_todo(page)
+    tab(page, "weekly")
+    page.locator("#week-go").click()
+    page.locator('#week-checklist [data-act="confirm"]').click()
+    expect(page.locator("#week-go")).to_be_enabled()
+    page.locator("#week-go").click()
+    expect(page.locator("#edit-weekly")).to_be_enabled(timeout=30000)
+    expect(page.locator("#weekly-preview")).not_to_be_empty(timeout=30000)
+    puts = []
+    page.on("request", lambda r: puts.append(r) if r.method == "PUT" and r.url.endswith("/content") else None)
+    page.locator("#edit-weekly").click()
+    page.locator("#weekly-text").fill("人工改过的正文")
+    page.locator("#save-weekly").dblclick()
+    expect(page.locator("#weekly-preview")).to_contain_text("人工改过的正文")
+    page.wait_for_load_state("networkidle")
+    assert len(puts) == 1
+
+
+# ---------- 待办
+
+
+def test_todo_empty_state_guides_only_first_use(web_page):
+    page = ready(web_page)
+    guide = page.locator("#todo-empty-panel")
+    expect(guide).to_be_visible()
+    expect(page.locator("#todo-list .cards-empty")).to_have_count(0)  # 不和引导重复
+    # 归档为空只是一句说明，不引导创建
+    page.locator("#todo-filter").select_option("archived")
+    expect(page.locator("#todo-list")).to_contain_text("没有归档的待办")
+    expect(guide).to_be_hidden()
+    page.locator("#todo-filter").select_option("open")
+    expect(guide).to_be_visible()
+    # 全部完成不是“第一次用”
+    done = seed_todo(page, "已完成的事")
+    page.request.post(base(page) + f"/todos/{done['id']}/status", data={"status": "done", "confirm": True})
+    page.reload()
+    expect(page.locator("#todo-list")).to_contain_text("没有未完成的待办")
+    expect(guide).to_be_hidden()
+
+
+def test_long_titles_are_clamped_in_lists_and_stay_readable(web_page):
+    page = ready(web_page)
+    title = "很长的待办标题" * 28
+    seed_todo(page, title)
+    page.set_viewport_size({"width": 375, "height": 812})
+    page.reload()
+    name = page.locator("#todo-list .todo-name").first
+    expect(name).to_be_visible()
+    assert name.get_attribute("title") == title
+    line = float(name.evaluate("el => parseFloat(getComputedStyle(el).lineHeight)"))
+    assert name.bounding_box()["height"] <= line * 3 + 1
+    assert page.locator("body").evaluate("el => el.scrollWidth <= innerWidth")
+    page.locator("#todo-list summary").first.click()  # 展开后显示完整标题
+    assert name.bounding_box()["height"] > line * 3 + 1
+
+
+def test_expanded_row_survives_render_before_toggle_event(web_page):
+    """点开待办行的同时列表重新渲染（toggle 事件还没处理），行不能自己收起来；再点一次能收起。"""
+    page = ready(web_page)
+    seed_todo(page, "竞态探测")
+    page.reload()
+    page.wait_for_selector("details[data-ticket]")
+    page.wait_for_load_state("networkidle")
+    click_then_render = """() => {
+      document.querySelector('details[data-ticket] summary').click();
+      renderTodoList();
+      return new Promise(res => setTimeout(() => res(document.querySelector('details[data-ticket]').open), 300));
+    }"""
+    assert page.evaluate(click_then_render) is True
+    assert page.evaluate(click_then_render) is False
+    # 点状态图标不改变展开状态
+    page.locator("details[data-ticket] [data-status-menu]").first.click()
+    expect(page.locator("#todo-status-menu")).to_be_visible()
+    page.keyboard.press("Escape")
+    assert page.evaluate("() => { renderTodoList(); return document.querySelector('details[data-ticket]').open; }") is False
+
+
+def test_new_todo_title_has_length_limit(web_page):
+    page = ready(web_page)
+    page.locator("#new-todo").click()
+    page.locator("#ui-fields input").first.fill("长" * 300)
+    assert len(page.locator("#ui-fields input").first.input_value()) == 200
+
+
+# ---------- 知识库
+
+
+def test_knowledge_reload_keeps_open_upload_dialog_and_update_target(web_page):
+    """登记表第 30 条：切回知识库页、列表还没返回时打开弹窗，返回后弹窗不能自己关，更新目标不能丢。"""
+    from .test_knowledge import create, import_file, open_knowledge
+
+    pytest.importorskip("sqlite_vec", reason="知识网页回归需安装.[rag]")
+    page = ready(web_page)
+    open_knowledge(page)
+    create(page, "推迟加载")
+    import_file(page)
+    tab(page, "todos")
+    held = []
+    page.route("**/knowledge-bases", lambda route: held.append(route))
+    tab(page, "knowledge")
+    page.wait_for_function("() => document.querySelector('#tab-knowledge').classList.contains('active')")
+    page.locator("[data-kb-update]").click()
+    dialog = page.locator("#kb-upload-dialog")
+    expect(dialog).to_be_visible()
+    expect(page.locator("#kb-update-target")).to_contain_text("正在更新")
+    assert held  # 确实卡在加载中
+    for route in held:
+        route.continue_()
+    page.unroute("**/knowledge-bases")
+    page.wait_for_load_state("networkidle")
+    expect(dialog).to_be_visible()
+    expect(page.locator("#kb-update-target")).to_contain_text("正在更新")
+
+
+def test_remove_from_knowledge_confirmation_names_the_action(web_page):
+    from .test_knowledge import create, import_file, open_knowledge
+
+    pytest.importorskip("sqlite_vec", reason="知识网页回归需安装.[rag]")
+    page = ready(web_page)
+    open_knowledge(page)
+    create(page, "移出确认")
+    import_file(page)
+    page.locator("[data-kb-remove]").click()
+    expect(page.locator("#ui-title")).to_have_text("移出知识库")
+    expect(page.locator("#ui-ok")).to_have_text("移出")
+    expect(page.locator("#ui-ok")).to_have_class("danger-solid")
+    page.locator("#ui-cancel").click()
+    expect(page.locator("#kb-documents")).to_contain_text("制度.md")  # 取消后没有移出
+
+
+def test_knowledge_load_failure_has_retry(web_page):
+    page = ready(web_page)
+    page.route("**/knowledge-bases", server_error)
+    tab(page, "knowledge")
+    expect(page.locator("#kb-load-error")).to_contain_text("加载知识库失败")
+    expect(page.locator("#kb-load-error")).to_contain_text("追踪号：req-ux-1")
+    page.unroute("**/knowledge-bases")
+    page.locator("#kb-load-retry").click()
+    expect(page.locator("#kb-load-error")).to_be_hidden()
+    expect(page.locator("#kb-empty-create")).to_be_visible()
+
+
+def test_knowledge_upload_error_shows_request_id_and_validates_tokens(web_page):
+    """登记表第 17 条：上传走 XMLHttpRequest，也要有追踪号。"""
+    from .test_knowledge import create, open_knowledge
+
+    pytest.importorskip("sqlite_vec", reason="知识网页回归需安装.[rag]")
+    page = ready(web_page)
+    open_knowledge(page)
+    create(page, "上传失败")
+    page.locator("#kb-open-upload").click()
+    page.locator("#kb-files").set_input_files({"name": "a.md", "mimeType": "text/markdown", "buffer": b"# a\nb"})
+    page.locator("#kb-tokens").fill("9999")
+    page.locator("#kb-upload").click()
+    expect(page.locator("#kb-upload-error")).to_contain_text("32～512")
+    expect(page.locator("#kb-upload-dialog")).to_be_visible()
+    page.locator("#kb-tokens").fill("512")
+    page.route("**/imports", lambda route: server_error(route) if route.request.method == "POST" else route.continue_())
+    page.locator("#kb-upload").click()
+    transfer = page.locator(".kb-transfer")
+    expect(transfer).to_contain_text("服务内部错误")
+    expect(transfer).to_contain_text("追踪号：req-ux-1")
+
+
+# ---------- 登录
+
+
+def test_login_page_wording_button_and_request_id(tmp_path):
+    from playwright.sync_api import sync_playwright
+
+    with live_app(tmp_path, access_token="ux-token") as url, sync_playwright() as playwright:
+        browser = playwright.chromium.launch(channel=os.getenv("BRIEFLY_BROWSER_CHANNEL") or None)
+        context = browser.new_context()
+        context.route("**/*", lambda route: route.continue_() if route.request.url.startswith(url + "/") else route.abort())
+        page = context.new_page()
+        page.set_default_timeout(10000)
+        try:
+            page.goto(url)
+            expect(page.locator(".login-card")).to_contain_text("联系部署这个服务的人")
+            assert "BRIEFLY_" not in page.locator(".login-card").inner_text()
+            expect(page.locator("#login-submit")).to_have_class("primary")
+            page.route("**/auth/login", server_error)
+            page.locator("#login-token").fill("ux-token")
+            page.locator("#login-submit").click()
+            expect(page.locator("#login-msg")).to_contain_text("追踪号：req-ux-1")
+            expect(page.locator("#login-submit")).to_have_text("登录")
+            expect(page.locator("#login-submit")).to_be_enabled()
+        finally:
+            context.unroute_all(behavior="ignoreErrors")
+            context.close()
+            browser.close()
+
+
+# ---------- 对比度
+
+
+CONTRAST = """() => {
+  const lum = c => { const a = c.slice(0, 3).map(v => { v /= 255; return v <= .03928 ? v / 12.92 : Math.pow((v + .055) / 1.055, 2.4); }); return .2126 * a[0] + .7152 * a[1] + .0722 * a[2]; };
+  const parse = s => { const m = s.match(/[\\d.]+/g).map(Number); return m.length >= 4 ? m : [...m, 1]; };
+  const bgOf = el => { for (let e = el; e; e = e.parentElement) { const s = getComputedStyle(e); if (s.backgroundImage !== 'none') return null; const c = parse(s.backgroundColor); if (c[3] > .9) return c; } return null; };
+  const low = [];
+  for (const el of document.querySelectorAll('body *')) {
+    if (el.closest('svg,script,style,template') || !el.getClientRects().length || el.disabled) continue;
+    const text = [...el.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent.trim()).join('');
+    if (!text) continue;
+    const s = getComputedStyle(el);
+    if (s.visibility === 'hidden' || +s.opacity < .5) continue;
+    const bg = bgOf(el);
+    if (!bg) continue;
+    const a = lum(parse(s.color)), b = lum(bg), ratio = (Math.max(a, b) + .05) / (Math.min(a, b) + .05);
+    if (ratio < (parseFloat(s.fontSize) >= 18.66 ? 3 : 4.5)) low.push([ratio.toFixed(2), s.fontSize, text.slice(0, 24)]);
+  }
+  return low;
+}"""
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_text_contrast_on_all_pages(web_page, scheme):
+    page = ready(web_page)
+    page.emulate_media(color_scheme=scheme)
+    seed_todo(page)
+    page.request.post(base(page) + "/materials", data={"title": "材料一", "content": MEETING})
+    low = {}
+    for name in ["todos", "chat", "materials", "knowledge", "weekly"]:
+        tab(page, name)
+        page.wait_for_load_state("networkidle")
+        found = page.evaluate(CONTRAST)
+        if found:
+            low[name] = found
+    assert not low, low

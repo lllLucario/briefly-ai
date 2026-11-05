@@ -11,11 +11,27 @@ const state = {
   mail: null, // 邮件配置状态（/mail/status）
   lastRequest: null,
   viewRevision: 0,
+  sessionOpening: 0, // 正在打开的会话序号：晚到的旧响应不覆盖新的选择
+  modelMissing: false,
   drafts: new Map(), // 未发送输入按会话保存，不带到其他会话
   corrected: new Set(), // 当前会话里已点过“交给助理处理”的用户消息 ID
 };
 
 // ---------- 通用 ----------
+const NETWORK_ERROR = "连不上服务，请检查网络或确认服务正在运行，然后重试";
+
+// 服务端错误转成给用户看的文字：校验错误是英文字段列表，不直接显示
+function serverErrorText(detail, status) {
+  if (typeof detail === "string" && detail) return detail;
+  if (Array.isArray(detail)) return "提交的内容格式不正确，请检查后重试";
+  return `服务没有正常响应（状态码 ${status}），请稍后重试`;
+}
+
+// 服务端错误附上追踪号，用户可以选中复制给维护人员；4xx 是用户能自己处理的提示，不附
+function withRequestId(text, status, requestId) {
+  return status >= 500 && requestId ? `${text}（追踪号：${requestId}）` : text;
+}
+
 async function api(path, options = {}) {
   const opts = { ...options };
   if (opts.json !== undefined) {
@@ -23,14 +39,17 @@ async function api(path, options = {}) {
     opts.headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
     delete opts.json;
   }
-  const resp = await fetch(path, opts);
+  let resp;
+  try {
+    resp = await fetch(path, opts);
+  } catch (_) {
+    throw Object.assign(new Error(NETWORK_ERROR), { apiError: true, network: true });
+  }
+  clearConnectionNotice();
   if (!resp.ok) {
-    let detail = `${resp.status} ${resp.statusText}`;
     let body = null;
-    try {
-      body = await resp.json();
-      if (body.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
-    } catch (_) { /* 非 JSON 错误 */ }
+    try { body = await resp.json(); } catch (_) { /* 非 JSON 错误 */ }
+    const detail = serverErrorText(body?.detail, resp.status);
     // 只认机器码：飞书未授权也是 401，那种情况要留在页面上提示连接飞书
     const authRequired = resp.status === 401 && body?.code === "auth_required";
     // 知识库页还有没传完的文件时不跳转：文件只在页面内存里，跳走就丢了。这时按普通错误交给调用方提示
@@ -39,8 +58,8 @@ async function api(path, options = {}) {
       return new Promise(() => {}); // 页面正在离开：调用方不用再处理，也不闪一下错误提示
     }
     const requestId = body?.request_id || resp.headers.get("X-Request-ID");
-    // 服务端错误附上追踪号，用户可以选中复制给维护人员；4xx 是用户能自己处理的提示，只放在 err.requestId 上
-    const err = new Error(resp.status >= 500 && requestId ? `${detail}（追踪号：${requestId}）` : detail);
+    const err = new Error(withRequestId(detail, resp.status, requestId));
+    err.apiError = true;
     err.requestId = requestId;
     err.authRequired = authRequired;
     err.status = resp.status;
@@ -53,6 +72,51 @@ async function api(path, options = {}) {
 
 function escapeHtml(text) {
   return String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// 页面顶部的状态条。连接类提示在下一次请求成功后自动消失；其他提示可以手动关闭。
+function showAppStatus(message, { network = false } = {}) {
+  const box = $("#app-status");
+  const text = Object.assign(document.createElement("span"), { textContent: message });
+  const close = Object.assign(document.createElement("button"), { type: "button", className: "ghost small", textContent: "关闭" });
+  close.addEventListener("click", () => box.classList.add("hidden"));
+  box.className = "notice error";
+  box.dataset.network = String(network);
+  box.replaceChildren(text, " ", close);
+}
+function clearConnectionNotice() {
+  const box = $("#app-status");
+  if (box.dataset.network === "true") { box.classList.add("hidden"); box.dataset.network = "false"; }
+}
+
+// 页面其他地方都没接住的接口错误：至少告诉用户操作没完成。弹窗开着时状态条被遮住，改用提示框。
+window.addEventListener("unhandledrejection", (e) => {
+  const err = e.reason;
+  if (!err?.apiError) return; // 程序错误不吞掉
+  e.preventDefault();
+  const covered = !$("#ui-dialog").open && document.querySelector("dialog[open]");
+  if (covered) uiAlert(err.message, "操作没有完成");
+  else showAppStatus(`操作没有完成：${err.message}`, { network: Boolean(err.network) });
+});
+
+// 切页时的后台刷新：页面各区块自己显示失败和重试入口，这里不再重复报错
+function ignoreApiError(promise) {
+  return promise.catch((err) => { if (!err?.apiError) throw err; });
+}
+
+// 回答和材料里的外部链接在新标签页打开，避免跳走后丢掉当前页面的状态
+window.DOMPurify?.addHook("afterSanitizeAttributes", (node) => {
+  if (node.tagName === "A" && node.hasAttribute("href")) {
+    node.setAttribute("target", "_blank");
+    node.setAttribute("rel", "noopener noreferrer");
+  }
+});
+
+// 防止连点重复提交：按钮在请求结束前保持禁用
+async function whileBusy(button, action) {
+  if (button.disabled) return undefined;
+  button.disabled = true;
+  try { return await action(); } finally { button.disabled = false; }
 }
 
 // 名称仅由界面代码指定，复用本地 sprite；装饰图标不重复朗读按钮文字。
@@ -159,7 +223,7 @@ function uiOpen({ title = "提示", message = "", fields = [], ok = "确定", ca
         ? `<select data-ui="${i}">${(f.options || []).map((o) => `<option value="${escapeHtml(String(o.value))}" ${String(o.value) === String(f.value ?? "") ? "selected" : ""}>${escapeHtml(o.label)}</option>`).join("")}</select>`
         : f.type === "textarea"
         ? `<textarea data-ui="${i}" rows="${f.rows || 3}" placeholder="${escapeHtml(f.placeholder || "")}">${escapeHtml(f.value || "")}</textarea>`
-        : `<input data-ui="${i}" type="${f.type || "text"}" value="${escapeHtml(f.value || "")}" placeholder="${escapeHtml(f.placeholder || "")}">`}
+        : `<input data-ui="${i}" type="${f.type || "text"}" value="${escapeHtml(f.value || "")}" placeholder="${escapeHtml(f.placeholder || "")}"${f.maxlength ? ` maxlength="${Number(f.maxlength)}"` : ""}>`}
       ${f.hint ? `<small class="muted">${escapeHtml(f.hint)}</small>` : ""}</label>`).join("");
   $("#ui-error").classList.add("hidden");
   $("#ui-ok").textContent = ok;
@@ -224,7 +288,11 @@ function materialTitle(id) {
 // ---------- 标签页 ----------
 async function activateTab(name, load = true) {
     if (name !== "knowledge") window.pauseKnowledge?.();
-    if (name === "chat") loadChatBases().catch(() => {}); // 知识库及其外发授权可能刚在知识库页变化
+    if (name === "chat") { // 知识库及其外发授权可能刚在知识库页变化；首屏失败后也靠这里恢复会话列表
+      loadChatBases().catch(() => {});
+      loadSessions();
+    }
+    renderModelStatus(name);
     if (name !== "todos" && $("#todo-panel").open) $("#todo-panel").close();
     if ($("#material-panel").open) $("#material-panel").close(); // 从材料详情转去对话、周报、待办时先关闭
     const btn = document.querySelector(`.tabs button[data-tab="${name}"]`);
@@ -236,10 +304,22 @@ async function activateTab(name, load = true) {
     document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.id === `tab-${btn.dataset.tab}`));
     document.title = `${btn.textContent.trim()} · Briefly AI`;
     if (!load) return;
-    if (name === "materials") await Promise.all([loadMaterials(), loadTrackingSummary()]);
-    if (name === "todos") await Promise.all([loadMaterials(), loadTodos()]);
-    if (name === "weekly") await Promise.all([loadMaterials(), loadWeekly()]);
+    if (name === "materials") await Promise.all([ignoreApiError(loadMaterials()), loadTrackingSummary()]);
+    if (name === "todos") await Promise.all([ignoreApiError(loadMaterials()), loadTodos()]);
+    if (name === "weekly") await Promise.all([ignoreApiError(loadMaterials()), loadWeekly()]);
     if (name === "knowledge") await window.loadKnowledge?.();
+}
+
+// 模型没配置时提前说明，不等用户发了消息才知道。只在用得到模型的页面显示。
+async function loadModelStatus() {
+  try {
+    const resp = await fetch("/readyz");
+    state.modelMissing = (await resp.json())?.checks?.model === false;
+  } catch (_) { state.modelMissing = false; } // 连不上时由其他请求提示，这里不下结论
+  renderModelStatus(document.querySelector(".tabs button.active").dataset.tab);
+}
+function renderModelStatus(tab) {
+  $("#model-status").classList.toggle("hidden", !(state.modelMissing && ["chat", "weekly"].includes(tab)));
 }
 document.querySelectorAll(".tabs button").forEach((btn) => {
   btn.addEventListener("click", () => activateTab(btn.dataset.tab));
@@ -247,10 +327,16 @@ document.querySelectorAll(".tabs button").forEach((btn) => {
 
 // ---------- 材料 ----------
 async function loadMaterials() {
-  const [materials, tracking] = await Promise.all([
-    api("/materials"),
-    api("/tracking/feishu-docs").catch(() => ({})),
-  ]);
+  let materials, tracking;
+  try {
+    [materials, tracking] = await Promise.all([
+      api("/materials"),
+      api("/tracking/feishu-docs").catch(() => ({})),
+    ]);
+  } catch (err) {
+    refreshLibrary(); // 材料库列表走单独的接口，由它显示失败和重试入口
+    throw err;
+  }
   state.materials = materials;
   state.feishuTracking = tracking;
   refreshLibrary();
@@ -548,19 +634,21 @@ const drop = $("#drop");
 ["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
 drop.addEventListener("drop", (e) => uploadFiles([...e.dataTransfer.files]));
 
-$("#paste-form").addEventListener("submit", async (e) => {
+$("#paste-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const msg = $("#add-msg");
-  try {
-    const r = await api("/materials", { method: "POST", json: { title: $("#paste-title").value.trim(), content: $("#paste-content").value } });
-    importedForAssistant(r.material.id);
-    showNotice(msg, `${r.created ? "已保存" : "内容相同的材料已存在"}：${escapeHtml(r.material.title)}（${r.material.char_count} 字）`);
-    $("#paste-title").value = "";
-    $("#paste-content").value = "";
-    const batch = libraryBeginAdd();
-    libraryAdded(batch, r);
-    await refreshAfterAdd(batch);
-  } catch (err) { showNotice(msg, escapeHtml(err.message), "error"); }
+  return whileBusy(e.target.querySelector("button"), async () => {
+    try {
+      const r = await api("/materials", { method: "POST", json: { title: $("#paste-title").value.trim(), content: $("#paste-content").value } });
+      importedForAssistant(r.material.id);
+      showNotice(msg, `${r.created ? "已保存" : "内容相同的材料已存在"}：${escapeHtml(r.material.title)}（${r.material.char_count} 字）`);
+      $("#paste-title").value = "";
+      $("#paste-content").value = "";
+      const batch = libraryBeginAdd();
+      libraryAdded(batch, r);
+      await refreshAfterAdd(batch);
+    } catch (err) { showNotice(msg, escapeHtml(err.message), "error"); }
+  });
 });
 
 function importedText(r) {
@@ -568,21 +656,23 @@ function importedText(r) {
   return `${r.created ? "已导入" : "内容没有变化，已存在"}：${escapeHtml(r.material.title)}（${r.material.char_count} 字）${warn}`;
 }
 
-$("#feishu-form").addEventListener("submit", async (e) => {
+$("#feishu-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const msg = $("#add-msg");
   const url = $("#feishu-url").value.trim();
   if (!url) return;
-  showNotice(msg, "正在读取飞书内容…");
-  try {
-    const imported = await api("/materials/feishu", { method: "POST", json: { url } });
-    importedForAssistant(imported.material.id);
-    showNotice(msg, importedText(imported));
-    $("#feishu-url").value = "";
-    const batch = libraryBeginAdd();
-    libraryAdded(batch, imported);
-    await refreshAfterAdd(batch);
-  } catch (err) { showNotice(msg, escapeHtml(err.message), "error"); }
+  return whileBusy(e.target.querySelector("button"), async () => {
+    showNotice(msg, "正在读取飞书内容…");
+    try {
+      const imported = await api("/materials/feishu", { method: "POST", json: { url } });
+      importedForAssistant(imported.material.id);
+      showNotice(msg, importedText(imported));
+      $("#feishu-url").value = "";
+      const batch = libraryBeginAdd();
+      libraryAdded(batch, imported);
+      await refreshAfterAdd(batch);
+    } catch (err) { showNotice(msg, escapeHtml(err.message), "error"); }
+  });
 });
 
 // ---------- 邮件（配置了 SMTP 才显示“发送邮件”；发送只由用户手动操作）
@@ -1035,7 +1125,17 @@ function restoreKnowledgeBase(kbId, name) {
 $("#chat-kb").addEventListener("change", () => $("#chat-kb-notice").classList.add("hidden"));
 
 async function loadSessions() {
-  const sessions = await api("/chat/sessions");
+  let sessions;
+  try {
+    sessions = await api("/chat/sessions");
+  } catch (err) {
+    if (!err.apiError) throw err;
+    // 已经显示的会话留着，还能点；只有占位行时才替换
+    const list = $("#session-list");
+    list.querySelectorAll("li:not([data-id])").forEach((li) => li.remove());
+    list.insertAdjacentHTML("afterbegin", `<li class="danger session-error">会话记录加载失败：${escapeHtml(err.message)} <button type="button" class="ghost small" data-retry-sessions>重试</button></li>`);
+    return;
+  }
   $("#session-list").innerHTML = sessions.length
     ? sessions.map((s) => `<li data-id="${s.thread_id}" class="${s.thread_id === state.threadId ? "active" : ""}" title="${escapeHtml(s.title)}">
         ${escapeHtml(s.title)}<small>${fmtTime(s.updated_at)}</small></li>`).join("")
@@ -1043,6 +1143,7 @@ async function loadSessions() {
 }
 
 $("#session-list").addEventListener("click", (e) => {
+  if (e.target.closest("[data-retry-sessions]")) return loadSessions();
   const li = e.target.closest("li[data-id]");
   if (li) openSession(li.dataset.id);
 });
@@ -1058,17 +1159,27 @@ function rememberComposer() {
 }
 
 async function openSession(threadId) {
+  // 先取到内容再切换：取失败时还停在原会话，后面发送的消息不会进到另一个会话
+  const opening = ++state.sessionOpening;
+  let detail;
+  try {
+    // 同时刷新知识库列表：恢复的库可能已在知识库页删除
+    [detail] = await Promise.all([api(`/chat/sessions/${threadId}`), loadChatBases().catch(() => {})]);
+  } catch (err) {
+    if (!err.apiError) throw err;
+    if (state.sessionOpening === opening) showNotice($("#chat-msg"), `打开会话失败：${escapeHtml(err.message)}。当前还停留在原来的会话，可以重新点击会话重试。`, "error");
+    return;
+  }
+  if (state.sessionOpening !== opening) return;
+  $("#chat-msg").classList.add("hidden");
   rememberComposer();
-  const view = ++state.viewRevision;
+  state.viewRevision++;
   const draft = state.drafts.get(threadId);
   state.picked = new Set(draft?.material_ids || []); renderPicked();
   $("#input").value = draft?.text || "";
   state.lastRequest = null;
   state.threadId = threadId;
   setSessionButtons();
-  // 同时刷新知识库列表：恢复的库可能已在知识库页删除
-  const [detail] = await Promise.all([api(`/chat/sessions/${threadId}`), loadChatBases().catch(() => {})]);
-  if (state.viewRevision !== view) return;
   $("#session-title").textContent = detail.title;
   restoreKnowledgeBase(draft ? draft.kb_id : detail.kb_id, detail.kb_name);
   state.corrected = new Set(detail.messages.map((m) => m.intent?.corrects).filter(Boolean));
@@ -1081,6 +1192,8 @@ async function openSession(threadId) {
 function newSession() {
   rememberComposer();
   state.viewRevision++;
+  state.sessionOpening++;
+  $("#chat-msg").classList.add("hidden");
   state.threadId = null;
   state.corrected = new Set();
   setSessionButtons();
@@ -1162,7 +1275,7 @@ function knowledgeReferences(el, knowledge) {
       $("#kb-source-info").textContent = `技术版本 ${item.number} · 业务版本 ${item.business_version || "未提供"} · ${item.section || "章节未确定"} · ${item.status === "current" ? "当前有效版本" : item.status === "historical" ? "历史版本" : "来源已变化或不可用"}`;
       $("#kb-source-text").textContent = item.content ?? "来源已删除或变化，旧引用不会指向新内容。";
       $("#kb-source").showModal();
-    } catch (err) { button.title = err.message; }
+    } catch (err) { uiAlert(err.message, "打不开原文"); }
   });
   el.querySelector(".bubble").after(box);
 }
@@ -1192,6 +1305,7 @@ $("#composer").addEventListener("submit", async (e) => {
 async function sendChat({text, material_ids, kb_id, skip_funnel = false, corrects = null}) {
   const requestThread = state.threadId;
   const view = state.viewRevision;
+  $("#chat-msg").classList.add("hidden");
   const userEl = appendMessage({ role: "user", text, material_ids, intent: skip_funnel ? {skip_funnel} : null });
   const pending = appendMessage({ role: "assistant", text: "思考中…（读取材料或长文档时可能需要一两分钟）", pending: true });
   scrollMessages();
@@ -1418,13 +1532,16 @@ api("/auth/status").then((s) => $("#logout").classList.toggle("hidden", !s.enabl
 // ---------- 启动 ----------
 (async function init() {
   showWelcome();
-  try {
-    await Promise.all([loadChatBases(), loadMaterials(), loadSessions(), loadInbox(), loadFeishu(), loadMail()]);
-    await activateTab(document.querySelector(".tabs button.active").dataset.tab);
-    handleFeishuRedirect();
-    setInterval(loadInbox, 60000);
-  } catch (err) {
-    showNotice($("#app-status"), `连接服务失败：${escapeHtml(err.message)}。请刷新页面重试。`, "error");
+  loadModelStatus();
+  // 各块互不影响：一个接口失败时，其他内容和当前页面照常加载
+  const results = await Promise.allSettled([loadChatBases(), loadMaterials(), loadSessions(), loadInbox(), loadFeishu(), loadMail()]);
+  await activateTab(document.querySelector(".tabs button.active").dataset.tab);
+  handleFeishuRedirect();
+  setInterval(loadInbox, 60000);
+  const failed = results.find((r) => r.status === "rejected")?.reason;
+  if (failed) {
+    if (!failed.apiError) throw failed;
+    showAppStatus(`部分内容没有加载成功：${failed.message}。可以继续使用其他功能，或稍后刷新页面重试。`, { network: Boolean(failed.network) });
   }
 })();
 

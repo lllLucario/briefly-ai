@@ -50,6 +50,7 @@
   </header>
   <div id="inbox" class="inbox hidden"></div>
   <div id="app-status" class="notice hidden" role="alert"></div>
+  <div id="model-status" class="notice warn hidden" role="status">还没有配置模型：助理和周报生成暂时不能用，待办、材料和知识库资料管理不受影响。请让部署这个服务的人配置模型后重启服务。</div>
 
   <template id="chat-welcome">
     <div class="empty welcome">
@@ -97,6 +98,7 @@
       </div>
       <div id="context-box" class="notice hidden"></div>
       <div id="chat-kb-notice" class="notice warn hidden" role="status"></div>
+      <div id="chat-msg" class="notice error hidden" role="alert"></div>
       <div id="messages" class="messages" role="log" aria-label="会话内容" aria-live="polite"></div>
       <form id="composer" class="composer">
         <div class="row gap wrap">
@@ -503,6 +505,7 @@
         </div>
       </div>
       <div id="kb-create-progress" class="hidden" role="status" aria-live="polite"></div>
+      <div id="kb-load-error" class="notice error hidden" role="alert"><span id="kb-load-error-text"></span> <button type="button" id="kb-load-retry" class="ghost small">重试</button></div>
       <p id="kb-message" role="status" class="muted small"></p>
       <div id="kb-content" class="hidden" role="region" aria-labelledby="kb-current-name">
         <div class="kb-content-heading"><div><div class="kb-title-line"><h3 id="kb-current-name"></h3><button type="button" id="kb-egress-chip" class="kb-egress-chip" data-allowed="false" aria-haspopup="dialog" title="本库外发授权，点击修改"><i aria-hidden="true"></i><span>外部模型问答未开启</span></button></div><p id="kb-library-summary" class="muted small"></p></div><div class="row gap wrap"><button id="kb-open-upload" class="primary">添加资料</button><button id="kb-to-chat" class="ghost">向助理提问 <svg class="icon action-icon" aria-hidden="true"><use href="#i-arrow"/></svg></button><button id="kb-open-settings" class="ghost" aria-haspopup="dialog"><svg class="icon action-icon" aria-hidden="true"><use href="#i-settings"/></svg>本库设置</button></div></div>

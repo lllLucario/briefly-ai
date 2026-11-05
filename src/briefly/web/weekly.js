@@ -42,7 +42,21 @@ async function loadWeekly(open = true) {
     weekly.settings = settings;
     renderWeekSide(current);
     if (open) await openWeek(selected ? { id: selected } : {});
-  } catch (err) { if (view === weekly.view) weekMsg(`加载周报失败：${escapeHtml(err.message)}，请重新选择这一周重试。`, "error"); }
+  } catch (err) {
+    if (view !== weekly.view) return;
+    if (open) weekLoadFailed(err, () => loadWeekly());
+    else weekMsg(`刷新周报列表失败：${escapeHtml(err.message)}`, "warn");
+  }
+}
+
+// 这一周没加载出来：面板内容不可信，只留错误和“重新加载”，不停在“正在加载…”
+function weekLoadFailed(err, retry) {
+  weekly.loading = false;
+  weekly.retryLoad = retry;
+  $("#week-panel").inert = false;
+  $("#week-panel").classList.add("load-failed");
+  weekMsg(`加载周报失败：${escapeHtml(err.message)}`, "error");
+  renderFoot();
 }
 
 function renderWeekSide(current) {
@@ -70,9 +84,9 @@ async function gotoWeek(reportId) {
   const view = beginWeekLoad();
   try {
     await activateTab("weekly", false);
-    await Promise.all([loadMaterials(), loadWeekly(false)]);
+    await Promise.all([ignoreApiError(loadMaterials()), loadWeekly(false)]);
     if (view === weekly.view) await openWeek(reportId ? { id: reportId } : {});
-  } catch (err) { if (view === weekly.view) weekMsg(`加载周报失败：${escapeHtml(err.message)}`, "error"); }
+  } catch (err) { if (view === weekly.view) weekLoadFailed(err, () => gotoWeek(reportId)); }
 }
 
 // ---------- 打开一周
@@ -84,7 +98,9 @@ function stopPolling() {
 function beginWeekLoad() {
   stopPolling();
   weekly.loading = true;
+  weekly.retryLoad = null;
   $("#week-panel").inert = true;
+  $("#week-panel").classList.remove("load-failed");
   renderFoot();
   return ++weekly.view;
 }
@@ -103,7 +119,7 @@ async function openWeek({ id = null, day = null } = {}) {
     $("#week-panel").inert = false;
     renderWeek();
     renderWeekSide(current);
-  } catch (err) { if (view === weekly.view) weekMsg(`加载周报失败：${escapeHtml(err.message)}，请重新选择这一周重试。`, "error"); }
+  } catch (err) { if (view === weekly.view) weekLoadFailed(err, () => openWeek({ id, day })); }
 }
 
 async function refreshWeek() {
@@ -155,12 +171,32 @@ function renderWeek() {
     weekly.inputsFor = r.id; weekly.inputsStatus = r.checklist + r.status;
   }
   renderFoot();
-  if (r.status === "pending" || r.status === "running") weekly.timer = setTimeout(async () => { await refreshWeek(); loadWeekly(false); }, 3000);
+  if (r.status === "pending" || r.status === "running") scheduleWeekRefresh();
+}
+
+// 生成中定时刷新。刷新失败不能停下：否则页面一直显示“生成中”，连上服务后也不再更新
+function scheduleWeekRefresh() {
+  stopPolling();
+  const view = weekly.view;
+  weekly.timer = setTimeout(async () => {
+    try {
+      await refreshWeek();
+      if (weekly.refreshFailed) { weekly.refreshFailed = false; $("#week-msg").classList.add("hidden"); }
+      loadWeekly(false);
+    } catch (err) {
+      if (!err.apiError) throw err;
+      if (view !== weekly.view) return;
+      weekly.refreshFailed = true;
+      weekMsg(`刷新生成进度失败：${escapeHtml(err.message)}。正在自动重试。`, "warn");
+      scheduleWeekRefresh();
+    }
+  }, 3000);
 }
 
 // 右下角按钮：自动和手动只差“是不是到点自动整理”。没整理过 → 整理本周工作（先整理清单）；有待确认 → 先审核；审核完 → 确认并生成
 function footState() {
   const r = weekly.current;
+  if (weekly.retryLoad) return { label: "重新加载", action: "reload", hint: "这一周没有加载出来" };
   if (weekly.loading || !r) return { label: "正在加载…", disabled: true, hint: "请等待本周内容加载完成" };
   if (r.status === "pending" || r.status === "running") return { label: "生成中…", disabled: true, hint: "逐条提取并核对，材料多时需要几分钟" };
   if (!r.prepared_at) {  // 手动和自动一样：先检查更新、整理审核清单，审核之后才生成
@@ -198,6 +234,7 @@ $("#week-go").addEventListener("click", async () => {
   const action = btn.dataset.action;
   btn.disabled = true;
   try {
+    if (action === "reload") return await weekly.retryLoad();
     if (action === "prepare") return await prepareWeek();
     if (action !== "generate") return;
     const r = weekly.current;
@@ -406,31 +443,33 @@ function openEvidenceDialog(mode, ev) {
   $("#evidence-dialog").showModal();
 }
 
-$("#evidence-form").addEventListener("submit", async (e) => {
+$("#evidence-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const { mode, id } = weekly.editing;
   const rid = weekly.current.id;
   const body = { title: $("#ev-title").value.trim() || null, description: $("#ev-desc").value.trim() || null, category: $("#ev-category").value };
-  try {
-    let r;
-    if (mode === "edit") r = await api(`/weekly/${rid}/items/${id}`, { method: "PUT", json: body });
-    if (mode === "add") r = await api(`/weekly/${rid}/items`, { method: "POST", json: body });
-    if (mode === "merge") {
-      r = await api(`/weekly/${rid}/merge`, { method: "POST", json: { ids: [...weekly.selected], title: body.title, description: body.description } });
-      weekly.selected.clear();
-    }
-    if (mode === "split") {
-      const parts = $("#ev-split").value.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
-        const [title, ...rest] = l.split(/[｜|]/);
-        return { title: title.trim(), description: rest.join("｜").trim() };
-      });
-      r = await api(`/weekly/${rid}/items/${id}/split`, { method: "POST", json: { parts } });
-    }
-    $("#evidence-dialog").close();
-    weekly.current = r;
-    renderWeek();
-    loadWeekly(false);
-  } catch (err) { uiAlert(err.message, "出错了"); }
+  return whileBusy(e.target.querySelector("button.primary"), async () => {
+    try {
+      let r;
+      if (mode === "edit") r = await api(`/weekly/${rid}/items/${id}`, { method: "PUT", json: body });
+      if (mode === "add") r = await api(`/weekly/${rid}/items`, { method: "POST", json: body });
+      if (mode === "merge") {
+        r = await api(`/weekly/${rid}/merge`, { method: "POST", json: { ids: [...weekly.selected], title: body.title, description: body.description } });
+        weekly.selected.clear();
+      }
+      if (mode === "split") {
+        const parts = $("#ev-split").value.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
+          const [title, ...rest] = l.split(/[｜|]/);
+          return { title: title.trim(), description: rest.join("｜").trim() };
+        });
+        r = await api(`/weekly/${rid}/items/${id}/split`, { method: "POST", json: { parts } });
+      }
+      $("#evidence-dialog").close();
+      weekly.current = r;
+      renderWeek();
+      loadWeekly(false);
+    } catch (err) { uiAlert(err.message, "出错了"); }
+  });
 });
 
 // ---------- 本周材料、本周说明
@@ -607,13 +646,13 @@ $("#edit-weekly").addEventListener("click", () => {
   $("#weekly-preview").classList.add("hidden");
 });
 $("#cancel-edit").addEventListener("click", exitEdit);
-$("#save-weekly").addEventListener("click", async () => {
+$("#save-weekly").addEventListener("click", (e) => whileBusy(e.currentTarget, async () => {
   try {
     weekly.current = await api(`/weekly/${weekly.current.id}/content`, { method: "PUT", json: { content: $("#weekly-text").value } });
     exitEdit();
     renderWeek();
   } catch (err) { uiAlert(err.message, "出错了"); }
-});
+}));
 
 // 历史版本：重新生成、手动修改前的正文
 $("#versions-weekly").addEventListener("click", async () => {
