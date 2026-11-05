@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from briefly import config
-from briefly.db import create_db_engine
+from db_util import file_engine
 from briefly.materials import MaterialStore
 from briefly.tracking.blobs import BlobStore
 from briefly.tracking.service import TrackingService
@@ -29,7 +29,7 @@ class Clock:
 def env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "TRACKING_SETTLE_SECONDS", 0)
     monkeypatch.setattr(config, "TRACKING_DIR", str(tmp_path / "store"))
-    engine = create_db_engine("sqlite://")
+    engine = file_engine()
     store = MaterialStore(engine)
     svc = TrackingService(engine, store, BlobStore(tmp_path / "store"))
     work = tmp_path / "work"

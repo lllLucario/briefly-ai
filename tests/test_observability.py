@@ -14,6 +14,7 @@ from sqlalchemy import create_engine
 from briefly import config, llm
 from briefly.api import create_app
 from briefly.db import create_db_engine
+from db_util import file_engine
 from briefly.logs import INTERNAL_ERROR, JsonFormatter, configure_logging
 from briefly.materials import MaterialStore
 from fakes import FunctionModel
@@ -23,7 +24,7 @@ SECRET_TEXT = "这是不该外泄的异常原文"
 
 @pytest.fixture
 def app():
-    engine = create_db_engine("sqlite://")
+    engine = file_engine()
     app = create_app(MaterialStore(engine), model_factory=lambda: FunctionModel(respond=None, calls=[]))
     route_log = logging.getLogger("briefly.test_route")
 
@@ -277,7 +278,7 @@ def test_console_handler_survives_unencodable_text():
 def test_create_app_does_not_configure_logging():
     root = logging.getLogger()
     before = list(root.handlers), root.level
-    engine = create_db_engine("sqlite://")
+    engine = file_engine()
     create_app(MaterialStore(engine))
     assert (list(root.handlers), root.level) == before
     engine.dispose()
@@ -296,7 +297,7 @@ def real_model_app(monkeypatch, store=None):
         raise AssertionError("健康检查不能创建或调用模型")
 
     monkeypatch.setattr(llm, "ChatOpenAI", forbidden)
-    return create_app(store or MaterialStore(create_db_engine("sqlite://")))
+    return create_app(store or MaterialStore(file_engine()))
 
 
 def test_healthz_checks_nothing(client, app):

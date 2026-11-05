@@ -11,6 +11,7 @@ from briefly import config
 from briefly.agent import Agent
 from briefly.api import create_app
 from briefly.db import create_db_engine
+from db_util import file_engine
 from briefly.intent import IntentFunnel, TurnState
 from briefly.intent_log import IntentLog, IntentLogEntry, main
 from briefly.materials import MaterialStore
@@ -23,7 +24,7 @@ from intent_eval import load_cases, state_of  # noqa: E402
 
 @pytest.fixture
 def engine():
-    engine = create_db_engine("sqlite://")
+    engine = file_engine()
     yield engine
     engine.dispose()
 

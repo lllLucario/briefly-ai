@@ -5,7 +5,7 @@ from langchain_core.tools import tool
 
 from briefly.agent import Agent
 from briefly.api import create_app
-from briefly.db import create_db_engine
+from db_util import file_engine
 from briefly.materials import MaterialStore
 from fakes import fake, text_msg, tool_msg
 
@@ -17,7 +17,7 @@ def get_current_date() -> str:
 
 
 def make_client(*responses, error: Exception | None = None):
-    engine = create_db_engine("sqlite://")
+    engine = file_engine()
     store = MaterialStore(engine)
     model = fake(*responses)
     if error is not None:
@@ -140,7 +140,7 @@ def test_missing_model_config_keeps_non_model_features_available(monkeypatch, tm
     monkeypatch.setattr(config, "MODEL", "fake-model")
     monkeypatch.setattr(config, field, "")
     monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "chat.db"))
-    engine = create_db_engine("sqlite://")
+    engine = file_engine()
     try:
         with TestClient(create_app(MaterialStore(engine))) as client:
             assert client.get("/").status_code == 200

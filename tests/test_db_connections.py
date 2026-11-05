@@ -1,11 +1,13 @@
 """文件库每个线程一条连接：后台线程结束会话，不能影响别的线程还没提交的写入。"""
 import threading
 
+import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from briefly.api import create_app
 from briefly.db import create_db_engine
-from briefly.materials import Material
+from briefly.materials import Material, MaterialStore
 
 
 def test_background_session_cannot_discard_another_threads_uncommitted_write(tmp_path):
@@ -26,4 +28,11 @@ def test_background_session_cannot_discard_another_threads_uncommitted_write(tmp
 
     with Session(engine) as s:
         assert s.scalar(select(func.count()).select_from(Material)) == 1
+    engine.dispose()
+
+
+def test_create_app_on_memory_database_is_refused_with_a_clear_message():
+    engine = create_db_engine("sqlite://")
+    with pytest.raises(pytest.fail.Exception, match="file_engine"):
+        create_app(MaterialStore(engine))
     engine.dispose()

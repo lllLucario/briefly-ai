@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from briefly import config, mail
 from briefly.api import create_app
 from briefly.db import create_db_engine
+from db_util import file_engine
 from briefly.materials import MaterialStore
 from briefly.weekly.models import DONE
 from briefly.weekly.service import WeeklyService
@@ -139,7 +140,7 @@ def test_checks_before_sending(weekly, monkeypatch):
 
 
 def test_api(monkeypatch):
-    engine = create_db_engine("sqlite://")
+    engine = file_engine()
     monkeypatch.setattr(config, "MAIL_DEFAULT_TO", "mentor@example.com")
     app = create_app(store=MaterialStore(engine), model_factory=lambda: None)
     smtp = FakeSMTP()

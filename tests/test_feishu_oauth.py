@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from briefly import config
-from briefly.db import create_db_engine
+from db_util import file_engine
 from briefly.feishu.client import FallbackClient, with_user
 from briefly.feishu.drive import list_folder, search
 from briefly.feishu.oauth import FeishuNotAuthorized, UserTokens, _challenge, authorize_url, take_verifier
@@ -183,7 +183,7 @@ def api(tmp_path, monkeypatch):
         ("GET", f"{API}/authen/v1/user_info"): {"name": "王五", "open_id": "ou_me"},
         ("GET", f"{API}/drive/v1/files"): {"files": [{"token": DOC, "name": "周报草稿", "type": "docx"}]},
     })  # fmt: skip
-    engine = create_db_engine("sqlite://")
+    engine = file_engine()
     tokens = UserTokens(tmp_path / "t.json", transport=fake.transport)
     app = create_app(store=MaterialStore(engine), model_factory=lambda: None, feishu_factory=fake.client, feishu_tokens=tokens)
     with TestClient(app, follow_redirects=False) as client:
