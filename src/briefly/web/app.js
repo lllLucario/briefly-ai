@@ -1050,6 +1050,7 @@ async function loadChatBases() {
   $("#chat-kb").innerHTML = `<option value="">不查知识库</option>` +
     bases.map((b) => `<option value="${escapeHtml(b.id)}">知识库：${escapeHtml(b.name)}${b.external_allowed ? "" : "（未允许外发）"}</option>`).join("");
   if (bases.some((b) => b.id === current)) $("#chat-kb").value = current;
+  else if (current) showNotice($("#chat-kb-notice"), "当前选择的知识库已删除或不可用，已改为“不查知识库”；需要时请重新选择。", "warn");
 }
 
 const INTENT_LAYERS = {1:"规则", 2:"语义", 3:"助理判断"};
@@ -1072,6 +1073,7 @@ function userMeta(el, m) {
   const meta = [];
   if (m.material_ids?.length) meta.push(`材料：${m.material_ids.map(materialTitle).map(escapeHtml).join("、")}`);
   if (m.intent?.kb_name) meta.push(`知识库：${escapeHtml(m.intent.kb_name)}`);
+  if (m.intent?.kb_removed) meta.push(`<span class="danger" data-kb-removed>所选知识库已删除，这一轮没有查询知识库</span>`);
   if (intentMeta(m.intent)) meta.push(intentMeta(m.intent));
   let box = el.querySelector(".msg-meta");
   if (!meta.length) return box?.remove();
@@ -1284,6 +1286,15 @@ function knowledgeReferences(el, knowledge) {
     if (!button) return;
     try {
       const item = await api(`/knowledge-bases/${knowledge.kb_id}/references/${encodeURIComponent(button.dataset.chatReference)}`);
+      if (item.status === "knowledge_base_deleted") {
+        // 历史回答不改写，引用还能点开：说明来源没了，不当成错误
+        const reference = (knowledge.references || []).find((r) => r.reference === button.dataset.chatReference);
+        $("#kb-source-title").textContent = reference?.title || "原文";
+        $("#kb-source-info").textContent = "来源已删除";
+        $("#kb-source-text").textContent = "这条引用所在的知识库已删除，原文不能再打开。这条回答保留当时的文字，无法再对照原文核对。";
+        $("#kb-source").showModal();
+        return;
+      }
       $("#kb-source-title").textContent = item.source.title;
       $("#kb-source-info").textContent = `技术版本 ${item.number} · 业务版本 ${item.business_version || "未提供"} · ${item.section || "章节未确定"} · ${item.status === "current" ? "当前有效版本" : item.status === "historical" ? "历史版本" : "来源已变化或不可用"}`;
       $("#kb-source-text").textContent = item.content ?? "来源已删除或变化，旧引用不会指向新内容。";
@@ -1332,6 +1343,7 @@ async function sendChat({text, material_ids, kb_id, skip_funnel = false, correct
   try {
     const r = await api("/chat", { method: "POST", json: { text, thread_id: requestThread, material_ids, kb_id, skip_funnel, corrects, fresh } });
     ok = true;
+    if (r.intent?.kb_removed) loadChatBases().catch(() => {}); // 页面上的选择过期了：刷新下拉框
     // 等待期间用户切换了会话时，不把旧任务的结果和能力设置带到新会话。
     if (state.viewRevision !== view) { loadSessions(); return ok; }
     const isNew = !requestThread;

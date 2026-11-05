@@ -1333,6 +1333,7 @@ button.kb-egress-chip[data-allowed="true"] i { opacity: 1; }
 button.kb-egress-chip:hover { border-color: var(--accent); }
 dialog.kb-settings-dialog { width: min(560px, 94vw); }
 .kb-setting { display: flex; flex-direction: column; gap: 10px; }
+.kb-setting + .kb-setting { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line); }
 .kb-setting p { margin: 0; }
 .kb-setting-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .kb-setting-row strong { display: block; margin-bottom: 4px; font-size: 15px; }

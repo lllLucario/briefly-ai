@@ -10,8 +10,10 @@ from sqlalchemy.orm import defer, sessionmaker
 from ..errors import UserInputError
 from ..clock import now_local, system_naive
 from ..materials import Material, MaterialChunk
-from .models import IndexGeneration, KnowledgeBase, KnowledgeChunk, KnowledgeEgressGrant, KnowledgeDocument, KnowledgePublication, KnowledgeVersion
+from .models import IndexGeneration, KnowledgeBase, KnowledgeBaseRemoval, KnowledgeChunk, KnowledgeEgressGrant, KnowledgeDocument, KnowledgePublication, KnowledgeVersion
 from .evidence import constraints, quality_snapshot
+
+KB_REMOVED = "knowledge_base_deleted"  # 引用状态：所在的知识库已删除
 
 
 class KnowledgeNotFound(UserInputError):
@@ -139,15 +141,31 @@ class KnowledgeService:
         if value is not None and (not value.strip() or len(value) > 100):
             raise UserInputError("业务版本标签须为1～100字；未知时不填写")
 
-    def create(self, name):
+    @staticmethod
+    def _base_name(name):
         name = name.strip()
         if not name or len(name) > 200:
             raise UserInputError("知识库名称须为1～200字")
+        return name
+
+    def create(self, name):
+        name = self._base_name(name)
         with self._session.begin() as s:
             kb = KnowledgeBase(name=name)
             s.add(kb)
             s.flush()
             return kb
+
+    def rename(self, kb_id, name):
+        """只改显示名称；外发授权、索引和引用都按库编号，不受影响。和创建一样不限制重名。"""
+        name = self._base_name(name)
+        with self._session.begin() as s:
+            result = s.execute(update(KnowledgeBase).where(KnowledgeBase.id == kb_id, KnowledgeBase.deleted_at.is_(None))
+                               .values(name=name, revision=KnowledgeBase.revision + 1)
+                               .execution_options(synchronize_session=False))
+            if result.rowcount != 1:
+                raise KnowledgeNotFound("知识库不存在或已移除")
+            return s.get(KnowledgeBase, kb_id)
 
     def list_bases(self):
         with self._session() as s:
@@ -405,6 +423,9 @@ class KnowledgeService:
                     continue
                 version = s.get(KnowledgeVersion, publication.version_id)
                 generation = s.get(IndexGeneration, publication.generation_id)
+                if version is None or generation is None:  # 这几次读取之间知识库被删除
+                    unavailable.append(dict(document_id=doc.id, reason="document_removed"))
+                    continue
                 material, reason = self._material(s, version)
                 if not reason:
                     try:
@@ -490,6 +511,11 @@ class KnowledgeService:
         except ValueError as exc:
             raise UserInputError("引用块号无效") from exc
         with self._session() as s:
+            if s.get(KnowledgeBaseRemoval, kb_id) is not None:
+                # 历史回答不改写，引用还在：说明来源已删除，不当成错误，也不给任何内容
+                return dict(reference=reference, kb_id=kb_id, document_id=None, version_id=None, number=None,
+                            business_version=None, status=KB_REMOVED, source=dict(title=None), chunk=index, section=None,
+                            constraints={}, start=None, end=None, page=None, content=None, table_header=None)
             version = s.get(KnowledgeVersion, parts[1])
             if version is None:
                 raise KnowledgeNotFound("引用版本不存在")

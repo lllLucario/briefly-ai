@@ -562,6 +562,18 @@
       <p class="muted small">未开启时只在本地检索并核验依据，不生成回答。规则处理常见邮箱、手机号和密钥，不保证识别所有企业敏感信息；每次回答都会显示发送了多少片段。</p>
       <p id="kb-settings-status" class="small" role="status"></p>
     </section>
+    <section class="kb-setting">
+      <div class="kb-setting-row">
+        <div><strong>名称</strong><p class="muted small">只改名称；文件、索引、外发授权和历史引用都不变。</p></div>
+        <button type="button" id="kb-rename" class="ghost small">重命名</button>
+      </div>
+    </section>
+    <section class="kb-setting">
+      <div class="kb-setting-row">
+        <div><strong>删除知识库</strong><p class="muted small">连同库内文件、索引和外发授权一并删除，不能恢复。工作区材料保留。</p></div>
+        <button type="button" id="kb-delete" class="ghost small danger">删除</button>
+      </div>
+    </section>
   </dialog>
   <dialog id="kb-source"><h3 id="kb-source-title"></h3><p id="kb-source-info" class="muted small"></p><pre id="kb-source-text"></pre><div class="row end"><button id="kb-source-close" class="primary">关闭</button></div></dialog>
 

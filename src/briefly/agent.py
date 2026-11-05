@@ -49,6 +49,7 @@ from .feishu import configured as feishu_configured
 from .intent import DIRECT_REPLIES, IntentDecision, IntentFunnel, TurnState
 from .intent_log import IntentLog
 from .knowledge.assistant import KnowledgeAssistant, KnowledgeSearchGuard, knowledge_tools, record_knowledge_turn
+from .knowledge.service import KnowledgeNotFound
 from .feishu.client import default_client
 from .clock import RequestTime, request_time
 from .tools import DEFAULT_TOOLS
@@ -319,6 +320,13 @@ class Agent:
                 self.graph.update_state({"configurable": {"thread_id": thread_id}},
                     {"messages": [message, system_reply(notice)]}, as_node=TURN_END)
                 return notice
+        # 所选知识库已删除（页面还没刷新、或恢复的旧选择）：本轮按没选库处理，意图里记一笔，页面据此说明没有查询
+        kb_name, kb_removed = None, False
+        if kb_id and self.knowledge is not None:
+            try:
+                kb_name = self.knowledge.base_name(kb_id)
+            except KnowledgeNotFound:
+                kb_id, kb_removed = None, True
         history = self.history_of(thread_id)
         state = turn_state(history, material_ids, kb_id)
         if skip_funnel:
@@ -330,7 +338,9 @@ class Agent:
         if skip_funnel:
             intent["skip_funnel"], intent["corrects"] = True, corrects
         if kb_id and self.knowledge is not None:
-            intent["kb_id"], intent["kb_name"] = kb_id, self.knowledge.base_name(kb_id)
+            intent["kb_id"], intent["kb_name"] = kb_id, kb_name
+        if kb_removed:
+            intent["kb_removed"] = True
         try:
             direct = self._direct(decision, display, kb_id)
         except UserInputError:

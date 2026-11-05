@@ -17,7 +17,7 @@ from ..context_builder import SYSTEM_REPLY
 from ..intent import _FOLLOW_UP, knowledge_question
 from .qa import EGRESS_POLICY, EGRESS_REQUIRED, MAX_SUB_QUESTIONS, KnowledgeQA, cited_numbers
 from .retrieval import PARAMETERS, both_routes, relevance_floor, relevant, similarity
-from .service import fingerprint
+from .service import KnowledgeNotFound, fingerprint
 
 __all__ = ["KnowledgeAssistant", "KnowledgeSearchGuard", "MAX_SUB_QUESTIONS", "knowledge_tools", "record_knowledge_turn"]
 
@@ -127,7 +127,10 @@ def knowledge_tools(assistant: KnowledgeAssistant) -> list:
         questions = _with_original([q.strip() for q in questions if q and q.strip()][:MAX_SUB_QUESTIONS], messages)
         # 同一轮多次检索时编号接续，回答里的〔依据N〕在本轮内唯一
         start = 1 + sum(len(s["references"]) for s in _searches(messages[_turn_start(messages) + 1:]) if s.get("status") == "ready")
-        result = assistant.search(kb_id, questions, start=start, max_questions=MAX_SUB_QUESTIONS + 1)
+        try:
+            result = assistant.search(kb_id, questions, start=start, max_questions=MAX_SUB_QUESTIONS + 1)
+        except KnowledgeNotFound:  # 本轮开始之后知识库被删除
+            return "用户选择的知识库已被删除，无法检索。请如实告知用户，不要凭记忆回答，并提示重新选择知识库。", {}
         ready = result["status"] == "ready"
         artifact = dict(status=result["status"], knowledge=dict(
             kb_id=kb_id, status=result["status"], questions=questions,

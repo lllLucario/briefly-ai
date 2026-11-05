@@ -1,12 +1,15 @@
 """知识库入库、范围召回、原文引用与问答；不提供伪造索引就绪的入口。"""
 import logging
 from typing import Annotated
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from ..auth import Principal, current_principal
 from ..errors import UserInputError
 from ..llm import ModelConfigurationError
+from ..todos.service import ConfirmationRequired
+from .removal import delete_base as remove_base, deletion_preview as preview_removal
 from .service import KnowledgeConflict, KnowledgeNotFound, KnowledgeService, index_fingerprint
 
 
@@ -112,6 +115,31 @@ def register(app: FastAPI,model_factory):
         except UserInputError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return dict(id=b.id, name=b.name, revision=b.revision, created_at=b.created_at, external_allowed=False)
+
+    @app.patch("/knowledge-bases/{kb_id}", tags=["知识库"], summary="重命名知识库（外发授权、索引、引用不受影响）")
+    def rename(kb_id: str, body: BaseIn, principal: Annotated[Principal, Depends(current_principal)]):
+        b = service.rename(kb_id, body.name)
+        log.info("知识库已重命名 kb_id=%s principal=%s", kb_id, principal.id)
+        return dict(id=b.id, name=b.name, revision=b.revision, created_at=b.created_at,
+                    external_allowed=service.egress_allowed(kb_id))
+
+    @app.get("/knowledge-bases/{kb_id}/deletion-preview", tags=["知识库"], summary="删除前核对：文件数、未结束的入库任务、工作区关联数")
+    def deletion_preview(kb_id: str):
+        return preview_removal(app.state.knowledge_imports, kb_id)
+
+    @app.delete("/knowledge-bases/{kb_id}", tags=["知识库"],
+                summary="删除知识库及其文档、切片、索引、解析结果和外发授权，不能恢复；工作区材料保留并断开关联")
+    def delete_base(kb_id: str, principal: Annotated[Principal, Depends(current_principal)], confirm: bool = False):
+        preview = preview_removal(app.state.knowledge_imports, kb_id)  # 不存在时 404
+        if not confirm:
+            raise ConfirmationRequired(f"删除知识库《{preview['name']}》后不能恢复。请明确确认。")
+        result = remove_base(app.state.knowledge_imports, kb_id)
+        log.info("知识库已删除 kb_id=%s principal=%s documents=%s", kb_id, principal.id, result["documents"])
+        try:
+            app.state.store.notify_changed()  # 删除已生效；后台刷新工作区索引与关联检测，失败下次同步再做
+        except Exception:
+            log.warning("知识库删除后通知工作区索引失败", exc_info=True)
+        return result
 
     @app.post("/knowledge-scope", tags=["知识库"])
     def scope(body: ScopeIn):
