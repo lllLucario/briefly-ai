@@ -19,6 +19,8 @@ from .materials import wrap_material
 from .skills import read_prompt
 from .context_builder import input_limit
 from .context_store import ContextStore, content_hash
+from .llm import CachedCall
+from .llm_cache import record_cache_event
 from .tokens import estimate_tokens
 
 # 每次调用模型后的回调：(任务类型 map/reduce/synthesize, 估算输入 tokens, 模型返回的消息, 出处如 "1-3")，用于观测
@@ -218,6 +220,8 @@ def extract_items(
             continue
         pending.append(source)
     over_budget = [s for s in sources if s in errors]
+    if cache:
+        record_cache_event(cache.engine, "extract.chunk", hits=result.cached, misses=len(sources) - result.cached)
 
     for _ in range(1 + config.MAP_RETRIES):
         if not pending:
@@ -473,14 +477,19 @@ def synthesize(
             f"要点过多，分批合并后仍有约 {final_tokens} tokens，超出单次输入上限 {input_limit()}；"
             "请缩小材料范围或写明关注点后重试"
         )
-    final = model.invoke(final_messages)
-    usage.add(final)
-    if on_call:
-        on_call("synthesize", final_tokens, final, "")
+    call = CachedCall("synthesize", model, final_messages)
+    final = call.text()
+    if not call.hit:  # 命中时没有发生模型调用，不计入用量
+        usage.add(final)
+        if on_call:
+            on_call("synthesize", final_tokens, final, "")
     output = final.text.strip()
     problems = check(output) if check else []
     rewritten = False
-    if problems:
+    if not problems:
+        call.accept()  # 只缓存通过规则检查的初稿；下面的重写路径不走缓存
+    else:
+        call.reject()
         keep = f"，{aside_heading}部分也要保留" if aside_heading and aside_heading in output else ""
         feedback = f"检查发现以下问题，请改正后重新输出完整结果（格式和其他内容不变{keep}）：\n" + "\n".join(f"- {p}" for p in problems)
         retry_messages = [*final_messages, ("assistant", output), ("user", feedback)]

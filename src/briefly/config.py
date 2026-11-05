@@ -17,6 +17,10 @@ THINKING = {"off": False, "on": True, "provider": None}[os.getenv("BRIEFLY_THINK
 
 # 留空则不传该参数，由服务商决定上限
 MAX_TOKENS = int(os.getenv("BRIEFLY_MAX_TOKENS", "0")) or None
+# 模型响应缓存：按白名单缓存通过检查的结果（见 llm_cache.py），off 时和没有缓存完全一样
+LLM_CACHE = os.getenv("BRIEFLY_LLM_CACHE", "on").lower() != "off"
+LLM_CACHE_TTL_HOURS = float(os.getenv("BRIEFLY_LLM_CACHE_TTL_HOURS", "168"))
+LLM_CACHE_MAX_ENTRIES = int(os.getenv("BRIEFLY_LLM_CACHE_MAX_ENTRIES", "5000"))
 # 单次提问中，模型最多连续调用几轮工具
 MAX_TOOL_ROUNDS = int(os.getenv("BRIEFLY_MAX_TOOL_ROUNDS", "8"))
 # 会话记忆（LangGraph checkpointer）所在的 SQLite 文件

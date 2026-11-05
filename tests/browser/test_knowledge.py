@@ -68,6 +68,44 @@ def test_auto_import_external_choice_and_original_reference(web_page):
     expect(page.locator("#kb-source-info")).to_contain_text("当前有效版本")
 
 
+def test_repeated_shortcut_answer_says_it_came_from_cache(web_page, monkeypatch):
+    """单问捷径第二次命中缓存：网页如实说没有发送片段，引用仍然能打开原文。"""
+    from briefly import config
+    from briefly.intent import IntentFunnel
+    from briefly.knowledge.assistant import KnowledgeAssistant
+    monkeypatch.setattr(config, "LLM_CACHE", True)
+    # 假编码器没有登记下限：用覆盖值让知识库路由走单问捷径（替代真实本地检索）
+    monkeypatch.setattr(config, "INTENT_KB_THRESHOLD", 0.01)
+    monkeypatch.setattr(KnowledgeAssistant, "relevance_signals", lambda self, kb_id, text: dict(score=0.53, any_both=True, all_both=True))
+    monkeypatch.setattr(IntentFunnel, "_better_bases", lambda self, kb_id, text, score, floor: [])
+    page = web_page
+    open_knowledge(page)
+    kb = create(page, "缓存制度")
+    import_file(page)
+    allow_egress(page)
+    question = "正式员工出差审批要求是什么？"
+    page.locator('.tabs [data-tab="chat"]').click()
+    page.locator("#chat-kb").select_option(kb)
+    answers = page.locator(".msg.assistant:not(.pending)")
+
+    def ask(number):
+        page.locator("#input").fill(question)
+        page.locator("#send").click()
+        expect(page.locator(".msg.user")).to_have_count(number)
+        expect(answers).to_have_count(number)
+        return answers.nth(number - 1)
+
+    first = ask(1)
+    expect(first.locator(".knowledge-refs [data-egress]")).to_contain_text(re.compile(r"已将本轮 \d+ 个片段"))
+    second = ask(2)
+    expect(second).to_contain_text("预订前审批")
+    egress = second.locator(".knowledge-refs [data-egress]")
+    expect(egress).to_contain_text("来自缓存")
+    expect(egress).to_contain_text("没有向外部生成服务发送片段")
+    second.locator("[data-chat-reference]").first.click()
+    expect(page.locator("#kb-source-text")).to_contain_text("预订前审批")
+
+
 def test_updated_document_keeps_old_source_and_removed_document_is_not_searched(web_page):
     page = web_page
     open_knowledge(page)

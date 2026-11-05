@@ -27,6 +27,7 @@ from .context_builder import SYSTEM_REPLY
 from .db import create_db_engine
 from .feishu import FeishuClient, client_from_config
 from .llm import ModelConfigurationError, create_chat_model, missing_model_config
+from .llm_cache import ResponseCache, ResponseCacheScope, cache_stats
 from .logs import RequestContextMiddleware, configure_logging
 from . import material_library as library
 from .materials import TRACKED, Material, MaterialNotFound, MaterialStore
@@ -456,6 +457,15 @@ def create_app(
         sessions.delete(thread_id)
         agent.graph.checkpointer.delete_thread(thread_id)
 
+    @app.get("/cache/stats", tags=[docs.CHAT], summary="缓存统计（只读）：命中率、节省的 token 和时间")
+    def get_cache_stats():
+        from .knowledge.ingestion import parse_cache_stat
+
+        extra = [parse_cache_stat(app.state.store.engine)]
+        if (index := getattr(app.state.store, "workspace_index", None)) is not None:
+            extra.append(index.reuse_stat())
+        return cache_stats(app.state.store.engine, extra)
+
     def tracked_versions() -> dict[int, dict]:
         from .tracking.service import latest_materials
 
@@ -627,6 +637,8 @@ def create_app(
 
     auth.register(app, WEB_DIR)  # 登录页、登录和退出接口
     app.mount("/web", StaticFiles(directory=WEB_DIR), name="web")
+    app.state.response_cache = ResponseCache(app.state.store.engine)
+    app.add_middleware(ResponseCacheScope, cache=app.state.response_cache)  # 在认证内层：主体由认证写入
     app.add_middleware(auth.AuthMiddleware)  # 默认拒绝：白名单之外都要登录，新增的路由也不会漏
     app.add_middleware(RequestContextMiddleware)  # 最后添加的在最外层：其他中间件的日志和错误也带追踪号
     return app

@@ -60,6 +60,9 @@ class ToolResultRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
+TURN = "turn"  # ContextUsage.task_type：一轮对话的耗时拆分，不是一次模型调用
+
+
 class ContextUsage(Base):
     """一次模型调用的上下文构成。只存数量和哈希，不存正文。"""
 
@@ -189,11 +192,20 @@ class ContextStore:
             log.warning("记录上下文用量失败: %s", e)
 
     def usage(self, thread_id: str | None = None, run_id: str | None = None, limit: int = 50) -> list[ContextUsage]:
-        query = select(ContextUsage).order_by(ContextUsage.id.desc()).limit(limit)
+        """各次模型调用的记录。一轮的耗时拆分不是一次调用，用 turns() 读。"""
+        query = select(ContextUsage).where(ContextUsage.task_type != TURN).order_by(ContextUsage.id.desc()).limit(limit)
         if thread_id:
             query = query.where(ContextUsage.thread_id == thread_id)
         if run_id:
             query = query.where(ContextUsage.run_id == run_id)
+        with self._session() as s:
+            return list(s.scalars(query))
+
+    def turns(self, thread_id: str | None = None, limit: int = 50) -> list[ContextUsage]:
+        """一轮对话的耗时拆分（task_type=turn），最近的在前；明细是 note 里的 JSON，只有数字。"""
+        query = select(ContextUsage).where(ContextUsage.task_type == TURN).order_by(ContextUsage.id.desc()).limit(limit)
+        if thread_id:
+            query = query.where(ContextUsage.thread_id == thread_id)
         with self._session() as s:
             return list(s.scalars(query))
 

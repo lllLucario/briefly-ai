@@ -5,11 +5,18 @@
 """
 import logging
 import re
+from time import perf_counter
 
 from langchain.agents.middleware import AgentMiddleware, ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
+from . import turn_timing
+
 log = logging.getLogger(__name__)
+
+# 回答检查后仍有问题时写在回复元数据上的字段（api.visible_messages 据此显示提醒）；带这些字段的回答不进模型缓存
+CHECK_FLAGS = ("number_issues", "evidence_gaps", "internal_terms", "missing_conflicts", "fidelity_issues",
+               "date_issues", "false_success_claims", "length_limit")
 
 
 def reply_char_limit(messages) -> int | None:
@@ -161,6 +168,24 @@ class InternalTermCheck(AgentMiddleware):
         self.length_limit = length_limit or (lambda request: reply_char_limit(request.messages))
 
     def wrap_model_call(self, request, handler):
+        """耗时分开记：检查本身算 check，里面的模型调用（含重写）由 ContextBuilder 算 model。"""
+        inner = 0.0
+
+        def timed_handler(req):
+            nonlocal inner
+            started = perf_counter()
+            try:
+                return handler(req)
+            finally:
+                inner += perf_counter() - started
+
+        started = perf_counter()
+        try:
+            return self._checked(request, timed_handler)
+        finally:
+            turn_timing.add("check", perf_counter() - started - inner)
+
+    def _checked(self, request, handler):
         context = getattr(getattr(request, "runtime", None), "context", None)
         state = getattr(context, "output_check", {})
         effective = request
