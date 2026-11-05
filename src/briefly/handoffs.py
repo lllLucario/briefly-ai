@@ -94,6 +94,11 @@ class WeeklyInputReceipt(Base):
     report_id: Mapped[int]
 
 
+# 内部锁的键用元组：thread_id 由请求传入，只会是字符串，不可能相撞（相撞时同一把锁取两次，就死锁了）
+WEEKLY_INPUT_LOCK = ("weekly", "input")
+WEEKLY_COMMIT_LOCK = ("weekly", "commit")
+
+
 def digest(value) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -280,7 +285,7 @@ def register(app: FastAPI, get_agent, thread_locks, model_factory) -> None:
     @app.post("/weekly/input-preview", tags=["周报"], summary="预览来源、目标周及已有说明，不修改周报")
     def weekly_preview(body: WeeklyPreviewIn):
         from .weekly.service import week_of
-        lock = thread_locks[body.thread_id or "weekly-input"]
+        lock = thread_locks[body.thread_id or WEEKLY_INPUT_LOCK]
         with lock:
             snap, materials, revision = weekly_snapshot(body)
             r, target_revision = target_state(body.day)
@@ -294,7 +299,7 @@ def register(app: FastAPI, get_agent, thread_locks, model_factory) -> None:
     @app.post("/weekly/input-transfer", tags=["周报"], summary="追加用户确认的原始输入；保留旧正文、审核和版本规则")
     def weekly_transfer(body: WeeklyCommitIn):
         from .weekly.service import MAX_NOTE
-        with thread_locks[body.thread_id or "weekly-input"], thread_locks["weekly-input-commit"], sessions() as s:
+        with thread_locks[body.thread_id or WEEKLY_INPUT_LOCK], thread_locks[WEEKLY_COMMIT_LOCK], sessions() as s:
             fingerprint = digest(body.model_dump(mode="json", exclude={"request_id"}))
             receipt = s.get(WeeklyInputReceipt, body.request_id)
             if receipt:
