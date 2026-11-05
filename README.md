@@ -34,7 +34,7 @@ Briefly AI 是基于 **LangChain / LangGraph 的单智能体办公应用**，提
 
 ## 快速开始
 
-需要 Python **3.10 或更高版本**、Git，以及可用的模型服务 API Key。主要验证环境为 Windows。
+需要 Python **3.11 或更高版本**、Git，以及可用的模型服务 API Key。主要验证环境为 Windows。
 
 ### 1. 获取项目并安装
 
