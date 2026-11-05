@@ -2,7 +2,7 @@
   --bg: #f5f5ef;
   --panel: #fefefa;
   --text: #243a33;
-  --muted: #6c786e;
+  --muted: #5f6b62;
   --line: #e0e5db;
   --accent: #285c47;
   --accent-soft: #eaf1e8;
@@ -1352,3 +1352,13 @@ dialog.kb-settings-dialog { width: min(560px, 94vw); }
 .login-card h1 { margin: 0 0 8px; font-size: 22px; }
 .login-card form { display: grid; gap: 10px; margin-top: 16px; }
 .login-card input { width: 100%; box-sizing: border-box; }
+
+/* W4-04 体验修复 */
+#app-status, #model-status { margin: 12px 28px 0; }
+#app-status button { margin-left: 8px; }
+.list li.session-error { cursor: default; white-space: normal; overflow: visible; text-overflow: clip; }
+#week-panel.load-failed > :not(#week-msg, .week-foot) { display: none; }
+/* 长标题在列表和页面标题里限制行数，展开或看详情时显示完整内容 */
+.todo-ticket:not([open]) > .todo-ticket-row .todo-name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+#kb-current-name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+@media (max-width: 760px) { #app-status, #model-status { margin: 8px 12px 0; } }

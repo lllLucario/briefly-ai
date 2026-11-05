@@ -20,7 +20,7 @@
   let inspectionSequence = 0, inspectionSignature = "", folderSupport = null, fileTreeSignature = "";
   function renderBaseCards() {
     $("#kb-base-cards").innerHTML = bases.map(base => `<button type="button" class="kb-base-card" data-kb-base="${escapeHtml(base.id)}" title="${escapeHtml(base.name)}" aria-pressed="${base.id === current}"><span class="start-icon">${uiIcon("folder")}</span><span><strong>${escapeHtml(base.name)}</strong><small>${base.external_allowed ? "已允许外部模型问答" : "外发未开启"}</small></span><span class="kb-card-check" aria-hidden="true">${base.id === current ? "✓" : "→"}</span></button>`).join("");
-    $("#kb-current-name").textContent = bases.find(base => base.id === current)?.name || "";
+    $("#kb-current-name").textContent = $("#kb-current-name").title = bases.find(base => base.id === current)?.name || "";
   }
   function renderLibraryState() {
     renderBaseCards();
@@ -91,10 +91,11 @@
       xhr.upload.onprogress = event => { batch.percent = event.lengthComputable ? Math.round(event.loaded / event.total * 100) : null; changed(); };
       xhr.onload = () => {
         let result;
-        try { result = JSON.parse(xhr.responseText); } catch (_) { reject(new Error("服务响应无法读取，请核对任务列表后重试此批。")); return; }
+        const requestId = () => result?.request_id || xhr.getResponseHeader("X-Request-ID");
+        try { result = JSON.parse(xhr.responseText); } catch (_) { reject(new Error(withRequestId("服务响应无法读取，请核对任务列表后重试此批。", xhr.status, requestId()))); return; }
         if (xhr.status >= 200 && xhr.status < 300) resolve(result);
         else if (xhr.status === 401 && result.code === "auth_required") reject(new Error(SESSION_EXPIRED));
-        else reject(new Error(typeof result.detail === "string" ? result.detail : "上传未完成，请核对任务列表后重试此批。"));
+        else reject(new Error(withRequestId(typeof result.detail === "string" || Array.isArray(result.detail) ? serverErrorText(result.detail, xhr.status) : "上传未完成，请核对任务列表后重试此批。", xhr.status, requestId())));
       };
       // 服务端不读完就拒绝时，大文件上传在浏览器里表现为断线：查一次登录状态，区分开真正的断线
       xhr.onerror = () => fetch("/auth/status").then(resp => resp.status === 401).catch(() => false).then(expired =>
@@ -330,10 +331,17 @@
     try {
       const [documents, jobs] = await Promise.all([api(`/knowledge-bases/${id}/documents`), api(`/knowledge-bases/${id}/imports`)]);
       if (!active(id, rev)) return;
+      loadFailed("");
       renderDocuments(documents); renderJobs(jobs); inspectSelection();
       if (jobs.some(job => ["queued", "parsing", "indexing"].includes(job.status))) timer = setTimeout(refresh, 1200);
-    } catch (error) { if (active(id, rev)) { message(error.message); timer = setTimeout(refresh, 3000); } }
+    } catch (error) { if (active(id, rev)) { loadFailed(`刷新资料列表失败：${error.message}。正在自动重试。`); timer = setTimeout(refresh, 3000); } }
   }
+  // 加载失败单独显示，恢复后自动消失，不和操作结果的提示混在一起
+  function loadFailed(text) {
+    $("#kb-load-error-text").textContent = text;
+    $("#kb-load-error").classList.toggle("hidden", !text);
+  }
+  $("#kb-load-retry").addEventListener("click", () => window.loadKnowledge());
   async function choose(id) {
     revision++; clearTimeout(timer);
     $("#kb-source").close(); $("#kb-settings-dialog").close();
@@ -357,8 +365,13 @@
       $("#kb-select").innerHTML = '<option value="">选择知识库</option>' + bases.map(kb => `<option value="${escapeHtml(kb.id)}">${escapeHtml(kb.name)}</option>`).join("");
       const id = bases.some(kb => kb.id === current) ? current : bases[0]?.id || "";
       $("#kb-select").value = id;
-      await choose(id);
-    } catch (error) { if (revision === rev) message(error.message); }
+      loadFailed("");
+      if (id && id === current) {
+        // 库没变，只刷新内容：用户可能已经打开上传弹窗，不能关掉它或清掉更新目标
+        renderLibraryState(); renderUploads(); restore();
+        await refresh();
+      } else await choose(id);
+    } catch (error) { if (revision === rev) loadFailed(`加载知识库失败：${error.message}`); }
   };
   $("#kb-select").addEventListener("change", () => choose($("#kb-select").value));
   // 一次性授权：保存到服务端，对本库之后的问答和助理均生效，可随时关闭。
@@ -415,6 +428,8 @@
     const id = current, d = draft(id), files = [...d.files], target = d.target;
     if (!files.length || target && files.length !== 1) { $("#kb-upload-error").textContent = "请选择文件；更新同一来源时只选择一份。"; return; }
     if (files.some(file => file.size > 50 * 1024 * 1024)) { $("#kb-upload-error").textContent = "有文件超过单批50MB上限，请移除后再提交。"; return; }
+    const tokens = Number($("#kb-tokens").value);
+    if (!Number.isInteger(tokens) || tokens < 32 || tokens > 512) { $("#kb-upload-error").textContent = "切片目标须为 32～512 之间的整数。"; $("#kb-tokens").focus(); return; }
     $("#kb-upload-dialog").close();
     if (!target) { d.files = []; d.skippedFiles = []; restore(); enqueueUploads(id, files, Number($("#kb-tokens").value)); return; }
     const form = new FormData();
@@ -448,7 +463,7 @@
     }
     if (!remove) return;
     const id = current, doc = draft().documents.find(item => item.id === remove.dataset.kbRemove);
-    if (!await uiConfirm(`从当前知识库移出《${doc.title}》？原材料及待办、周报引用会保留。`)) return;
+    if (!await uiConfirm(`从当前知识库移出《${doc.title}》？原材料及待办、周报引用会保留。`, {title:"移出知识库", ok:"移出", danger:true})) return;
     try { await api(`/knowledge-bases/${id}/documents/${doc.id}?expected_revision=${doc.revision}`, {method:"DELETE"}); if (current === id) await refresh(); }
     catch (error) { message(error.message, id); }
   });

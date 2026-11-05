@@ -29,7 +29,7 @@ async function loadTrackingSummary() {
   try { tracking.summary = await api("/tracking/summary"); } catch (_) { tracking.summary = null; }
   const s = tracking.summary;
   $("#tracked-count").textContent = s?.sources ? `（${s.files}）` : "";
-  $("#tracked-label").textContent = s?.sources
+  $("#tracked-label").textContent = !s ? "追踪信息暂时读取不到" : s.sources
     ? `${s.sources} 个追踪源，${s.files} 个文件` + (s.last_scan ? ` · 最近检查：${fmtTime(s.last_scan)}` : "")
     : "还没有追踪的文件";
 }
@@ -75,7 +75,16 @@ function renderTree(node, depth, key) {
 }
 
 async function loadTrackedFiles() {
-  const [sources, files] = await Promise.all([api("/tracking/sources"), api("/tracking/files"), loadTrackingSummary()]);
+  let sources, files;
+  try {
+    [sources, files] = await Promise.all([api("/tracking/sources"), api("/tracking/files"), loadTrackingSummary()]);
+  } catch (err) {
+    if (!err.apiError) throw err;
+    tracking.loadFailed = true;
+    trackingMsg(`追踪的文件加载失败：${escapeHtml(err.message)} <button type="button" class="ghost small" data-tracking-retry>重试</button>`, "error");
+    return;
+  }
+  if (tracking.loadFailed) { tracking.loadFailed = false; $("#tracking-msg").classList.add("hidden"); }
   const used = new Set();
   sources.sort((a,b) => Number(Boolean(b.last_error)) - Number(Boolean(a.last_error)) || Number(b.status === "paused") - Number(a.status === "paused"));
   const anomalies = files.filter((f) => f.status !== "present" && f.status !== "untracked").length;
@@ -145,17 +154,23 @@ $("#source-tree").addEventListener("click", async (e) => {
   }
 });
 
-$("#source-add").addEventListener("click", async () => {
+$("#tracking-msg").addEventListener("click", (e) => {
+  if (e.target.closest("[data-tracking-retry]")) loadTrackedFiles();
+});
+
+$("#source-add").addEventListener("click", (e) => {
   const paths = $("#source-paths").value.split("\n").map((x) => x.trim().replace(/^"|"$/g, "")).filter(Boolean);
   if (!paths.length) return;
-  trackingMsg("正在添加并记录初始版本…");
-  try {
-    const r = await api("/tracking/sources", { method: "POST", json: { paths, recursive: $("#source-recursive").checked } });
-    trackingMsg([...r.added.map((s) => `已添加：${escapeHtml(s.path)}`), ...r.messages.map(escapeHtml)].join("<br>"));
-    $("#source-paths").value = "";
-    await loadTrackedFiles();
-    loadMaterials();
-  } catch (err) { trackingMsg(escapeHtml(err.message), "error"); }
+  return whileBusy(e.currentTarget, async () => {
+    trackingMsg("正在添加并记录初始版本…");
+    try {
+      const r = await api("/tracking/sources", { method: "POST", json: { paths, recursive: $("#source-recursive").checked } });
+      trackingMsg([...r.added.map((s) => `已添加：${escapeHtml(s.path)}`), ...r.messages.map(escapeHtml)].join("<br>"));
+      $("#source-paths").value = "";
+      await loadTrackedFiles();
+      loadMaterials();
+    } catch (err) { trackingMsg(escapeHtml(err.message), "error"); }
+  });
 });
 
 $("#scan-btn").addEventListener("click", async () => {

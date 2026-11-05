@@ -115,11 +115,14 @@ def test_week_load_disables_actions_and_failure_can_be_retried(web_page):
     page.route("**/weekly/week", unavailable)
     page.locator('[data-tab="weekly"]').click()
     expect(page.locator("#week-msg")).to_contain_text("加载周报失败")
-    expect(page.locator("#week-go")).to_be_disabled()
-    expect(page.locator("#week-panel")).to_have_attribute("inert", "")
+    # 没加载出来的内容和业务操作都不显示，只留错误和“重新加载”
+    expect(page.locator("#week-go")).to_have_text("重新加载")
+    expect(page.locator("#week-inputs")).to_be_hidden()
+    expect(page.locator("#week-delete")).to_be_hidden()
     page.unroute("**/weekly/week", unavailable)
     page.locator('[data-tab="weekly"]').click()
-    expect(page.locator("#week-go")).to_be_enabled()
+    expect(page.locator("#week-go")).to_have_text("整理本周工作")
+    expect(page.locator("#week-inputs")).to_be_visible()
     expect(page.locator("#week-panel")).not_to_have_attribute("inert", "")
 
 
