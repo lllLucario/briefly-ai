@@ -20,7 +20,6 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel
 
-from .errors import UserInputError
 from . import api_docs as docs
 from . import auth, config, mail
 from .errors import MODEL_FAILED, MODEL_TIMEOUT, UserInputError, is_timeout, validation_response
