@@ -780,3 +780,174 @@ def test_really_deleted_material_is_removed_and_late_response_does_not_restore_i
         held.drain()  # 还带着它的旧快照晚到
         assert gone not in material_ids(page)
         assert picked_ids(page) == []
+
+
+# ---------- 周报：响应顺序和按下期间的重建
+
+
+class HeldRequests:
+    """扣住第一个符合条件的请求，由用例决定放行。退出时放行，不留下永远不返回的请求。"""
+
+    def __init__(self, page, pattern, method, at_response=True):
+        self.page, self.pattern, self.method, self.at_response = page, pattern, method, at_response
+        self.route = self.response = None
+        self.done = False
+
+    def __enter__(self):
+        self.page.route(self.pattern, self._handle)
+        return self
+
+    def __exit__(self, *_):
+        self.release()
+        self.page.unroute(self.pattern)
+
+    def _handle(self, route):
+        if route.request.method != self.method or self.route is not None:
+            return route.continue_()  # 只放行这一层：这里的请求都是同源的
+        if self.at_response:  # 请求已由服务端处理，只是响应晚到
+            self.response = route.fetch()
+        self.route = route
+
+    def wait(self):
+        for _ in range(1000):
+            if self.route is not None:
+                return
+            self.page.wait_for_timeout(10)  # 让路由处理函数有机会运行；只是轮询，条件满足立刻返回
+        raise AssertionError(f"没有等到 {self.method} {self.pattern}")
+
+    def release(self):
+        if self.route is None or self.done:
+            return
+        self.done = True
+        if self.at_response:
+            self.route.fulfill(response=self.response)
+        else:
+            self.route.fallback()
+
+
+TODO_STATUS_PUT = "**/weekly/*/items/*/todos/*"
+
+
+def prepared_week(page):
+    """整理好只有一条待确认记录的本周，返回这条记录。"""
+    ready(page)
+    seed_todo(page)
+    tab(page, "weekly")
+    page.locator("#week-go").click()
+    expect(page.locator('#week-checklist [data-act="confirm"]')).to_have_count(1)
+    expect(page.locator("#week-go")).to_be_disabled()
+    row = page.locator("#week-checklist [data-ev]").first
+    row.locator("details summary").click()
+    return row
+
+
+def server_pending(page):
+    report = page.evaluate("() => weekly.current.id")
+    return page.request.get(base(page) + f"/weekly/{report}").json()["pending"]
+
+
+@pytest.mark.parametrize("at_response", [True, False], ids=["response_late", "request_late"])
+def test_earlier_status_response_does_not_undo_confirm(web_page, at_response):
+    """先改状态、再确认，确认先返回：不能退回待确认，两个操作的结果都要显示出来。
+
+    request_late：服务端先处理确认，所以晚到的状态响应才是最新的，不能只是丢弃。
+    """
+    page = web_page
+    row = prepared_week(page)
+    go = page.locator("#week-go")
+    with HeldRequests(page, TODO_STATUS_PUT, "PUT", at_response) as held:
+        row.locator("[data-todo-status]").select_option("doing")
+        held.wait()
+        row.locator('[data-act="confirm"]').click()
+        expect(go).to_be_enabled()
+        report = page.evaluate("() => weekly.current.id")
+        with page.expect_response(lambda r: r.url.endswith(f"/weekly/{report}") and r.request.method == "GET"):
+            held.release()
+    expect(page.locator("#week-checklist [data-todo-status]")).to_have_value("doing")
+    expect(go).to_be_enabled()
+    assert server_pending(page) == 0
+    assert page.evaluate("() => weekly.current.pending") == 0
+
+
+def test_status_response_during_press_does_not_lose_the_click(web_page):
+    """按下和抬起之间响应到达：按钮不能被换掉，否则这次确认静默丢失。"""
+    page = web_page
+    row = prepared_week(page)
+    with HeldRequests(page, TODO_STATUS_PUT, "PUT") as held:
+        row.locator("[data-todo-status]").select_option("doing")
+        held.wait()
+        box = row.locator('[data-act="confirm"]').bounding_box()
+        page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        page.mouse.down()
+        with page.expect_response(lambda r: "/items/" in r.url and r.request.method == "PUT"):
+            held.release()
+        # 响应已经被页面处理（写入了 weekly.current），重建被推迟
+        page.wait_for_function("""() => weekly.renderDeferred""")
+        with page.expect_response(lambda r: r.url.endswith("/review")):
+            page.mouse.up()
+    expect(page.locator("#week-go")).to_be_enabled()
+    assert server_pending(page) == 0
+    expect(page.locator("#week-checklist [data-todo-status]")).to_have_value("doing")
+
+
+def test_older_refresh_does_not_undo_confirm(web_page):
+    """定时刷新的响应晚于确认：同样不能盖掉。"""
+    page = web_page
+    row = prepared_week(page)
+    report = page.evaluate("() => weekly.current.id")
+    with HeldRequests(page, f"**/weekly/{report}", "GET") as held:
+        page.evaluate("() => { window.oldRefresh = refreshWeek(); }")
+        held.wait()
+        row.locator('[data-act="confirm"]').click()
+        expect(page.locator("#week-go")).to_be_enabled()
+        held.release()
+        page.evaluate("() => window.oldRefresh")
+    expect(page.locator("#week-go")).to_be_enabled()
+    assert page.evaluate("() => weekly.current.pending") == 0
+
+
+def previous_week_day(page):
+    return page.evaluate("""() => {
+      const [y, m, d] = String(weekly.current.period_start).split("-").map(Number);
+      const day = new Date(y, m - 1, d - 7);
+      return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+    }""")
+
+
+def test_late_response_of_previous_week_does_not_replace_opened_week(web_page):
+    page = web_page
+    row = prepared_week(page)
+    day = previous_week_day(page)
+    with HeldRequests(page, TODO_STATUS_PUT, "PUT") as held:
+        row.locator("[data-todo-status]").select_option("doing")
+        held.wait()
+        page.evaluate("day => openWeek({ day })", day)
+        assert page.evaluate("() => weekly.current.period_start") == day
+        with page.expect_response(lambda r: "/items/" in r.url and r.request.method == "PUT"):
+            held.release()
+        # 放行后页面处理这个响应；再取一次当前状态，确认它已经处理完
+        page.evaluate("async () => { await api('/weekly/week'); }")
+    assert page.evaluate("() => weekly.current.period_start") == day
+    expect(page.locator("#week-checklist [data-ev]")).to_have_count(0)
+
+
+def test_note_typed_before_switching_week_is_saved_to_its_own_week(web_page):
+    """这一周还没有记录时写说明，等创建期间换了周：说明存到原来那周，页面停在新打开的一周。"""
+    page = web_page
+    ready(page)
+    tab(page, "weekly")
+    expect(page.locator("#week-go")).to_have_text("整理本周工作")
+    assert page.evaluate("() => weekly.current.id") is None
+    this_week = page.evaluate("() => weekly.current.period_start")
+    day = previous_week_day(page)
+    with HeldRequests(page, "**/weekly/week", "POST") as held:
+        page.locator("#week-note").fill("本周说明")
+        page.locator("#week-note").blur()
+        held.wait()
+        page.evaluate("day => openWeek({ day })", day)
+        with page.expect_response(lambda r: r.url.endswith("/note")) as saved:
+            held.release()
+    assert saved.value.json()["period_start"] == this_week
+    assert saved.value.json()["note"] == "本周说明"
+    page.evaluate("async () => { await api('/weekly/week'); }")
+    assert page.evaluate("() => weekly.current.period_start") == day

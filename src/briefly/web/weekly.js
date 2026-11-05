@@ -3,7 +3,7 @@
 // 依赖 app.js 里的 $、api、state、escapeHtml、renderMarkdown、showNotice、fmtTime、fileIcon、materialTitle、ui*、pickMaterials、loadMaterials。
 "use strict";
 
-const weekly = { list: [], current: null, day: null, settings: null, selected: new Set(), expanded: new Set(), editing: null, timer: null, loading: true, view: 0 };
+const weekly = { list: [], current: null, day: null, settings: null, selected: new Set(), expanded: new Set(), editing: null, timer: null, loading: true, view: 0, sent: 0, applied: 0, pressed: false, renderDeferred: false };
 const WEEK_STATUS = { none: "还没生成", pending: "排队中", running: "生成中", done: "已生成", failed: "生成失败" };
 const EV_STATUS = { PENDING: "待确认", CONFIRMED: "已确认", REJECTED: "已排除" };
 const EV_CATEGORY = { done: "已完成", in_progress: "进行中", plan: "计划", issue: "问题风险", other: "其他" };
@@ -122,23 +122,63 @@ async function openWeek({ id = null, day = null } = {}) {
   } catch (err) { if (view === weekly.view) weekLoadFailed(err, () => openWeek({ id, day })); }
 }
 
+// 响应可能和发送顺序不同：较早请求的响应晚到时，不能用旧状态盖掉新状态。
+// 发请求前取号，收到响应后交给 applyWeek。已切换到别的周的响应不生效（openWeek 让旧号全部失效）。
+function weekTicket(view = weekly.view) {
+  return { view, seq: ++weekly.sent };
+}
+
+function applyWeek(ticket, report) {
+  if (ticket.view !== weekly.view) return false;
+  if (ticket.seq < weekly.applied) {
+    // 服务端处理的顺序不一定和发送相同，这个响应可能带着页面还没有的改动：丢弃后取一次最新状态
+    refreshWeek().catch((err) => { if (!err.apiError) throw err; });
+    return false;
+  }
+  weekly.applied = ticket.seq;
+  weekly.current = report;
+  return true;
+}
+
+// 返回 true 时 weekly.current 已是这个响应，由调用方决定怎么渲染。
+// 先等 ensureWeek 再发请求的操作，传入操作开始时的 view：等待期间可能已经换了周
+async function writeWeek(send, view = weekly.view) {
+  const ticket = weekTicket(view);
+  return applyWeek(ticket, await send());
+}
+
 async function refreshWeek() {
   const r = weekly.current;
-  const view = weekly.view;
   if (!r?.id || weekly.loading) return;
-  const updated = await api(`/weekly/${r.id}`);
-  if (view !== weekly.view || weekly.current?.id !== r.id) return;
-  weekly.current = updated;
-  renderWeek();
+  if (await writeWeek(() => api(`/weekly/${r.id}`))) renderWeek();
 }
 
 // 本周材料、本周说明之前要有这一周的记录
 async function ensureWeek() {
-  if (!weekly.current.id) weekly.current = await api("/weekly/week", { method: "POST", json: { day: weekly.current.period_start } });
-  return weekly.current.id;
+  if (weekly.current.id) return weekly.current.id;
+  const ticket = weekTicket();
+  const created = await api("/weekly/week", { method: "POST", json: { day: weekly.current.period_start } });
+  applyWeek(ticket, created);
+  return created.id; // 等待期间换了周也返回原来那周：刚写的说明要存到那周，不能存到新打开的一周
 }
 
+// 按下和抬起之间重建按钮，这次点击就丢了，也没有任何提示。按下期间只记下，抬起后再渲染。
+$("#week-panel").addEventListener("pointerdown", () => { weekly.pressed = true; });
+function endWeekPress() {
+  weekly.pressed = false;
+  // click 紧跟在 pointerup 之后派发，要等它处理完
+  setTimeout(() => {
+    if (weekly.pressed || !weekly.renderDeferred) return;
+    weekly.renderDeferred = false;
+    if (weekly.current) renderWeek();
+  });
+}
+window.addEventListener("pointerup", endWeekPress, true);
+window.addEventListener("pointercancel", endWeekPress, true);
+window.addEventListener("blur", endWeekPress); // 不用捕获：捕获会收到页面内元素的失焦，而按下按钮时上一个控件正好失焦
+
 function renderWeek() {
+  if (weekly.pressed) { weekly.renderDeferred = true; return; }
   const r = weekly.current;
   const thisWeek = isThisWeek(r);
   $("#week-title").textContent = `周报 ${shortDate(r.period_start)}–${shortDate(r.period_end)}${thisWeek ? "（本周）" : ""}`;
@@ -218,8 +258,10 @@ function renderFoot() {
 async function prepareWeek() {
   const r = weekly.current;
   weekMsg("正在检查更新并整理审核清单…（文件变化多时需要一两分钟）");
+  const ticket = weekTicket();
   const res = await api("/weekly/prepare", { method: "POST", json: { day: r.period_start } });
-  weekly.current = res;
+  if (ticket.view !== weekly.view) return;
+  applyWeek(ticket, res);
   const b = res.build;
   weekMsg(`新整理出 ${b.created} 条（其中待办 ${b.from_todos} 条），未变化 ${b.unchanged} 条。`
     + (res.scan ? "<br>" + scanSummary(res.scan) : "")
@@ -239,8 +281,9 @@ $("#week-go").addEventListener("click", async () => {
     if (action !== "generate") return;
     const r = weekly.current;
     if (r.content && !(await uiConfirm("当前的正文（包括你改过的内容）会存为历史版本，可以在“历史版本”里恢复。", { title: "重新生成周报", ok: "重新生成" }))) return;
-    weekly.current = await api(`/weekly/${await ensureWeek()}/generate`, { method: "POST", json: {} });
-    renderWeek();
+    const view = weekly.view;
+    const rid = await ensureWeek();
+    if (await writeWeek(() => api(`/weekly/${rid}/generate`, { method: "POST", json: {} }), view)) renderWeek();
     loadWeekly(false);
   } catch (err) {
     weekMsg(escapeHtml(err.message), "error");
@@ -333,9 +376,9 @@ function renderChecklist() {
 async function reviewAction(action, ids, note = "") {
   if (!ids.length) return uiAlert("先勾选要操作的记录。");
   try {
-    weekly.current = await api(`/weekly/${weekly.current.id}/review`, { method: "POST", json: { action, ids, note } });
+    const applied = await writeWeek(() => api(`/weekly/${weekly.current.id}/review`, { method: "POST", json: { action, ids, note } }));
     ids.forEach((i) => weekly.selected.delete(i));
-    renderWeek();
+    if (applied) renderWeek();
     loadWeekly(false);
   } catch (err) { uiAlert(err.message, "出错了"); }
 }
@@ -352,8 +395,7 @@ $("#week-checklist").addEventListener("change", async (e) => {
   if (sel) {
     const id = Number(sel.closest("[data-ev]").dataset.ev);
     try {
-      weekly.current = await api(`/weekly/${weekly.current.id}/items/${id}/todos/${sel.dataset.todoStatus}`, { method: "PUT", json: { status: sel.value || null } });
-      renderWeek();
+      if (await writeWeek(() => api(`/weekly/${weekly.current.id}/items/${id}/todos/${sel.dataset.todoStatus}`, { method: "PUT", json: { status: sel.value || null } }))) renderWeek();
     } catch (err) { uiAlert(err.message, "出错了"); }
     return;
   }
@@ -387,9 +429,10 @@ $("#week-checklist").addEventListener("click", async (e) => {
       if (!err.needsConfirm) return uiAlert(err.message, "出错了");
       if (!(await uiConfirm(err.message, { title: "同步到待办", ok: "同步" }))) return;
       try {
-        weekly.current = await api(url, { method: "POST", json: { confirm: true } });
-        renderWeek();
-        if (weekly.current.notices?.length) weekMsg(weekly.current.notices.map(escapeHtml).join("<br>"), "warn");
+        const ticket = weekTicket();
+        const res = await api(url, { method: "POST", json: { confirm: true } });
+        if (applyWeek(ticket, res)) renderWeek();
+        if (ticket.view === weekly.view && res.notices?.length) weekMsg(res.notices.map(escapeHtml).join("<br>"), "warn");
       } catch (err2) { uiAlert(err2.message, "出错了"); }
     }
     return;
@@ -407,8 +450,7 @@ $("#week-checklist").addEventListener("click", async (e) => {
     if (force && !(await uiConfirm("这条描述你修改过，重新生成会覆盖你的修改。", { title: "重新生成描述", ok: "覆盖并重新生成", danger: true }))) return;
     t.disabled = true;
     try {
-      weekly.current = await api(`/weekly/${rid}/items/${id}/regenerate?force=${force}`, { method: "POST" });
-      renderWeek();
+      if (await writeWeek(() => api(`/weekly/${rid}/items/${id}/regenerate?force=${force}`, { method: "POST" }))) renderWeek();
     } catch (err) { uiAlert(err.message, "出错了"); t.disabled = false; }
   }
 });
@@ -450,6 +492,7 @@ $("#evidence-form").addEventListener("submit", (e) => {
   const body = { title: $("#ev-title").value.trim() || null, description: $("#ev-desc").value.trim() || null, category: $("#ev-category").value };
   return whileBusy(e.target.querySelector("button.primary"), async () => {
     try {
+      const ticket = weekTicket();
       let r;
       if (mode === "edit") r = await api(`/weekly/${rid}/items/${id}`, { method: "PUT", json: body });
       if (mode === "add") r = await api(`/weekly/${rid}/items`, { method: "POST", json: body });
@@ -465,8 +508,7 @@ $("#evidence-form").addEventListener("submit", (e) => {
         r = await api(`/weekly/${rid}/items/${id}/split`, { method: "POST", json: { parts } });
       }
       $("#evidence-dialog").close();
-      weekly.current = r;
-      renderWeek();
+      if (applyWeek(ticket, r)) renderWeek();
       loadWeekly(false);
     } catch (err) { uiAlert(err.message, "出错了"); }
   });
@@ -490,9 +532,9 @@ function renderWeekMaterials() {
 }
 
 async function setWeekMaterials(ids) {
+  const view = weekly.view;
   const rid = await ensureWeek();
-  weekly.current = await api(`/weekly/${rid}/materials`, { method: "PUT", json: { material_ids: ids } });
-  renderWeek();
+  if (await writeWeek(() => api(`/weekly/${rid}/materials`, { method: "PUT", json: { material_ids: ids } }), view)) renderWeek();
 }
 
 $("#week-pick").addEventListener("click", async () => {
@@ -517,11 +559,12 @@ $("#week-note").addEventListener("change", async () => {
   const note = $("#week-note").value.trim();
   if (note === (weekly.current.note || "")) return;
   try {
+    const view = weekly.view;
     const rid = await ensureWeek();
-    weekly.current = await api(`/weekly/${rid}/note`, { method: "PUT", json: { note } });
+    const applied = await writeWeek(() => api(`/weekly/${rid}/note`, { method: "PUT", json: { note } }), view);
     $("#week-note-state").textContent = "已保存";
     setTimeout(() => ($("#week-note-state").textContent = ""), 2000);
-    renderWeek();
+    if (applied) renderWeek();
   } catch (err) { weekMsg(escapeHtml(err.message), "error"); }
 });
 
@@ -648,9 +691,9 @@ $("#edit-weekly").addEventListener("click", () => {
 $("#cancel-edit").addEventListener("click", exitEdit);
 $("#save-weekly").addEventListener("click", (e) => whileBusy(e.currentTarget, async () => {
   try {
-    weekly.current = await api(`/weekly/${weekly.current.id}/content`, { method: "PUT", json: { content: $("#weekly-text").value } });
+    const applied = await writeWeek(() => api(`/weekly/${weekly.current.id}/content`, { method: "PUT", json: { content: $("#weekly-text").value } }));
     exitEdit();
-    renderWeek();
+    if (applied) renderWeek();
   } catch (err) { uiAlert(err.message, "出错了"); }
 }));
 
@@ -668,9 +711,9 @@ $("#versions-weekly").addEventListener("click", async () => {
     const b = e.target.closest("[data-restore]");
     if (!b) return;
     e.preventDefault();
-    weekly.current = await api(`/weekly/${weekly.current.id}/versions/${b.dataset.restore}/restore`, { method: "POST" });
+    const applied = await writeWeek(() => api(`/weekly/${weekly.current.id}/versions/${b.dataset.restore}/restore`, { method: "POST" }));
     $("#source-dialog").close();
-    renderWeek();
+    if (applied) renderWeek();
   };
   $("#source-dialog").showModal();
 });
