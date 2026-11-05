@@ -750,16 +750,28 @@ $("#feishu-weekly").addEventListener("click", async () => {
   const btn = $("#feishu-weekly");
   btn.disabled = true;
   showNotice(box, "正在写入飞书文档…");
+  const requestId = crypto.randomUUID();
+  let resend = false;
   try {
     const existing = await api(`/weekly/${reportId}/feishu`);
     if (weekly.current?.id !== reportId) return;
     if (existing.some((x) => x.status && x.status !== "done")) {
       showNotice(box, `<b>飞书写入记录</b><br>${feishuLinks(existing.slice(0, 3))}`, "warn");
       if (!(await uiConfirm("上次写入未完成。请先检查记录中的飞书链接；再次写入会新建文档，可能产生重复。继续？"))) return;
+      resend = true;
     }
     if (weekly.current?.id !== reportId) return;
-    const x = await api(`/weekly/${reportId}/feishu`, { method: "POST" });
+    const write = (again) => api(`/weekly/${reportId}/feishu`, { method: "POST", json: { request_id: requestId, resend: again } });
+    let x = await write(resend);
     if (weekly.current?.id !== reportId) return;
+    if (x.duplicate) { // 同样的内容已经写过（可能是另一个标签页）：显示那一篇，用户确认才再写
+      showNotice(box, `<b>已写入过飞书</b><br>${feishuLinks([x])}`, x.status && x.status !== "done" ? "warn" : "");
+      if (!(await uiConfirm("这份周报的同样内容已经写入过飞书。再写一篇？会新建一篇文档。"))) return;
+      if (weekly.current?.id !== reportId) return;
+      showNotice(box, "正在写入飞书文档…");
+      x = await write(true);
+      if (weekly.current?.id !== reportId) return;
+    }
     showNotice(box, `<b>${x.status && x.status !== "done" ? "飞书写入未完成" : "已写入飞书"}</b><br>${feishuLinks([x])}`, x.share_error || (x.status && x.status !== "done") ? "warn" : "");
   } catch (err) {
     if (weekly.current?.id === reportId) showNotice(box, escapeHtml(err.message), "error");
@@ -767,7 +779,7 @@ $("#feishu-weekly").addEventListener("click", async () => {
 });
 
 function mailLines(sends) {
-  return sends.map((x) => `${fmtTime(x.created_at)} ${x.status === "sent" ? "已发送" : x.status === "unknown" ? "<span class=\"danger\">发送结果待核对</span>" : "<span class=\"danger\">发送失败</span>"} → ${escapeHtml(x.to)}`
+  return sends.map((x) => `${fmtTime(x.created_at)} ${x.status === "sent" ? "已发送" : x.status === "sending" ? "正在发送" : x.status === "unknown" ? "<span class=\"danger\">发送结果待核对</span>" : "<span class=\"danger\">发送失败</span>"} → ${escapeHtml(x.to)}`
     + (x.cc ? `（抄送 ${escapeHtml(x.cc)}）` : "") + (x.error ? `<br><span class="danger">${escapeHtml(x.error)}</span>` : "")).join("<br>");
 }
 
@@ -794,8 +806,21 @@ $("#mail-weekly").addEventListener("click", async () => {
   btn.disabled = true;
   showNotice($("#weekly-mail"), "正在发送邮件…");
   try {
-    const x = await api(`/weekly/${reportId}/email`, { method: "POST", json: { to: answer.to } });
+    const requestId = crypto.randomUUID();
+    const send = (again) => api(`/weekly/${reportId}/email`, { method: "POST", json: { to: answer.to, request_id: requestId, resend: again } });
+    let x = await send(false);
     if (weekly.current?.id !== reportId) return;
+    if (x.duplicate) { // 同样的内容已经发给这些收件人（可能是另一个标签页）：显示那一次的结果，用户确认才再发
+      showNotice($("#weekly-mail"), `<b>邮件</b><br>${mailLines([x])}`, x.status === "sent" ? "" : "error");
+      const question = x.status === "unknown"
+        ? "上次发送结果待核对，邮件可能已经发出。请先检查已发送邮件；确认没有发出才需要再发。再发一次？"
+        : "这份周报的同样内容已经发给这些收件人。再发一次？";
+      if (!(await uiConfirm(question))) return;
+      if (weekly.current?.id !== reportId) return;
+      showNotice($("#weekly-mail"), "正在发送邮件…");
+      x = await send(true);
+      if (weekly.current?.id !== reportId) return;
+    }
     showNotice($("#weekly-mail"), `<b>邮件</b><br>${mailLines([x])}`, x.status === "sent" ? "" : "error");
   } catch (err) {
     if (weekly.current?.id === reportId) showNotice($("#weekly-mail"), escapeHtml(err.message), "error");
