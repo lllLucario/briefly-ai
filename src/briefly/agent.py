@@ -12,9 +12,11 @@
 """
 import json
 import logging
+import re
 import sqlite3
 import uuid
 from collections.abc import Callable
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 
@@ -33,7 +35,7 @@ from .context import Context
 from .context_builder import CONTEXT_OVERFLOW, SYSTEM_REPLY, ContextBuilder, system_reply
 from .context_store import TURN, ContextStore
 from .db import create_db_engine
-from .llm import create_chat_model
+from .llm import create_chat_model, fresh_model_calls
 from .materials import EgressRestricted, MaterialStore, wrap_material
 from .output_check import INTERNAL_PATTERNS, PROGRAM_MATERIAL_REF, InternalTermCheck, reply_char_limit
 from .skills import SKILLS, read_prompt
@@ -64,6 +66,7 @@ __all__ = [
 
 log = logging.getLogger(__name__)
 
+_ASKS_REDO = re.compile(r"重新|重做|重写|重来|再(?:来|做|写|生成|总结|提炼|整理|概括|梳理|归纳|分析)|换(?:一|个)(?:版|种|下)|\b(?:redo|regenerate|again)\b", re.I)
 TOOL_ROUNDS_EXCEEDED = "工具调用次数过多，已中止，请换一种方式描述需求。"
 INPUT_TOO_LONG = (
     "这段输入约 {tokens} tokens，超出单次可直接处理的长度（{limit}），且当前没有配置材料库，无法转存。"
@@ -275,7 +278,9 @@ class Agent:
         corrects 为被纠正的那条用户消息 ID，记入意图日志（intent_log.py）。
         """
         thread_id = thread_id or self.thread_id
-        with turn_timing.measure() as turn:
+        # “交给助理处理”和“重新……”都是用户在要新的结果；判断宽一点也只是多调用一次模型
+        refresh = fresh_model_calls() if skip_funnel or _ASKS_REDO.search(text) else nullcontext()
+        with turn_timing.measure() as turn, refresh:
             try:
                 return self._chat(text, skill, material_ids, thread_id, kb_id, skip_funnel, corrects)
             finally:

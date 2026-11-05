@@ -12,6 +12,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from .. import api_docs as docs
+from ..llm import fresh_model_calls
 from ..todos.evidence import TodoEvidence
 from .models import CONFIRMED, PENDING, REJECTED, WeeklyReport, WorkEvidence
 from .schedule import WEEKDAY_NAMES, Schedule, describe, mark_read, next_time, notifications
@@ -236,7 +237,8 @@ def register(app: FastAPI) -> None:
 
     @app.post("/weekly/{report_id}/items/{evidence_id}/regenerate", tags=[docs.WEEKLY], summary="重新生成描述（force 覆盖你改过的描述）")
     def regenerate(report_id: int, evidence_id: int, force: bool = False):
-        weekly().review().regenerate(report_id, evidence_id, force=force)
+        with fresh_model_calls():  # 这个按钮就是要模型重写一遍
+            weekly().review().regenerate(report_id, evidence_id, force=force)
         return detail(weekly().report(report_id))
 
     @app.get("/weekly/items/{evidence_id}/sources", tags=[docs.WEEKLY], summary="一条记录的依据：文件、版本、位置、原文、变化")
@@ -262,10 +264,15 @@ def register(app: FastAPI) -> None:
         return (weekly().report(report_id).inputs or {}).get("todo_refs", [])
 
     # ---- 生成与正文
+    def run_generation_fresh(report_id: int, token: str | None) -> None:
+        """点“生成”就是要模型写一遍（含冲突判断）：不读模型缓存。上下文要在后台任务里设，路由里设的传不过来。"""
+        with fresh_model_calls():
+            weekly().run_generation(report_id, token)
+
     @app.post("/weekly/{report_id}/generate", tags=[docs.WEEKLY], status_code=202, summary="确认清单并生成正文（后台生成，轮询详情看进度；会调用模型）")
     def generate(report_id: int, body: GenerateIn, background: BackgroundTasks):
         report = weekly().start_generation(report_id, body.audience, body.name)
-        background.add_task(weekly().run_generation, report.id, report.generation_token)
+        background.add_task(run_generation_fresh, report.id, report.generation_token)
         return detail(report)
 
     @app.put("/weekly/{report_id}/content", tags=[docs.WEEKLY], summary="保存修改后的正文（修改前的存为历史版本）")

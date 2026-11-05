@@ -1,5 +1,8 @@
 """模型实例和模型响应缓存的唯一出口（OpenAI 兼容接口），服务商、地址、模型由 .env 决定。"""
+import contextvars
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from time import perf_counter
 
 from langchain_core.language_models import BaseChatModel
@@ -55,6 +58,22 @@ def _thinking_body() -> dict | None:
     return {"thinking": {"type": "enabled" if config.THINKING else "disabled"}}
 
 
+_fresh: contextvars.ContextVar[bool] = contextvars.ContextVar("briefly_fresh_model_calls", default=False)
+
+
+@contextmanager
+def fresh_model_calls() -> Iterator[None]:
+    """用户明确要求重做时用：里面的 CachedCall 不读缓存，但结果通过检查后仍然写入（覆盖旧结果）。
+
+    放在用户动作的入口（路由、一轮对话），不放在调用点：同一次重做可能经过多个调用点。线程池会复制上下文，工具里也有效。
+    """
+    token = _fresh.set(True)
+    try:
+        yield
+    finally:
+        _fresh.reset(token)
+
+
 class CachedCall:
     """一次可缓存的模型调用。流程是“查 → 调用 → 调用方检查 → accept”，所以只有通过检查的结果才进缓存。
 
@@ -79,6 +98,9 @@ class CachedCall:
 
     def lookup(self) -> dict | None:
         if self.key is None:
+            return None
+        if _fresh.get():
+            record_cache_event(self.scope.cache.engine, self._stat, refreshed=1)
             return None
         cached = self.scope.cache.get(self.key)
         if cached is None:

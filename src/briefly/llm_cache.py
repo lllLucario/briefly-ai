@@ -3,8 +3,9 @@
 为什么不用 LangChain 的 BaseCache：它在 _generate_with_cache 里拿到模型返回后立刻写入，这时回答检查、引用核对都还没做，
 无法做到“只缓存通过检查的结果”；键也放不进主体和依据身份，而且只能按模型实例开启，不能按调用点开启。
 
-默认不缓存：只有请求经过 ResponseCacheScope（主体来自 auth.current_principal）时才有作用域，定时任务、后台线程、
-命令行都没有作用域，直接调用模型。值只存 JSON，不用 pickle。日志只写键的哈希前缀，不写内容。
+默认不缓存：只有请求经过 ResponseCacheScope（主体来自 auth.current_principal）时才有作用域，包括这个请求的 BackgroundTasks
+和它经线程池调用的工具。定时任务（BackgroundScheduler）、自建线程、命令行没有作用域，直接调用模型。
+用户明确要求重做的入口用 llm.fresh_model_calls：不读，但仍写。值只存 JSON，不用 pickle。日志只写键的哈希前缀，不写内容。
 """
 import contextvars
 import hashlib
@@ -59,6 +60,7 @@ class CacheStat(Base):
     misses: Mapped[int] = mapped_column(Integer, default=0)
     stores: Mapped[int] = mapped_column(Integer, default=0)
     rejected: Mapped[int] = mapped_column(Integer, default=0)  # 生成了但没通过检查、未写入
+    refreshed: Mapped[int] = mapped_column(Integer, default=0)  # 用户要求重做、没有读缓存，不算进命中率
     saved_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     saved_output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     saved_ms: Mapped[int] = mapped_column(Integer, default=0)
@@ -220,7 +222,7 @@ def cache_stats(engine: Engine, extra: list[dict] | None = None) -> dict:
     with factory() as s:
         rows = list(s.scalars(select(CacheStat).order_by(CacheStat.name)))
         entries = s.scalar(select(func.count()).select_from(LlmCacheEntry)) or 0
-    caches = [dict(name=r.name, hits=r.hits, misses=r.misses, stores=r.stores, rejected=r.rejected,
+    caches = [dict(name=r.name, hits=r.hits, misses=r.misses, stores=r.stores, rejected=r.rejected, refreshed=r.refreshed,
                    saved_input_tokens=r.saved_input_tokens, saved_output_tokens=r.saved_output_tokens, saved_ms=r.saved_ms)
               for r in rows] + (extra or [])
     for item in caches:
