@@ -2,13 +2,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from briefly.api import create_app
-from briefly.db import create_db_engine
+from db_util import file_engine
 from briefly.materials import MaterialStore
 
 
 @pytest.fixture
 def client():
-    engine = create_db_engine("sqlite://")
+    engine = file_engine()
     with TestClient(create_app(MaterialStore(engine))) as c:
         yield c
     engine.dispose()
@@ -100,7 +100,7 @@ def test_every_endpoint_is_in_one_documented_group():
     """接口文档（/docs）按功能分组：新接口必须标明分组，否则会落进没有说明的“default”。"""
     from briefly.api_docs import OPENAPI_TAGS
 
-    engine = create_db_engine("sqlite://")
+    engine = file_engine()
     spec = create_app(store=MaterialStore(engine), model_factory=lambda: None).openapi()
     names = {t["name"] for t in OPENAPI_TAGS}
     for path, operations in spec["paths"].items():

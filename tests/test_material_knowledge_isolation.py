@@ -12,6 +12,7 @@ from briefly.agent import Agent
 from briefly.api import create_app
 from briefly.context import Context
 from briefly.db import create_db_engine
+from db_util import file_engine
 from briefly.knowledge.models import KnowledgeBase, KnowledgeImport
 from briefly.materials import (
     KNOWLEDGE, WORKSPACE_FLAG, KnowledgeOnlyMaterial, Material, MaterialStore, mark_knowledge_only,
@@ -28,7 +29,7 @@ HINT = "属于知识库"
 
 @pytest.fixture
 def store():
-    engine = create_db_engine("sqlite://")
+    engine = file_engine()
     try:
         yield MaterialStore(engine)
     finally:

@@ -8,7 +8,10 @@ import pytest
 # 否则测的是主检出的代码，改动不生效、测试照样全过
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from sqlalchemy import StaticPool  # noqa: E402
+
 from briefly import config  # noqa: E402
+import db_util  # noqa: E402
 
 
 def pytest_addoption(parser):
@@ -20,6 +23,28 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "browser" in item.keywords:
                 item.add_marker(pytest.mark.skip(reason="网页回归需显式使用 --run-browser"))
+
+
+@pytest.fixture(autouse=True)
+def _file_engines(tmp_path, tmp_path_factory):
+    db_util.start_test(tmp_path, tmp_path_factory)
+    yield
+    db_util.finish_test()
+
+
+@pytest.fixture(autouse=True)
+def _no_background_threads_on_shared_connection(monkeypatch):
+    """内存库共用一条连接，后台线程会撤销测试线程未提交的写入（说明见 db_util）：直接报错，不留偶发失败。"""
+    from briefly.workspace_index import WorkspaceIndex
+
+    real = WorkspaceIndex.__init__
+
+    def init(self, engine, *args, **kwargs):
+        if isinstance(engine.pool, StaticPool):
+            pytest.fail('create_app 会启动后台线程，不能配内存库：把 create_db_engine("sqlite://") 换成 db_util.file_engine()')
+        real(self, engine, *args, **kwargs)
+
+    monkeypatch.setattr(WorkspaceIndex, "__init__", init)
 
 
 @pytest.fixture(autouse=True)

@@ -2,13 +2,13 @@
 from fastapi.testclient import TestClient
 
 from briefly.api import create_app
-from briefly.db import create_db_engine
+from db_util import file_engine
 from briefly.materials import MaterialStore
 from fakes import fake
 
 
 def client():
-    return TestClient(create_app(MaterialStore(create_db_engine("sqlite://")), model_factory=lambda: fake()))
+    return TestClient(create_app(MaterialStore(file_engine()), model_factory=lambda: fake()))
 
 
 def test_latest_progress_is_own_note_not_status_or_child_activity():

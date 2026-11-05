@@ -7,6 +7,7 @@ from langchain_core.messages import AIMessage
 
 from briefly.api import create_app
 from briefly.db import create_db_engine
+from db_util import file_engine
 from briefly.materials import MaterialNotFound, MaterialStore
 from briefly.weekly.engine import current_week, split_reminders, strip_source_tags, unverified_numbers
 from briefly.weekly.models import DONE, FAILED, PENDING_GEN
@@ -65,7 +66,7 @@ def make_model(report: str = REPORT, extract=None):
 
 @pytest.fixture
 def store():
-    engine = create_db_engine("sqlite://")
+    engine = file_engine()
     yield MaterialStore(engine)
     engine.dispose()
 

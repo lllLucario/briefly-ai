@@ -308,7 +308,7 @@ def test_activity_window_uses_status_at_period_end(ctx):
 @pytest.fixture
 def feishu(tmp_path, monkeypatch):
     from briefly import config
-    from briefly.db import create_db_engine
+    from db_util import file_engine
     from briefly.materials import MaterialStore
     from briefly.tracking.blobs import BlobStore
     from briefly.tracking.service import TrackingService
@@ -324,7 +324,7 @@ def feishu(tmp_path, monkeypatch):
         ("POST", f"{API}/drive/v1/metas/batch_query"): {"metas": [{"doc_token": DOC, "latest_modify_user": "ou_me", "owner_id": "ou_me"}]},
         ("GET", f"{API}/contact/v3/users/ou_me"): {"user": {"name": "王五"}},
     })  # fmt: skip
-    engine = create_db_engine("sqlite://")
+    engine = file_engine()
     store = MaterialStore(engine)
     svc = TrackingService(engine, store, BlobStore(tmp_path / "store"), feishu_factory=fake.client)
     yield svc, store, doc

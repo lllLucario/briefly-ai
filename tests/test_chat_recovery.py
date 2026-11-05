@@ -7,7 +7,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from briefly.agent import Agent, sqlite_checkpointer
 from briefly.api import create_app, visible_messages
-from briefly.db import create_db_engine
+from db_util import file_engine
 from briefly.materials import MaterialStore
 from briefly.number_check import number_issues
 from fakes import FunctionModel
@@ -15,7 +15,7 @@ from fakes import FunctionModel
 
 @pytest.fixture
 def store():
-    engine = create_db_engine("sqlite://")
+    engine = file_engine()
     yield MaterialStore(engine)
     engine.dispose()
 

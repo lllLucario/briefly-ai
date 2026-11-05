@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from briefly.agent import Agent
 from briefly.api import create_app
-from briefly.db import create_db_engine
+from db_util import file_engine
 from briefly.handoffs import Candidate, conversation_input, verified_candidates
 from briefly.materials import Material, MaterialStore
 from briefly.todos.models import Todo, TodoActivity
@@ -24,7 +24,7 @@ ITEM = {"title": "整理测试记录", "source_id": "m1", "quote": TEXT, "owner"
 
 @pytest.fixture
 def env():
-    engine = create_db_engine("sqlite://")
+    engine = file_engine()
     store = MaterialStore(engine)
     material, _ = store.add_text("会议记录", TEXT)
     data = {"items": [ITEM]}

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from briefly import config
 from briefly.api import create_app
 from briefly.db import create_db_engine
+from db_util import file_engine
 from briefly.materials import Material, MaterialStore
 from briefly.tracking.blobs import BlobStore
 from briefly.tracking.service import TrackingService
@@ -19,7 +20,7 @@ from tracking_util import env  # noqa: F401
 
 @pytest.fixture
 def client():
-    engine = create_db_engine("sqlite://")
+    engine = file_engine()
     with TestClient(create_app(MaterialStore(engine), model_factory=lambda: fake())) as c:
         yield c
     engine.dispose()

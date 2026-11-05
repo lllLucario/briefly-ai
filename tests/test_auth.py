@@ -11,7 +11,7 @@ from starlette.routing import Mount
 from briefly import auth, config
 from briefly.api import create_app, serve
 from briefly.auth import COOKIE_NAME, PUBLIC_PATHS, session_value
-from briefly.db import create_db_engine
+from db_util import file_engine
 from briefly.feishu.oauth import UserTokens
 from briefly.materials import MaterialStore
 
@@ -20,7 +20,7 @@ TOKEN = "correct-horse-battery-staple"
 
 @pytest.fixture
 def app(tmp_path):
-    engine = create_db_engine("sqlite://")
+    engine = file_engine()
     app = create_app(MaterialStore(engine), feishu_tokens=UserTokens(tmp_path / "t.json"))
     yield app
     engine.dispose()
@@ -307,7 +307,7 @@ def test_feishu_callback_reachable_and_forged_state_rejected(secured, tmp_path):
     from fakes import FakeFeishu
 
     fake = FakeFeishu()
-    engine = create_db_engine("sqlite://")
+    engine = file_engine()
     path = tmp_path / "token.json"
     app = create_app(MaterialStore(engine), feishu_factory=fake.client, feishu_tokens=UserTokens(path, transport=fake.transport))
     response = TestClient(app, follow_redirects=False).get("/feishu/oauth/callback", params={"code": "c", "state": "forged"})

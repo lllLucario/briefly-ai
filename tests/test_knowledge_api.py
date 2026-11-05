@@ -2,13 +2,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from briefly.api import create_app
-from briefly.db import create_db_engine
+from db_util import file_engine
 from briefly.materials import MaterialStore
 
 
 @pytest.fixture
 def client():
-    engine=create_db_engine("sqlite://")
+    engine=file_engine()
     try:
         with TestClient(create_app(MaterialStore(engine))) as client:
             yield client

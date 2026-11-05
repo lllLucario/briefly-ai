@@ -4,7 +4,7 @@ from datetime import date
 import pytest
 
 from briefly import config
-from briefly.db import create_db_engine
+from db_util import file_engine
 from briefly.feishu.bitable import format_value, read_table
 from briefly.feishu.client import FeishuError, FeishuNotConfigured, FeishuClient
 from briefly.feishu.docx import MAX_BLOCKS_PER_CALL, blocks_to_markdown, create_document, read_document
@@ -56,7 +56,7 @@ def doc_blocks():
 
 @pytest.fixture
 def store():
-    engine = create_db_engine("sqlite://")
+    engine = file_engine()
     yield MaterialStore(engine)
     engine.dispose()
 

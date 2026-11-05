@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from briefly import config, legacy_word
 from briefly.api import create_app
-from briefly.db import create_db_engine
+from db_util import file_engine
 from briefly.loaders import file_type, load_document
 from briefly.materials import MaterialStore
 
@@ -114,7 +114,7 @@ def test_timeout_and_nonzero_exit(monkeypatch):
 
 
 def test_upload_old_word_through_existing_api(converted):
-    engine=create_db_engine("sqlite://")
+    engine=file_engine()
     try:
         with TestClient(create_app(MaterialStore(engine))) as client:
             result=client.post("/materials/upload",files={"file":("中文制度.doc",legacy_word.OLE_HEADER+b"fixture")})
