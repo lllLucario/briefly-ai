@@ -12,7 +12,14 @@ def test_filter_edit_save_cancel_and_parent_return(web_page, width):
     base = p.url.rstrip("/")
     parent = p.request.post(base + "/todos", data={"title": "发布准备", "description": "原始说明", "due_date": "2026-10-23"}).json()
     child = p.request.post(base + "/todos", data={"title": "子待办核对", "parent_id": parent["id"]}).json()
+    finished = p.request.post(base + "/todos", data={"title": "只在全部筛选里显示"}).json()
+    assert p.request.post(base + f'/todos/{finished["id"]}/status', data={"status": "done"}).ok
     p.reload()
+    row = p.locator(f'[data-todo="{parent["id"]}"]')
+    # 启动和改筛选各发一次加载，且可能重叠。先等启动这次渲染完，已完成的行在此之前不显示，
+    # 它出现就说明筛选这次也渲染完了；否则点开行时列表还可能重绘，展开状态丢失。
+    expect(row).to_be_visible()
+    expect(p.locator(f'[data-todo="{finished["id"]}"]')).to_have_count(0)
     filter_box = p.locator(".todo-filter-control").bounding_box()
     add_box = p.locator("#new-todo").bounding_box()
     assert filter_box["height"] == add_box["height"] == 44
@@ -20,7 +27,7 @@ def test_filter_edit_save_cancel_and_parent_return(web_page, width):
     p.locator("#todo-filter").focus()
     assert p.locator(".todo-filter-control").bounding_box()["height"] == 44
     p.locator("#todo-filter").select_option("all")
-    row = p.locator(f'[data-todo="{parent["id"]}"]')
+    expect(p.locator(f'[data-todo="{finished["id"]}"]')).to_be_visible()
     row.locator("summary.todo-ticket-row").click()
     row.locator(".ticket-overview-head [data-inline-detail]").click()
     expect(p.locator("#todo-title")).to_have_text("发布准备")
