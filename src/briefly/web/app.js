@@ -12,6 +12,8 @@ const state = {
   lastRequest: null,
   viewRevision: 0,
   sessionOpening: 0, // 正在打开的会话序号：晚到的旧响应不覆盖新的选择
+  materialsRequested: 0, // 材料列表请求序号，和已应用的序号比较，晚到的旧快照不覆盖新列表
+  materialsApplied: 0,
   modelMissing: false,
   drafts: new Map(), // 未发送输入按会话保存，不带到其他会话
   corrected: new Set(), // 当前会话里已点过“交给助理处理”的用户消息 ID
@@ -327,6 +329,8 @@ document.querySelectorAll(".tabs button").forEach((btn) => {
 
 // ---------- 材料 ----------
 async function loadMaterials() {
+  const request = ++state.materialsRequested;
+  const pickedBefore = new Set(state.picked); // 请求发出后才选的材料可能不在这份快照里，不能据此判断已删除
   let materials, tracking;
   try {
     [materials, tracking] = await Promise.all([
@@ -337,11 +341,13 @@ async function loadMaterials() {
     refreshLibrary(); // 材料库列表走单独的接口，由它显示失败和重试入口
     throw err;
   }
+  if (request < state.materialsApplied) return; // 更新的请求已经先返回：旧快照不能覆盖它
+  state.materialsApplied = request;
   state.materials = materials;
   state.feishuTracking = tracking;
   refreshLibrary();
   // 已删除的材料从对话选择中去掉
-  for (const id of [...state.picked]) if (!state.materials.some((m) => m.id === id)) state.picked.delete(id);
+  for (const id of pickedBefore) if (!state.materials.some((m) => m.id === id)) state.picked.delete(id);
   renderPicked();
 }
 
