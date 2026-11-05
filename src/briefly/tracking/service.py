@@ -10,6 +10,7 @@ from pathlib import Path
 from sqlalchemy import Engine, delete, func, select, update
 from sqlalchemy.orm import sessionmaker
 
+from ..errors import UserInputError
 from .. import config
 from ..feishu.links import looks_like_feishu
 from ..materials import MaterialNotFound, MaterialStore
@@ -109,10 +110,10 @@ class TrackingService:
                     return FEISHU_FOLDER, feishu_folder_key(link.token), name
                 link = resolve(client, link)
                 if link.kind in (BITABLE, MINUTES):
-                    raise ValueError("多维表格、妙记暂不支持追踪，可以在“材料”页导入当前内容")
+                    raise UserInputError("多维表格、妙记暂不支持追踪，可以在“材料”页导入当前内容")
                 document_revision(client, link.token)
         except FeishuError as e:
-            raise ValueError(str(e)) from e
+            raise UserInputError(str(e)) from e
         return FEISHU, feishu_key(link.token), ""
 
     def add_paths(
@@ -127,7 +128,7 @@ class TrackingService:
             if looks_like_feishu(raw):
                 try:
                     kind, key, name = self._feishu_path(raw, (names or {}).get(raw, ""))
-                except ValueError as e:
+                except UserInputError as e:
                     result.messages.append(f"{raw}：{e}，未添加")
                     continue
                 same = next((x for x in existing if x.kind == kind and x.path == key), None)
@@ -241,7 +242,7 @@ class TrackingService:
     def _set_source_status(self, source_id: int, status: str) -> TrackingSource:
         source = self.source(source_id)
         if source.status == REMOVED and status != REMOVED:
-            raise ValueError(f"追踪源 {source_id} 已移除；如需重新追踪，请再次添加该路径")
+            raise UserInputError(f"追踪源 {source_id} 已移除；如需重新追踪，请再次添加该路径")
         with self._session() as s:
             s.execute(update(TrackingSource).where(TrackingSource.id == source_id).values(status=status))
             s.commit()
@@ -282,7 +283,7 @@ class TrackingService:
         material = self.store.get(material_id)
         feishu = (material.parse_report or {}).get("feishu") or {}
         if feishu.get("kind") != "docx" or not feishu.get("url"):
-            raise ValueError("只有导入的飞书文档可以在这里开启追踪；本机文件请在“追踪的文件”里添加路径")
+            raise UserInputError("只有导入的飞书文档可以在这里开启追踪；本机文件请在“追踪的文件”里添加路径")
         return self.add_paths([feishu["url"]])
 
     # ---- 查询

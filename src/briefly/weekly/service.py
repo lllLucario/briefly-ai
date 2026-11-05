@@ -18,6 +18,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
+from ..errors import UserInputError, failure_text
 from ..clock import local_today
 from ..llm import create_chat_model
 from ..materials import MaterialNotFound, MaterialStore
@@ -217,7 +218,7 @@ class WeeklyService:
     def set_note(self, report_id: int, note: str) -> WeeklyReport:
         note = note.strip()
         if len(note) > MAX_NOTE:
-            raise ValueError(f"本周说明请控制在 {MAX_NOTE} 字以内")
+            raise UserInputError(f"本周说明请控制在 {MAX_NOTE} 字以内")
         return self._set_input(report_id, "note", note, {"note": note})
 
     def set_materials(self, report_id: int, material_ids: list[int]) -> WeeklyReport:
@@ -291,15 +292,15 @@ class WeeklyService:
 
         report = self.report(report_id)
         if report.status in (PENDING_GEN, RUNNING):
-            raise ValueError("这份周报正在生成，请稍等")
+            raise UserInputError("这份周报正在生成，请稍等")
         review = self.review()
         items = review.items(report_id)
         pending = [e for e in items if e.review_status == PENDING]
         if pending:
-            raise ValueError(f"还有 {len(pending)} 条记录待确认（{', '.join(f'E{e.id}' for e in pending[:10])}），请先确认或排除")
+            raise UserInputError(f"还有 {len(pending)} 条记录待确认（{', '.join(f'E{e.id}' for e in pending[:10])}），请先确认或排除")
         confirmed = [e.id for e in items if e.review_status == CONFIRMED]
         if not confirmed and not report.material_ids and not report.note:
-            raise ValueError("没有已确认的工作记录，也没有本周材料或本周说明，无法生成周报")
+            raise UserInputError("没有已确认的工作记录，也没有本周材料或本周说明，无法生成周报")
         settings = self.settings()
         bridge = TodoEvidence(self.engine, self.store)
         inputs = {
@@ -315,7 +316,7 @@ class WeeklyService:
                 .values(checklist=CONFIRMED_LIST, confirmed_at=datetime.now(), inputs=inputs, status=PENDING_GEN, error="")
             )
             if claimed.rowcount != 1:
-                raise ValueError("这份周报正在生成，请稍等")
+                raise UserInputError("这份周报正在生成，请稍等")
             bridge.freeze(report_id, session=s)
             inputs["todo_refs"] = bridge.report_refs(confirmed, session=s)
             s.execute(update(WeeklyReport).where(WeeklyReport.id == report_id).values(inputs=inputs))
@@ -360,11 +361,12 @@ class WeeklyService:
                     s.add(WeeklyReportVersion(report_id=report_id, content=report.content, reason="regenerate"))
                 s.commit()
         except Exception as e:
+            log.exception("周报生成失败")
             with self._session() as s:
                 s.execute(update(WeeklyReport).where(
                     WeeklyReport.id == report_id, WeeklyReport.status == RUNNING,
                     self._owns_generation(report_id, token),
-                ).values(status=FAILED, error=f"{type(e).__name__}: {e}"[:1000]))
+                ).values(status=FAILED, error=failure_text(e, "周报生成失败，可以重试；如果持续出现，请查看服务日志")[:1000]))
                 s.commit()
         finally:
             stop.set()
@@ -380,15 +382,15 @@ class WeeklyService:
     def update_content(self, report_id: int, content: str) -> WeeklyReport:
         report = self.report(report_id)
         if report.status != DONE:
-            raise ValueError("周报还没有生成完成，不能修改")
+            raise UserInputError("周报还没有生成完成，不能修改")
         if not content.strip():
-            raise ValueError("周报内容不能为空")
+            raise UserInputError("周报内容不能为空")
         if content.strip() == report.content:
             return report
         with self._session() as s:
             changed = s.execute(update(WeeklyReport).where(WeeklyReport.id == report_id, WeeklyReport.status == DONE, WeeklyReport.content == report.content).values(content=content.strip()))
             if changed.rowcount != 1:
-                raise ValueError("周报已变化或正在生成，请刷新后重试")
+                raise UserInputError("周报已变化或正在生成，请刷新后重试")
             s.add(WeeklyReportVersion(report_id=report_id, content=report.content, reason="edit"))
             s.commit()
         return self.report(report_id)
@@ -402,14 +404,14 @@ class WeeklyService:
         """恢复某个历史版本：当前正文也先存为版本，不会丢。"""
         report = self.report(report_id)
         if report.status in (PENDING_GEN, RUNNING):
-            raise ValueError("这份周报正在生成，不能恢复版本")
+            raise UserInputError("这份周报正在生成，不能恢复版本")
         with self._session() as s:
             version = s.get(WeeklyReportVersion, version_id)
             if version is None or version.report_id != report_id:
                 raise ReportNotFound(f"版本 {version_id} 不存在")
             changed = s.execute(update(WeeklyReport).where(WeeklyReport.id == report_id, WeeklyReport.status.not_in([PENDING_GEN, RUNNING]), WeeklyReport.content == report.content).values(content=version.content, status=DONE))
             if changed.rowcount != 1:
-                raise ValueError("周报已变化或正在生成，请刷新后重试")
+                raise UserInputError("周报已变化或正在生成，请刷新后重试")
             if report.content:
                 s.add(WeeklyReportVersion(report_id=report_id, content=report.content, reason="restore"))
             s.commit()
@@ -419,7 +421,7 @@ class WeeklyService:
         """返回 (文件名, 去掉出处标记的正文)。"""
         report = self.report(report_id)
         if report.status != DONE:
-            raise ValueError("周报还没有生成完成，不能导出")
+            raise UserInputError("周报还没有生成完成，不能导出")
         return f"周报_{report.period_start}_{report.period_end}.md", strip_source_tags(report.content) + "\n"
 
     def _update(self, report_id: int, **values) -> None:

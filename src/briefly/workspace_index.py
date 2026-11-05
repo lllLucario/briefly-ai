@@ -19,6 +19,7 @@ import threading
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .errors import UserInputError
 from . import config
 from .knowledge.evidence import NOTES, constraints
 from .knowledge.index import terms, vector_blob
@@ -232,7 +233,7 @@ class WorkspaceIndex:
         材料（如显式指定的追踪旧版本），由调用方用原关键词检索。material_ids 的知识库专属检查由调用方先做。"""
         query = query.strip()
         if not query:
-            raise ValueError("关键词为空")
+            raise UserInputError("关键词为空")
         found = self._rank(query, material_ids)
         if found is None:
             return None
@@ -377,7 +378,7 @@ def _local_encoder():
         with lock:
             if encoder is None:
                 if not config.EMBEDDING_DIR:
-                    raise ValueError("尚未配置本地Embedding目录BRIEFLY_EMBEDDING_DIR")
+                    raise UserInputError("尚未配置本地Embedding目录BRIEFLY_EMBEDDING_DIR")
                 from .llm import create_local_embeddings
                 encoder = create_local_embeddings(config.EMBEDDING_DIR)
             return encoder

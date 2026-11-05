@@ -16,12 +16,13 @@ def test_eval_limits_reach_client_constructor(monkeypatch):
     assert captured["max_retries"] == 0 and captured["timeout"] == 60
 
 
-def test_normal_calls_preserve_provider_defaults(monkeypatch):
+def test_normal_calls_use_the_configured_timeout_and_retries(monkeypatch):
     monkeypatch.setattr(config, "API_KEY", "fake-key")
     monkeypatch.setattr(config, "MODEL", "fake-model")
     monkeypatch.setattr(llm, "ChatOpenAI", lambda **kwargs: kwargs)
     values = llm.create_chat_model()
-    assert "max_retries" not in values and "timeout" not in values
+    # SDK 默认读超时 600 秒、重试 2 次，一次调用最长约 30 分钟，所以都显式传
+    assert values["timeout"] == config.MODEL_TIMEOUT_S and values["max_retries"] == config.MODEL_MAX_RETRIES
 
 
 @pytest.mark.parametrize("key,model,missing", [

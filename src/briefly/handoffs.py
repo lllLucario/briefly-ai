@@ -12,9 +12,12 @@ from datetime import date
 from fastapi import FastAPI, HTTPException
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel, Field
+import logging
 from sqlalchemy import JSON, String, select, update
 from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
 
+from .errors import UserInputError
+from .llm import ModelConfigurationError
 from .context_builder import input_limit
 from .db import Base
 from .skills import read_prompt
@@ -24,6 +27,9 @@ from .todos.models import Todo
 from .tokens import estimate_tokens
 from .weekly.models import EvidenceReview, WeeklyReport
 from .weekly.review import reopen
+
+
+log = logging.getLogger(__name__)
 
 
 class TodoImportDraft(Base):
@@ -128,7 +134,7 @@ def verified_candidates(model, snapshot: dict) -> tuple[list[dict], list[str]]:
     payload = json.dumps({"原始来源": snapshot["sources"], "当前回答（仅用于确定要保存哪些任务，不是事实依据）": snapshot["answer"]}, ensure_ascii=False)
     prompt = read_prompt("todo_import")
     if estimate_tokens(prompt + payload) > input_limit():
-        raise ValueError("原始信息过长，无法完整核对；请选定相关材料另开会话后重试")
+        raise UserInputError("原始信息过长，无法完整核对；请选定相关材料另开会话后重试")
     result = model.with_structured_output(TodoCandidates, method="function_calling").invoke([("system", prompt), ("user", payload)])
     sources = {s["id"]: s for s in snapshot["sources"]}
     items, warnings = [], []
@@ -194,9 +200,10 @@ def register(app: FastAPI, get_agent, thread_locks, model_factory) -> None:
             store.require_egress([x["material_id"] for x in snap["sources"] if x.get("material_id")])
             try:
                 items, warnings = verified_candidates(model_factory(), snap)
-            except ValueError:
+            except (UserInputError, ModelConfigurationError):
                 raise
             except Exception as exc:
+                log.exception("待办候选提取失败")
                 raise HTTPException(502, "待办候选提取失败，未保存任何任务，请重试") from exc
             draft = TodoImportDraft(id=uuid.uuid4().hex, thread_id=thread_id, revision=snap["revision"], data={"message_id": body.message_id, "items": items, "warnings": warnings})
             with sessions() as s:
@@ -232,11 +239,11 @@ def register(app: FastAPI, get_agent, thread_locks, model_factory) -> None:
             indices = [x.index for x in body.items]
             candidates = draft.data["items"]
             if len(set(indices)) != len(indices) or any(i >= len(candidates) for i in indices):
-                raise ValueError("候选编号重复或不存在")
+                raise UserInputError("候选编号重复或不存在")
             ids, duplicates = [], []
             for edited in body.items:
                 if not edited.title.strip():
-                    raise ValueError("待办标题不能为空")
+                    raise UserInputError("待办标题不能为空")
                 if s.scalar(select(Todo.id).where(Todo.title == edited.title.strip(), Todo.archived_at.is_(None))):
                     duplicates.append(edited.title.strip())
                 original = candidates[edited.index]
@@ -255,13 +262,13 @@ def register(app: FastAPI, get_agent, thread_locks, model_factory) -> None:
     def weekly_snapshot(body):
         if body.thread_id:
             if not body.message_id:
-                raise ValueError("请选择要带入的最新回答")
+                raise UserInputError("请选择要带入的最新回答")
             snap = snapshot(body.thread_id, body.message_id)
         else:
             snap = {"revision": "", "sources": []}
         available = {s["material_id"] for s in snap["sources"] if s.get("material_id")}
         if body.thread_id and not set(body.material_ids) <= available:
-            raise ValueError("只能带入这次会话明确使用的材料")
+            raise UserInputError("只能带入这次会话明确使用的材料")
         materials = [store.get(mid) for mid in dict.fromkeys(body.material_ids)]
         revision = digest(snap["revision"]) if body.thread_id else digest([(m.id, m.content) for m in materials])
         return snap, materials, revision
@@ -299,12 +306,12 @@ def register(app: FastAPI, get_agent, thread_locks, model_factory) -> None:
             if revision != body.revision or target_revision != body.target_revision:
                 raise HTTPException(409, "来源或本周输入已变化，请重新预览，已有内容未覆盖")
             if not materials and not body.note.strip():
-                raise ValueError("请至少选择一份材料或填写要追加的说明")
+                raise UserInputError("请至少选择一份材料或填写要追加的说明")
             if r and r.status in {"pending", "running"}:
                 raise HTTPException(409, "周报正在生成，请稍后再加入输入")
             note = "\n\n".join(x for x in [r.note if r else "", body.note.strip()] if x)
             if len(note) > MAX_NOTE:
-                raise ValueError(f"追加后本周说明超过 {MAX_NOTE} 字，请精简要追加的部分")
+                raise UserInputError(f"追加后本周说明超过 {MAX_NOTE} 字，请精简要追加的部分")
             before = {"note": r.note if r else "", "material_ids": r.material_ids if r else []}
             r = r or app.state.weekly.week(body.day)
             after = {"note": note, "material_ids": list(dict.fromkeys([*before["material_ids"], *(m.id for m in materials)]))}

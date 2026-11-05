@@ -5,6 +5,7 @@ from collections import defaultdict
 from time import perf_counter
 from uuid import uuid4
 
+from ..errors import UserInputError
 from ..relevance_floor import describe, embedding_fingerprint, kb_floor
 from .models import IndexGeneration, KnowledgeVersion
 from .payload import evidence_payload
@@ -80,7 +81,7 @@ class RetrievalService:
         """context_tokens：依据包总额，默认沿用对照实验口径；正式回答传入 KNOWLEDGE_CONTEXT_TOKENS。"""
         limit = context_tokens or PARAMETERS["context_tokens"]
         if not question.strip() or len(question) > 4000:
-            raise ValueError("问题须为1～4000字")
+            raise UserInputError("问题须为1～4000字")
         started = perf_counter()
         svc = self.imports.knowledge
         # 范围必须明确；空文档选择不回退全库，也不需要加载模型。

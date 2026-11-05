@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 from time import monotonic
 
+from .errors import UserInputError
 from . import config
 
 ENGINE = "rapidocr"
@@ -60,7 +61,7 @@ class OcrBlock:
 def enabled() -> bool:
     """BRIEFLY_OCR 不是 off 且已安装 rapidocr（或测试注入了引擎）。"""
     if config.OCR not in {"auto", "off"}:
-        raise ValueError("BRIEFLY_OCR须为auto或off")
+        raise UserInputError("BRIEFLY_OCR须为auto或off")
     return config.OCR == "auto" and (_engine is not None or find_spec("rapidocr") is not None)
 
 

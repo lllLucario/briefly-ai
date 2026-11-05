@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory, gettempdir, mkdtemp
 from threading import BoundedSemaphore
 from zipfile import BadZipFile, ZipFile
 
+from .errors import UserInputError
 from . import config
 
 OLE_HEADER = bytes.fromhex("d0cf11e0a1b11ae1")
@@ -36,7 +37,7 @@ def converter_path():
     if configured:
         path = Path(configured).expanduser()
         if not path.is_file():
-            raise ValueError("BRIEFLY_LIBREOFFICE 指定的转换程序不存在，请核对服务端配置")
+            raise UserInputError("BRIEFLY_LIBREOFFICE 指定的转换程序不存在，请核对服务端配置")
         return str(path.resolve())
     for name in ("soffice.com", "soffice", "libreoffice"):
         found = shutil.which(name)
@@ -47,7 +48,7 @@ def converter_path():
             path = Path(base)/"LibreOffice"/"program"/"soffice.com"
             if path.is_file():
                 return str(path)
-    raise ValueError("解析旧版 .doc/.xls/.ppt 需要服务端安装 LibreOffice，或配置 BRIEFLY_LIBREOFFICE 指向 soffice；"
+    raise UserInputError("解析旧版 .doc/.xls/.ppt 需要服务端安装 LibreOffice，或配置 BRIEFLY_LIBREOFFICE 指向 soffice；"
                      ".docx/.xlsx/.pptx 可直接解析")
 
 
@@ -66,9 +67,9 @@ def _run(command, *, action="转换", label="旧版 .doc"):
         else:
             os.killpg(process.pid, signal.SIGKILL)
         process.wait(timeout=10)
-        raise ValueError(f"{label} {action}超时；请检查文件是否损坏、加密或过于复杂") from exc
+        raise UserInputError(f"{label} {action}超时；请检查文件是否损坏、加密或过于复杂") from exc
     if process.returncode != 0:
-        raise ValueError(f"{label} {action}失败；请检查文件是否损坏或受密码保护")
+        raise UserInputError(f"{label} {action}失败；请检查文件是否损坏或受密码保护")
 
 
 def _hardened_profile(profile: Path) -> None:
@@ -167,10 +168,10 @@ def convert_legacy(data: bytes, kind: str) -> bytes:
     app, export, suffix, part = LEGACY[kind]
     # 旧版 Office 都是 OLE 复合文档；.doc 另接受 RTF（常见后缀为 .doc 的 RTF 文件）
     if not (data.startswith(OLE_HEADER) or kind == "doc" and data.lstrip().startswith(b"{\\rtf")):
-        raise ValueError(f"文件不是可识别的旧版 {app} .{kind} 文档；仅更改后缀不能转换文件格式")
+        raise UserInputError(f"文件不是可识别的旧版 {app} .{kind} 文档；仅更改后缀不能转换文件格式")
     executable = converter_path()
     if not _slots.acquire(timeout=5):
-        raise ValueError(f"旧版 {app} 转换任务繁忙，请稍后重试")
+        raise UserInputError(f"旧版 {app} 转换任务繁忙，请稍后重试")
     try:
         with TemporaryDirectory(prefix="briefly-office-") as temporary:
             folder = Path(temporary)
@@ -184,14 +185,14 @@ def convert_legacy(data: bytes, kind: str) -> bytes:
                   "--outdir", str(target), str(source)], label=f"旧版 .{kind}")
             converted = target/f"source.{suffix}"
             if not converted.is_file() or not 0 < converted.stat().st_size <= 50*1024*1024:
-                raise ValueError("未获得有效转换结果，文件可能损坏、加密或转换结果超过50MB")
+                raise UserInputError("未获得有效转换结果，文件可能损坏、加密或转换结果超过50MB")
             payload = converted.read_bytes()
             try:
                 with ZipFile(BytesIO(payload)) as archive:
                     if part not in archive.namelist():
-                        raise ValueError(f"转换结果不是有效的{app}文档")
+                        raise UserInputError(f"转换结果不是有效的{app}文档")
             except BadZipFile as exc:
-                raise ValueError(f"转换结果不是有效的{suffix}文件") from exc
+                raise UserInputError(f"转换结果不是有效的{suffix}文件") from exc
             return payload
     finally:
         _slots.release()

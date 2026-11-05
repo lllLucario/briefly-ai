@@ -4,6 +4,7 @@ import hashlib
 from io import BytesIO
 from pathlib import Path
 from time import perf_counter
+from .errors import UserInputError
 
 IMAGE_TYPES = ("png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp")  # 只靠本地图片文字识别读取
 SUPPORTED_TYPES = ("txt", "md", "doc", "docx", "pdf", "xlsx", "xls", "csv", "pptx", "ppt", *IMAGE_TYPES)
@@ -20,7 +21,7 @@ class LoadedDocument:
 def file_type(filename: str) -> str:
     suffix = Path(filename).suffix.lower().lstrip(".")
     if suffix not in SUPPORTED_TYPES:
-        raise ValueError(f"不支持的文件类型: .{suffix}，可选: {', '.join(SUPPORTED_TYPES)}")
+        raise UserInputError(f"不支持的文件类型: .{suffix}，可选: {', '.join(SUPPORTED_TYPES)}")
     return suffix
 
 
@@ -45,10 +46,10 @@ def load_document(filename: str, data: bytes) -> LoadedDocument:
         doc.report = {**doc.report, "timings": {**doc.report.get("timings", {}),
                       "parse_total_seconds": round(perf_counter() - started, 6)}}
         return doc
-    except ValueError:
+    except UserInputError:
         raise
-    except Exception as e:  # 底层库的报错（如 BadZipFile）对用户没有意义
-        raise ValueError(f"文件无法解析，可能已损坏或与扩展名不符（{type(e).__name__}）") from e
+    except Exception as e:  # 底层库的报错（如 BadZipFile，或文字是英文内部信息的 ValueError）对用户没有意义
+        raise UserInputError(f"文件无法解析，可能已损坏或与扩展名不符（{type(e).__name__}）") from e
 
 
 def _load(kind: str, data: bytes) -> LoadedDocument:
@@ -57,7 +58,7 @@ def _load(kind: str, data: bytes) -> LoadedDocument:
         from .direct_word import DirectWordUnsupported, direct_available, parse_doc
         from .legacy_word import convert_doc
         if config.DOC_PARSER not in {"auto", "direct", "convert"}:
-            raise ValueError("BRIEFLY_DOC_PARSER须为auto、direct或convert")
+            raise UserInputError("BRIEFLY_DOC_PARSER须为auto、direct或convert")
         reason, timings = None, {}
         tick = perf_counter()
         if config.DOC_PARSER == "direct" or (config.DOC_PARSER == "auto" and direct_available()):
@@ -127,7 +128,7 @@ def _load_image(data: bytes) -> LoadedDocument:
     from . import ocr
 
     if not ocr.enabled():
-        raise ValueError(f"图片文件需要本地图片文字识别才能读取：{ocr.disabled_note()}")
+        raise UserInputError(f"图片文件需要本地图片文字识别才能读取：{ocr.disabled_note()}")
     tick = perf_counter()
     image = Image.open(BytesIO(data))
     frames = getattr(image, "n_frames", 1)
@@ -139,7 +140,7 @@ def _load_image(data: bytes) -> LoadedDocument:
         if block:
             tokens.append(session.token(block))
     if not tokens:
-        raise ValueError("图片里没有识别出文字" + ("（已超过识别上限或预算）" if session.skipped else ""))
+        raise UserInputError("图片里没有识别出文字" + ("（已超过识别上限或预算）" if session.skipped else ""))
     text, report = session.finish("\n\n".join(tokens), {"parser": "rapidocr", "structure": None,
                                                          "frames": frames, "warnings": []})
     report["timings"] = {"ocr_seconds": round(perf_counter() - tick, 6)}
@@ -240,7 +241,7 @@ def _load_xls(data: bytes) -> LoadedDocument:
     from .tables import XlsUnsupported, load_xls
 
     if not data.startswith(OLE_HEADER):
-        raise ValueError("文件不是可识别的旧版 Excel .xls 文档；仅更改后缀不能转换文件格式")
+        raise UserInputError("文件不是可识别的旧版 Excel .xls 文档；仅更改后缀不能转换文件格式")
     tick = perf_counter()
     try:
         doc = load_xls(data)
@@ -263,9 +264,9 @@ def _load_ppt(data: bytes) -> LoadedDocument:
     from .legacy_word import OLE_HEADER
 
     if config.PPT_PARSER not in {"auto", "convert"}:
-        raise ValueError("BRIEFLY_PPT_PARSER须为auto或convert")
+        raise UserInputError("BRIEFLY_PPT_PARSER须为auto或convert")
     if not data.startswith(OLE_HEADER):
-        raise ValueError("文件不是可识别的旧版 PowerPoint .ppt 文档；仅更改后缀不能转换文件格式")
+        raise UserInputError("文件不是可识别的旧版 PowerPoint .ppt 文档；仅更改后缀不能转换文件格式")
     if config.PPT_PARSER == "convert" or not direct_available():
         return _load_converted("ppt", data)
     tick = perf_counter()

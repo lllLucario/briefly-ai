@@ -313,7 +313,7 @@ class ContextBuilder(AgentMiddleware):
                 if not is_context_overflow(e):
                     raise
                 latency = int((time.monotonic() - started) * 1000)
-                self._record(context, built, context_overflow=True, latency_ms=latency, note=f"接口报超长：{str(e)[:300]}")
+                self._record(context, built, context_overflow=True, latency_ms=latency, note="接口报超长")
                 if attempt < config.CONTEXT_RETRIES:
                     factor *= 0.6
                     continue

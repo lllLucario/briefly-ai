@@ -1,17 +1,22 @@
 """知识导入API；有界逐文件读取、异步处理、自动解析并建立索引。"""
 from pathlib import Path
 import json
+import logging
 from threading import Lock
 from typing import Annotated
 
 from fastapi import BackgroundTasks, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
+from ..errors import UserInputError
 from .. import config
 from ..llm import create_local_embeddings
 from .index import LocalIndex
 from .ingestion import ImportService
 from .service import KnowledgeConflict, KnowledgeNotFound
+
+
+log = logging.getLogger(__name__)
 
 
 class RetryIn(BaseModel):
@@ -35,7 +40,7 @@ def register(app):
         with lock:
             if encoder is None:
                 if not config.EMBEDDING_DIR:
-                    raise ValueError("尚未配置本地Embedding目录BRIEFLY_EMBEDDING_DIR，请先准备离线模型")
+                    raise UserInputError("尚未配置本地Embedding目录BRIEFLY_EMBEDDING_DIR，请先准备离线模型")
                 encoder = create_local_embeddings(config.EMBEDDING_DIR)
             return encoder
     service = ImportService(app.state.store.engine, config.KNOWLEDGE_DIR,
@@ -49,7 +54,7 @@ def register(app):
                 app.state.store.notify_changed()
         except Exception:
             # 失败状态已由持久任务记录；不让一个文件阻止后台批次后续文件。
-            pass
+            log.exception("知识库后台导入任务失败")
 
     @app.post("/knowledge-bases/{kb_id}/imports", status_code=202, tags=["知识库"])
     def upload(kb_id: str, background: BackgroundTasks,
@@ -62,7 +67,7 @@ def register(app):
                business_version: Annotated[str | None, Form(max_length=100)] = None):
         try:
             service.knowledge._business_version(business_version)
-        except ValueError as exc:
+        except UserInputError as exc:
             raise HTTPException(400, str(exc)) from exc
         with service.knowledge._session() as s:
             service.knowledge._kb(s, kb_id)
@@ -105,7 +110,7 @@ def register(app):
                 result.append(job_out(job))
                 if job.status in {"queued", "preview"}:
                     background.add_task(run, service.process, kb_id, job.id)
-            except ValueError as exc:
+            except UserInputError as exc:
                 if isinstance(exc, KnowledgeConflict):
                     raise
                 result.append(dict(filename=file.filename, status="rejected", error=str(exc)))

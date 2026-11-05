@@ -17,6 +17,7 @@ import re
 from datetime import date, datetime, time
 from io import BytesIO, StringIO
 
+from .errors import UserInputError
 from .loaders import LoadedDocument
 
 MAX_HEADER_DEPTH = 4
@@ -127,7 +128,7 @@ def _anchor_cell(image) -> tuple[int, int]:
     return (start.row, start.col) if start is not None else (0, 0)
 
 
-class XlsUnsupported(ValueError):
+class XlsUnsupported(UserInputError):
     """xlrd 读不了或读不准的 .xls；调用方改走 LibreOffice 转换。"""
 
 

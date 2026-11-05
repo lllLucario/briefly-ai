@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from threading import BoundedSemaphore
 from time import monotonic
 
+from .errors import UserInputError
 from . import config
 from .loaders import LoadedDocument, file_type
 
@@ -17,7 +18,7 @@ _slots = BoundedSemaphore(2)
 MAX_RESULT_BYTES = 50 * 1024 * 1024
 
 
-class ParseFailure(ValueError):
+class ParseFailure(UserInputError):
     def __init__(self, code, message):
         super().__init__(message)
         self.code = code

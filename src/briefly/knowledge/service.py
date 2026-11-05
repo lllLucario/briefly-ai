@@ -7,17 +7,18 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import defer, sessionmaker
 
+from ..errors import UserInputError
 from ..clock import now_local, system_naive
 from ..materials import Material, MaterialChunk
 from .models import IndexGeneration, KnowledgeBase, KnowledgeChunk, KnowledgeEgressGrant, KnowledgeDocument, KnowledgePublication, KnowledgeVersion
 from .evidence import constraints, quality_snapshot
 
 
-class KnowledgeNotFound(ValueError):
+class KnowledgeNotFound(UserInputError):
     pass
 
 
-class KnowledgeConflict(ValueError):
+class KnowledgeConflict(UserInputError):
     pass
 
 
@@ -136,12 +137,12 @@ class KnowledgeService:
     @staticmethod
     def _business_version(value):
         if value is not None and (not value.strip() or len(value) > 100):
-            raise ValueError("业务版本标签须为1～100字；未知时不填写")
+            raise UserInputError("业务版本标签须为1～100字；未知时不填写")
 
     def create(self, name):
         name = name.strip()
         if not name or len(name) > 200:
-            raise ValueError("知识库名称须为1～200字")
+            raise UserInputError("知识库名称须为1～200字")
         with self._session.begin() as s:
             kb = KnowledgeBase(name=name)
             s.add(kb)
@@ -229,7 +230,7 @@ class KnowledgeService:
                      expected_revision=0, business_version=None, guard=None, on_version=None):
         """确认预览后的新知识版本；复用源材料，绝不原地重切旧材料。"""
         if not source_key.strip() or len(source_key) > 200:
-            raise ValueError("来源标识须为1～200字")
+            raise UserInputError("来源标识须为1～200字")
         with self._session.begin() as s:
             self._kb(s, kb_id)
             if guard:
@@ -281,7 +282,7 @@ class KnowledgeService:
                     raise KnowledgeNotFound("源材料不存在")
                 key = source_key.strip() if source_key is not None else f"material:{material_id}:{material.content_hash}"
                 if not key or len(key) > 200:
-                    raise ValueError("来源标识须为1～200字")
+                    raise UserInputError("来源标识须为1～200字")
                 doc = s.scalar(select(KnowledgeDocument).where(KnowledgeDocument.kb_id == kb_id, KnowledgeDocument.source_key == key))
                 if doc:
                     if doc.deleted_at:
@@ -483,11 +484,11 @@ class KnowledgeService:
     def resolve_reference(self, kb_id, reference):
         parts = reference.split(":")
         if len(parts) != 4 or parts[0] != "kbref":
-            raise ValueError("引用格式无效")
+            raise UserInputError("引用格式无效")
         try:
             index = int(parts[2])
         except ValueError as exc:
-            raise ValueError("引用块号无效") from exc
+            raise UserInputError("引用块号无效") from exc
         with self._session() as s:
             version = s.get(KnowledgeVersion, parts[1])
             if version is None:

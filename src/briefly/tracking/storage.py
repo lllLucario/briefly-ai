@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import Engine, delete, select, update
 from sqlalchemy.orm import sessionmaker
 
+from ..errors import UserInputError
 from ..materials import KNOWLEDGE, TRACKED, Material, knowledge_referenced
 from ..weekly.models import WorkEvidence
 from .blobs import BlobStore
@@ -46,7 +47,7 @@ def protected_snapshots(engine: Engine, cutoff: datetime) -> set[int]:
 def prune(engine: Engine, blobs: BlobStore, keep_days: int = 60) -> dict:
     """删除保留期之前、且不受保护的版本；随后删除不再被引用的原始文件和解析出的追踪材料。"""
     if keep_days < 1:
-        raise ValueError("保留天数至少为 1")
+        raise UserInputError("保留天数至少为 1")
     cutoff = datetime.now() - timedelta(days=keep_days)
     keep = protected_snapshots(engine, cutoff)
     with sessionmaker(engine)() as s:

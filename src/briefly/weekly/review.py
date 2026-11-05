@@ -13,6 +13,7 @@ from langchain_core.language_models import BaseChatModel
 from sqlalchemy import select, update
 from sqlalchemy.orm import sessionmaker
 
+from ..errors import UserInputError
 from ..llm import create_chat_model
 from ..summarize import CATEGORY_NAMES
 from ..tracking.models import EXCLUDED, USER_CONFIRMED
@@ -79,7 +80,7 @@ class ReviewService:
         with self._session() as s:
             e = s.get(WorkEvidence, evidence_id)
         if e is None or (report_id is not None and e.report_id != report_id):
-            raise ValueError(f"记录 E{evidence_id} 不存在")
+            raise UserInputError(f"记录 E{evidence_id} 不存在")
         return e
 
     def history(self, report_id: int) -> list[EvidenceReview]:
@@ -134,18 +135,18 @@ class ReviewService:
             values["description"] = description.strip()
         if category is not None:
             if category not in CATEGORY_NAMES:
-                raise ValueError(f"类别只能是 {', '.join(CATEGORY_NAMES)}")
+                raise UserInputError(f"类别只能是 {', '.join(CATEGORY_NAMES)}")
             values["category"] = category
         if len(values) == 1:
-            raise ValueError("没有要修改的内容")
+            raise UserInputError("没有要修改的内容")
         return self._apply(e, values, "edit", "")
 
     def add(self, report_id: int, title: str, description: str = "", category: str = "other") -> WorkEvidence:
         """补充文件和待办体现不了的工作（会议、沟通、线下工作等）：用户自己写的，直接算确认。"""
         if not title.strip():
-            raise ValueError("标题不能为空")
+            raise UserInputError("标题不能为空")
         if category not in CATEGORY_NAMES:
-            raise ValueError(f"类别只能是 {', '.join(CATEGORY_NAMES)}")
+            raise UserInputError(f"类别只能是 {', '.join(CATEGORY_NAMES)}")
         e = WorkEvidence(
             report_id=report_id,
             title=title.strip()[:200],
@@ -167,7 +168,7 @@ class ReviewService:
 
     def merge(self, report_id: int, ids: list[int], title: str | None = None, description: str | None = None) -> WorkEvidence:
         if len(set(ids)) < 2:
-            raise ValueError("至少选择两条记录合并")
+            raise UserInputError("至少选择两条记录合并")
         olds = [self._editable(report_id, i) for i in dict.fromkeys(ids)]
         refs = [r for e in olds for r in e.source_refs]
         attrs = {e.attribution for e in olds}
@@ -200,7 +201,7 @@ class ReviewService:
         """拆成几条：每条都保留原记录的全部来源（用户可再编辑）。"""
         parts = [(t.strip(), d.strip()) for t, d in parts if t.strip()]
         if len(parts) < 2:
-            raise ValueError("至少拆成两条")
+            raise UserInputError("至少拆成两条")
         old = self._editable(report_id, evidence_id)
         news = [
             WorkEvidence(
@@ -234,9 +235,9 @@ class ReviewService:
         """按来源重新生成描述（重新比较版本、重新写描述）。用户改过的描述需要 force 才覆盖。"""
         e = self._editable(report_id, evidence_id)
         if e.user_edited and not force:
-            raise ValueError("这条记录的描述你修改过，重新生成会覆盖；确定的话请使用强制重新生成")
+            raise UserInputError("这条记录的描述你修改过，重新生成会覆盖；确定的话请使用强制重新生成")
         if e.origin in ("manual", "todo") or not e.source_refs or not e.source_refs[0].get("to_snapshot_id"):
-            raise ValueError("这条记录没有可用的文件版本，不能重新生成")
+            raise UserInputError("这条记录没有可用的文件版本，不能重新生成")
         builder = EvidenceBuilder(self.tracking, self._model_factory, self.owner_names)
         descriptions = []
         title, category = e.title, e.category
@@ -265,7 +266,7 @@ class ReviewService:
     def _editable(self, report_id: int, evidence_id: int) -> WorkEvidence:
         e = self.get(evidence_id, report_id)
         if e.review_status not in VISIBLE:
-            raise ValueError(f"记录 E{evidence_id} 已被合并、拆分或替换，不能再修改")
+            raise UserInputError(f"记录 E{evidence_id} 已被合并、拆分或替换，不能再修改")
         return e
 
     def _system_attribution(self, e: WorkEvidence) -> str:
@@ -280,7 +281,7 @@ class ReviewService:
 
     def _set_status(self, report_id: int, ids: list[int], status: str, attribution: str, action: str, note: str) -> None:
         if not ids:
-            raise ValueError("请指定记录编号")
+            raise UserInputError("请指定记录编号")
         targets = [self._editable(report_id, i) for i in dict.fromkeys(ids)]
         for e in targets:
             self._apply(e, {"review_status": status, "attribution": attribution}, action, note)

@@ -13,6 +13,7 @@ def main():
             return 1
         sleep(0.01)
     from . import config
+    from .errors import UserInputError
     from .loaders import load_document
     from .parse_process import MAX_RESULT_BYTES
 
@@ -24,7 +25,7 @@ def main():
     try:
         doc = load_document(request["filename"], (folder / "input").read_bytes())
         result = dict(text=doc.text, markdown=doc.markdown, report=doc.report)
-    except ValueError as exc:
+    except UserInputError as exc:
         result = dict(error=str(exc))
     payload = json.dumps(result, ensure_ascii=False).encode("utf-8")
     if len(payload) > MAX_RESULT_BYTES:

@@ -5,6 +5,7 @@
 """
 import re
 
+from ..errors import UserInputError
 from .. import config, turn_timing
 from .evidence import restricted_answer
 from .payload import evidence_payload
@@ -190,7 +191,7 @@ class KnowledgeQA:
         没有工作区片段时照旧提示开启授权；只有工作区片段时按个人材料规则发送。"""
         questions = [q.strip() for q in questions if q and q.strip()][:max_questions]
         if not questions:
-            raise ValueError("请至少提供一个检索问题")
+            raise UserInputError("请至少提供一个检索问题")
         knowledge = self.retrieval.imports.knowledge
         workspace, warnings = self._workspace(questions)
         joint = workspace is not None

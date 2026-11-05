@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 
 from sqlalchemy import Engine, StaticPool, create_engine, event
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase
 
 from . import config
@@ -33,7 +34,9 @@ def create_db_engine(url: str | None = None) -> Engine:
         if url in {"sqlite://", "sqlite:///:memory:"}:
             kwargs["poolclass"] = StaticPool  # 所有连接共用同一个内存库
         else:
-            Path(url.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)
+            # 解析后再取路径：str(engine.url) 会把盘符的冒号编码成 %3A，直接当路径会在当前目录建出 C%3A/...
+            if database := make_url(url).database:
+                Path(database).parent.mkdir(parents=True, exist_ok=True)
     # 不让数据库异常的文字带上 SQL 参数（材料正文、问题原文），这些异常可能进日志
     engine = create_engine(url, hide_parameters=True, **kwargs)
     if engine.dialect.name == "sqlite":

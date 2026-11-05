@@ -22,6 +22,7 @@ import pdfplumber
 import pypdfium2
 from pypdf import PdfReader
 
+from .errors import UserInputError
 from . import ocr
 from .layout_cleaner import Line, clean_pages, join_text, merge_wrapped, scanned_pages
 from .loaders import LoadedDocument, escape_heading_marks
@@ -72,8 +73,8 @@ def load_pdf(data: bytes) -> LoadedDocument:
     if not total or (len(empty) >= total * SCANNED_DOC_RATIO and not recognized):
         if session is not None:
             why = "超过识别上限或时长预算，未能识别" if session.skipped else "图片文字识别也没有识别出文字"
-            raise ValueError(f"这是扫描版 PDF（{total} 页中 {len(empty)} 页没有可提取的文字），{why}")
-        raise ValueError(f"这是扫描版 PDF（{total} 页中 {len(empty)} 页没有可提取的文字），需要图片文字识别：{ocr.disabled_note()}")
+            raise UserInputError(f"这是扫描版 PDF（{total} 页中 {len(empty)} 页没有可提取的文字），{why}")
+        raise UserInputError(f"这是扫描版 PDF（{total} 页中 {len(empty)} 页没有可提取的文字），需要图片文字识别：{ocr.disabled_note()}")
 
     if _mark_by_font_size(pages):
         structure = "font_size"

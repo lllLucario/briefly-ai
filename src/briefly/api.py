@@ -6,27 +6,30 @@ import logging
 import mimetypes
 import re
 import threading
-from collections import defaultdict
 from collections.abc import Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel
 
+from .errors import UserInputError
 from . import api_docs as docs
 from . import auth, config, mail
+from .errors import MODEL_FAILED, MODEL_TIMEOUT, UserInputError, is_timeout, validation_response
 from .agent import Agent, new_thread_id, sqlite_checkpointer
 from .context_builder import SYSTEM_REPLY
 from .db import create_db_engine
 from .feishu import FeishuClient, client_from_config
-from .llm import ModelConfigurationError, create_chat_model, missing_model_config
+from .keyed_locks import KeyedLocks
+from .llm import ModelConfigurationError, create_chat_model, fresh_model_calls, missing_model_config
 from .llm_cache import ResponseCache, ResponseCacheScope, cache_stats
 from .logs import RequestContextMiddleware, configure_logging
 from . import material_library as library
@@ -34,6 +37,7 @@ from .materials import TRACKED, Material, MaterialNotFound, MaterialStore
 from .sessions import ChatSession, SessionStore
 from .skills import SKILLS
 from .turn_record import output_kinds
+from .uploads import UploadLimitMiddleware, read_upload
 from .weekly.service import WeeklyService
 
 log = logging.getLogger(__name__)
@@ -136,6 +140,7 @@ class ChatIn(BaseModel):
     kb_id: str | None = None  # 本轮查询的知识库；知识检索只在这一个库内进行
     skip_funnel: bool = False  # 用户认为系统理解错了：同一句话不经意图判断，直接交给助理
     corrects: str | None = None  # skip_funnel 时被纠正的那条用户消息 ID（message_id），记入意图日志
+    fresh: bool = False  # 用户点了“修改要求后重试”又原样发送：这是在要新结果，不读模型缓存
 
 
 class ChatOut(BaseModel):
@@ -329,7 +334,7 @@ def create_app(
     app.state.sessions = SessionStore(app.state.store.engine)
     app.state.agent = None
     agent_lock = threading.Lock()
-    thread_locks: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)  # 同一会话的提问依次处理
+    thread_locks = app.state.thread_locks = KeyedLocks()  # 同一会话的提问依次处理；不再占用的锁随即释放
 
     def get_agent() -> Agent:
         with agent_lock:
@@ -347,16 +352,25 @@ def create_app(
 
     @app.exception_handler(ModelConfigurationError)
     def model_configuration_error(request: Request, exc: ModelConfigurationError):
-        return JSONResponse(status_code=503, content={"detail": str(exc)})
+        return JSONResponse(status_code=503, content={"detail": str(exc), "code": "model_not_configured"})
 
     @app.exception_handler(MaterialNotFound)
     def not_found(request: Request, exc: MaterialNotFound):
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
-    @app.exception_handler(ValueError)
-    def bad_request(request: Request, exc: ValueError):
-        # 内容为空、格式不支持、扫描件、文件损坏等，消息本身就是给用户看的中文说明
+    @app.exception_handler(UserInputError)
+    def bad_request(request: Request, exc: UserInputError):
+        # 内容为空、格式不支持、扫描件、文件损坏等，消息本身就是给用户看的中文说明。其他 ValueError 是程序问题，走统一的 500
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    @app.exception_handler(UnicodeEncodeError)
+    def unencodable_text(request: Request, exc: UnicodeEncodeError):
+        # JSON 里的单独代理字符能通过校验，写库或算哈希时才失败。这是输入的问题，文字不回显
+        return JSONResponse(status_code=400, content={"detail": "提交的内容包含无法识别的字符，请检查后重试", "code": "invalid_text"})
+
+    @app.exception_handler(RequestValidationError)
+    def invalid_request(request: Request, exc: RequestValidationError):
+        return validation_response(exc)
 
     Store = Annotated[MaterialStore, Depends(lambda: app.state.store)]
     Weekly = Annotated[WeeklyService, Depends(lambda: app.state.weekly)]
@@ -398,23 +412,24 @@ def create_app(
     @app.post("/chat", tags=[docs.CHAT], response_model=ChatOut, summary="对话（等回答完成后返回；不传 thread_id 则开始新会话）")
     def chat(body: ChatIn, agent: AgentDep, sessions: Sessions):
         if not body.text.strip():
-            raise ValueError("输入不能为空")
+            raise UserInputError("输入不能为空")
         if body.skill and body.skill not in SKILLS:
-            raise ValueError(f"未知能力: {body.skill}，可选: {', '.join(SKILLS)}")
+            raise UserInputError(f"未知能力: {body.skill}，可选: {', '.join(SKILLS)}")
         if body.thread_id:
             sessions.get(body.thread_id)  # 不存在时 404
         thread_id = body.thread_id or new_thread_id()
-        with thread_locks[thread_id]:
+        with thread_locks[thread_id], fresh_model_calls() if body.fresh else nullcontext():
             try:
                 reply = agent.chat(body.text, body.skill, material_ids=body.material_ids or None, thread_id=thread_id,
                                    kb_id=body.kb_id, skip_funnel=body.skip_funnel, corrects=body.corrects)
-            except (ValueError, MaterialNotFound, ModelConfigurationError):
+            except (UserInputError, ModelConfigurationError):
                 raise
-            except Exception as e:  # 模型接口出错（网络、密钥、限流等）
+            except Exception as e:  # 模型接口出错（网络、密钥、限流、超时等）：原文只进日志，thread_id 用来重新打开失败的会话
                 log.exception("对话失败")
                 sessions.touch(thread_id, body.text)
-                from fastapi.responses import JSONResponse
-                return JSONResponse(status_code=502, content={"detail": f"模型调用失败：{e}", "thread_id": thread_id})
+                if is_timeout(e):
+                    return JSONResponse(status_code=504, content={"detail": MODEL_TIMEOUT, "code": "model_timeout", "thread_id": thread_id})
+                return JSONResponse(status_code=502, content={"detail": MODEL_FAILED, "code": "model_error", "thread_id": thread_id})
             sessions.touch(thread_id, body.text)
             last = next((m for m in reversed(agent.history_of(thread_id)) if isinstance(m, HumanMessage)), None)
         return ChatOut(thread_id=thread_id, reply=reply, intent=last.additional_kwargs.get("intent") if last else None)
@@ -524,7 +539,7 @@ def create_app(
     ):
         if not file.filename:
             raise HTTPException(status_code=400, detail="缺少文件名")
-        material, is_new = store.add_file(file.filename, file.file.read())
+        material, is_new = store.add_file(file.filename, read_upload(file))
         return created(store, material, is_new, response)
 
     @app.get("/materials", tags=[docs.MATERIALS], response_model=list[MaterialOut], summary="材料列表（不含正文）")
@@ -580,7 +595,7 @@ def create_app(
     @app.delete("/materials/{material_id}", tags=[docs.MATERIALS], status_code=204, summary="删除材料（被待办关联时需 force）")
     def delete_material(material_id: int, store: Store, force: bool = False):
         if store.get(material_id).source == TRACKED:
-            raise ValueError("这是追踪中文档的最新版本，随追踪自动更新；不需要了请停止追踪")
+            raise UserInputError("这是追踪中文档的最新版本，随追踪自动更新；不需要了请停止追踪")
         store.delete(material_id, force=force)  # 被待办关联时返回 409（confirm），清理规则见 MaterialStore.delete
 
     app.state.mail_connect = mail._connect  # 测试时替换成模拟的 SMTP
@@ -598,6 +613,10 @@ def create_app(
     def list_emails(report_id: int, weekly: Weekly):
         weekly.report(report_id)
         return [MailOut.model_validate(x, from_attributes=True) for x in mail.sends_of(app.state.store.engine, report_id)]
+
+    # 要在下面的 BaseHTTPMiddleware 内层：经过它的任务组，读请求体时抛出的 HTTPException 会被包成异常组，变成 400。
+    # 也在认证内层：未登录的请求先被拒绝，不读请求体
+    app.add_middleware(UploadLimitMiddleware)
 
     @app.middleware("http")
     async def revalidate_web(request: Request, call_next):

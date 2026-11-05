@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 import re
 
+from ..errors import UserInputError
 from ..chunking import parse_sections
 
 
@@ -84,7 +85,7 @@ def _protected(text, report):
     merged = []
     for start, end, kind in sorted(regions):
         if not 0 <= start < end <= len(text):
-            raise ValueError("图形来源范围无效，未切片")
+            raise UserInputError("图形来源范围无效，未切片")
         if merged and start < merged[-1][1]:
             merged[-1] = (merged[-1][0], max(end, merged[-1][1]), kind)
         else:
@@ -99,11 +100,11 @@ def token_slices(text, title, markdown, encoder, *, tokens=512, overlap=None,
     content始终是原文连续范围；只有embedding_text加入标题路径/上下文/续表表头。
     """
     if type(tokens) is not int or not 32 <= tokens <= encoder.identity["max_tokens"]:
-        raise ValueError("切片预算须至少32token且不超过Embedding输入上限")
+        raise UserInputError("切片预算须至少32token且不超过Embedding输入上限")
     if overlap is None:
         overlap = min(50, tokens // 4)
     if type(overlap) is not int or not 0 <= overlap < tokens or not isinstance(context, str):
-        raise ValueError("重叠预算须为非负整数且小于切片预算，上下文须为文字")
+        raise UserInputError("重叠预算须为非负整数且小于切片预算，上下文须为文字")
     sections = parse_sections(text, markdown)
     tables = _tables(text)
     graphics = _protected(text, report)
@@ -146,7 +147,7 @@ def token_slices(text, title, markdown, encoder, *, tokens=512, overlap=None,
         content = text[start:end]
         encoded = prefix + content if encoded is None else encoded
         if encoder.token_length(encoded) > tokens:
-            raise ValueError("切片超过分词预算，未静默截断")
+            raise UserInputError("切片超过分词预算，未静默截断")
         if content.strip():
             result.append(Slice(len(result) + 1, section, start, end, content, encoded))
 
@@ -164,7 +165,7 @@ def token_slices(text, title, markdown, encoder, *, tokens=512, overlap=None,
         line = text[start:end if newline < 0 else newline + 1]  # 表头段后面带着分隔行，只按第一行分列
         cells = [(start + a, start + b) for a, b in _cells(line)]
         if not cells:
-            raise ValueError("表格行无法按列拆分，未截断行列关系")
+            raise UserInputError("表格行无法按列拆分，未截断行列关系")
         bounds = [start] + [a - 1 for a, _ in cells[1:]] + [end]  # 第 i 组从 bounds[i] 开始
 
         def column(c):
@@ -188,12 +189,12 @@ def token_slices(text, title, markdown, encoder, *, tokens=512, overlap=None,
                 continue
             prefix = head(section) if names is None else head(row) + column(i) + "："
             if encoder.token_length(prefix) >= tokens - 8:
-                raise ValueError("表格行标识或列名超过切片预算，请增大预算；未截断行列关系")
+                raise UserInputError("表格行标识或列名超过切片预算，请增大预算；未截断行列关系")
             pos, stop = bounds[i], bounds[i + 1]
             while pos < stop:
                 best = _fit_end(text, pos, stop, prefix, encoder, tokens)
                 if best == pos:
-                    raise ValueError("无法在切片预算内编码表格单元格，未截断")
+                    raise UserInputError("无法在切片预算内编码表格单元格，未截断")
                 if best < stop:
                     floor = pos + max(1, (best - pos) * 3 // 4)
                     endings = [m.end() + pos for m in re.finditer(r"[。！？；.!?;，,、]", text[pos:best]) if m.end() + pos >= floor]
@@ -208,10 +209,10 @@ def token_slices(text, title, markdown, encoder, *, tokens=512, overlap=None,
         section = "" if graphic else next((s.path for s in reversed(sections) if s.start <= start < s.end), "")
         prefix = head(section)
         if encoder.token_length(prefix) >= tokens - 8:
-            raise ValueError("标题、章节或补充上下文过长，切片预算不足")
+            raise UserInputError("标题、章节或补充上下文过长，切片预算不足")
         if graphic:
             if encoder.token_length(prefix + text[start:stop]) > tokens:
-                raise ValueError("图形/文本框整体超过切片预算，请核对结构；未套用正文滑窗")
+                raise UserInputError("图形/文本框整体超过切片预算，请核对结构；未套用正文滑窗")
             append(start, stop, prefix, section)
             continue
         table = next((t for t in tables if t[0] == start), None)
@@ -259,7 +260,7 @@ def token_slices(text, title, markdown, encoder, *, tokens=512, overlap=None,
         while pos < stop:
             best = _fit_end(text, pos, stop, prefix, encoder, tokens)
             if best == pos:
-                raise ValueError("无法在切片预算内编码原文，未截断")
+                raise UserInputError("无法在切片预算内编码原文，未截断")
             if best < stop:
                 paragraph = [n for n in paragraph_ends if pos + (best - pos) // 2 <= n <= best]
                 if paragraph:
@@ -287,5 +288,5 @@ def token_slices(text, title, markdown, encoder, *, tokens=512, overlap=None,
                 next_pos = max(next_pos, pos + max(1, (best - pos) // 2))
             pos = next_pos
     if not result:
-        raise ValueError("没有可用正文切片")
+        raise UserInputError("没有可用正文切片")
     return config, result

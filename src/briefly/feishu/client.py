@@ -45,8 +45,13 @@ _HTTP_HINTS = {
 }
 
 
+CANNOT_CONNECT = "无法连接飞书，请检查网络后重试"
+
+
 class FeishuError(Exception):
     """飞书接口返回错误。message 是给用户看的中文说明。"""
+
+    user_facing = True
 
     def __init__(self, message: str, code: int | None = None, status: int | None = None) -> None:
         super().__init__(message)
@@ -163,9 +168,11 @@ class FeishuClient:
             try:
                 r = self._http.request(method, path, params=params, json=json, headers=headers)
             except httpx.TimeoutException as e:
-                retry, error = idempotent, f"连接飞书超时：{e}"
+                log.warning("连接飞书超时：%s", type(e).__name__)
+                retry, error = idempotent, "连接飞书超时，请稍后重试"
             except httpx.HTTPError as e:
-                retry, error = idempotent, f"无法连接飞书：{type(e).__name__}: {e}"
+                log.warning("无法连接飞书：%s", type(e).__name__)
+                retry, error = idempotent, CANNOT_CONNECT
             if r is not None:
                 body = _json(r)
                 code = body.get("code")
@@ -224,7 +231,8 @@ class FeishuClient:
             try:
                 r = self._http.get(path, params=params, headers={"Authorization": f"Bearer {token}"})
             except httpx.HTTPError as e:
-                error = f"无法连接飞书：{type(e).__name__}: {e}"
+                log.warning("无法连接飞书：%s", type(e).__name__)
+                error = CANNOT_CONNECT
             if r is not None:
                 if r.status_code < 400 and "application/json" not in r.headers.get("content-type", ""):
                     return r.content

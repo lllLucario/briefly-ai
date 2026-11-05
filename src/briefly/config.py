@@ -18,6 +18,10 @@ THINKING = {"off": False, "on": True, "provider": None}[os.getenv("BRIEFLY_THINK
 # 留空则不传该参数，由服务商决定上限
 MAX_TOKENS = int(os.getenv("BRIEFLY_MAX_TOKENS", "0")) or None
 # 模型响应缓存：按白名单缓存通过检查的结果（见 llm_cache.py），off 时和没有缓存完全一样
+# 模型单次请求的超时和重试。默认最长输出按 RESERVED_OUTPUT_TOKENS（8000）算，按保守的 30 token/秒约 267 秒，不会误杀长材料和周报；
+# 重试只保留 1 次：限流、5xx 值得再试一次，超时再等一轮也有上限（最长约 10 分钟）。重试的是模型请求，不会重跑工具或外发。
+MODEL_TIMEOUT_S = float(os.getenv("BRIEFLY_MODEL_TIMEOUT_S", "300"))
+MODEL_MAX_RETRIES = int(os.getenv("BRIEFLY_MODEL_MAX_RETRIES", "1"))
 LLM_CACHE = os.getenv("BRIEFLY_LLM_CACHE", "on").lower() != "off"
 LLM_CACHE_TTL_HOURS = float(os.getenv("BRIEFLY_LLM_CACHE_TTL_HOURS", "168"))
 LLM_CACHE_MAX_ENTRIES = int(os.getenv("BRIEFLY_LLM_CACHE_MAX_ENTRIES", "5000"))

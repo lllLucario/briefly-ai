@@ -14,6 +14,7 @@ from typing import Literal
 from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, Field, field_validator
 
+from .errors import UserInputError
 from . import config
 from .materials import wrap_material
 from .skills import read_prompt
@@ -231,14 +232,15 @@ def extract_items(
         retry = []
         for source, request, response in zip(pending, requests, responses):
             if isinstance(response, Exception):
-                errors[source] = f"{type(response).__name__}: {response}"
+                log.warning("提取失败：%s", type(response).__name__)  # 异常文字可能带模型输出，只记类型
+                errors[source] = "这一块的模型调用失败"
                 retry.append(source)
                 continue
             result.usage.add(response["raw"])
             if on_call:
                 on_call("map", _message_tokens(request), response["raw"], source.tag)
             if response["parsed"] is None:
-                errors[source] = f"输出格式不对：{response['parsing_error']}"
+                errors[source] = "这一块的模型输出格式不对"
                 retry.append(source)
             else:
                 outputs[source] = response["parsed"]
@@ -473,7 +475,7 @@ def synthesize(
     final_messages = [("system", system_prompt), ("user", f"{request}\n\n工作项（每条的 #编号 用于标注出处）：\n{text}")]
     final_tokens = _message_tokens(final_messages)
     if final_tokens > input_limit():  # 分批合并后仍放不下：明确报错，不截断工作项硬发
-        raise ValueError(
+        raise UserInputError(
             f"要点过多，分批合并后仍有约 {final_tokens} tokens，超出单次输入上限 {input_limit()}；"
             "请缩小材料范围或写明关注点后重试"
         )

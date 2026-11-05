@@ -49,6 +49,7 @@ function resultActions(el, message) {
     if (!original) return;
     if ($("#input").value.trim() && $("#input").value !== original.text && !(await uiConfirm("替换输入框中尚未发送的内容，填回这次原始请求？"))) return;
     $("#input").value = original.text;
+    state.retryText = original.text.trim(); // 发送时和输入框比较：改过文字就是新问题，不用特别处理
     state.picked = new Set(original.material_ids); renderPicked();
     $("#input").focus();
   };

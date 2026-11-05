@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from .errors import UserInputError
 from .direct_word import BRIDGE, _paths, _slots
 from .legacy_word import OLE_HEADER, _run
 
@@ -16,20 +17,20 @@ MAX_RESULT_BYTES = 50 * 1024 * 1024
 ADAPTER_VERSION = 2
 
 
-class DirectSlidesUnsupported(ValueError):
+class DirectSlidesUnsupported(UserInputError):
     """加密、PowerPoint 95、结构损坏或内存不足等直读不了的情况；调用方改走LibreOffice转换。"""
 
 
 def parse_ppt(data: bytes):
     """返回 Docling 文档；直读不了时抛 DirectSlidesUnsupported（可转换）或 ValueError。"""
     if not data.startswith(OLE_HEADER):
-        raise ValueError("文件不是可识别的旧版 PowerPoint .ppt 文档；仅更改后缀不能转换文件格式")
+        raise UserInputError("文件不是可识别的旧版 PowerPoint .ppt 文档；仅更改后缀不能转换文件格式")
     from .ocr import enabled
 
     java, jar = _paths()
     pictures = ["-Dbriefly.pictures=true"] if enabled() else []
     if not _slots.acquire(timeout=5):
-        raise ValueError("旧版文档直接解析任务繁忙，请稍后重试")
+        raise UserInputError("旧版文档直接解析任务繁忙，请稍后重试")
     try:
         with TemporaryDirectory(prefix="briefly-ppt-direct-") as temporary:
             folder = Path(temporary)

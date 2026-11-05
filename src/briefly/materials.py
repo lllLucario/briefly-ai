@@ -4,8 +4,10 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import JSON, DateTime, Engine, ForeignKey, Index, Integer, String, Text, delete, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, defer, mapped_column, relationship, sessionmaker
 
+from .errors import UserInputError
 from . import config
 from .chunking import chunk_text, parse_sections, uses_markdown
 from .db import Base
@@ -20,7 +22,7 @@ WORKSPACE_FLAG = "workspace_added"  # 知识库专属材料被用户另行添加
 MAX_SEARCH_HITS = 10
 
 
-class MaterialNotFound(ValueError):
+class MaterialNotFound(UserInputError):
     """材料不存在。继承 ValueError，工具里仍按普通错误回传给模型。"""
 
 
@@ -32,7 +34,7 @@ class KnowledgeOnlyMaterial(MaterialNotFound):
         super().__init__(f"材料 {material_id}{name}属于知识库，不在材料库中，请在知识库中提问")
 
 
-class EgressRestricted(ValueError):
+class EgressRestricted(UserInputError):
     """材料关联的知识库未允许外发：内容不发给模型（本地查看不受影响）。"""
 
 
@@ -186,9 +188,15 @@ class MaterialStore:
 
         markdown 见 chunking.uses_markdown：粘贴的文本为 None，按内容判断。
         """
+        try:
+            return self._add_text(title, content, source, kind, markdown, report)
+        except IntegrityError:  # 另一个请求刚写入相同内容：再走一遍“已存在”的分支，结果和串行时一样
+            return self._add_text(title, content, source, kind, markdown, report)
+
+    def _add_text(self, title, content, source, kind, markdown, report) -> tuple[Material, bool]:
         content = content.replace("\r\n", "\n").replace("\r", "\n").strip()
         if not content:
-            raise ValueError("材料内容为空")
+            raise UserInputError("材料内容为空")
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
         with self._session() as s:
             existing = s.scalar(select(Material).where(Material.content_hash == digest))
@@ -256,11 +264,11 @@ class MaterialStore:
     def add_file(self, filename: str, data: bytes) -> tuple[Material, bool]:
         kind = file_type(filename)
         if len(data) > config.MAX_UPLOAD_MB * 1024 * 1024:
-            raise ValueError(f"文件超过 {config.MAX_UPLOAD_MB}MB 上限")
+            raise UserInputError(f"文件超过 {config.MAX_UPLOAD_MB}MB 上限")
         doc = load_document(filename, data)
         if not doc.text.strip():
             hint = "，可能是扫描版 PDF" if kind == "pdf" else ""
-            raise ValueError(f"未从文件中提取到文字{hint}")
+            raise UserInputError(f"未从文件中提取到文字{hint}")
         return self.add_text(filename, doc.text, source="file", kind=kind, markdown=doc.markdown, report=doc.report)
 
     def list_materials(self, ids: list[int] | None = None, content: bool = True) -> list[Material]:
@@ -468,7 +476,7 @@ class MaterialStore:
             while start < end:
                 prefix = read(start, min(start + 4096, end))
                 if not prefix:
-                    raise ValueError("章节位置与材料正文不一致，请重新导入材料")
+                    raise UserInputError("章节位置与材料正文不一致，请重新导入材料")
                 stripped = prefix.lstrip()
                 start += len(prefix) - len(stripped)
                 if stripped:
@@ -476,7 +484,7 @@ class MaterialStore:
             while start < end:
                 suffix = read(max(start, end - 4096), end)
                 if not suffix:
-                    raise ValueError("章节位置与材料正文不一致，请重新导入材料")
+                    raise UserInputError("章节位置与材料正文不一致，请重新导入材料")
                 stripped = suffix.rstrip()
                 end -= len(suffix) - len(stripped)
                 if stripped:
@@ -501,7 +509,7 @@ class MaterialStore:
         """空格分隔多个关键词，子串匹配（不区分大小写），命中任意一个即算，按命中次数排序。"""
         words = [w.lower() for w in keywords.split() if w]
         if not words:
-            raise ValueError("关键词为空")
+            raise UserInputError("关键词为空")
         query = select(MaterialChunk, Material.title).join(Material).order_by(Material.id, MaterialChunk.index)
         if material_ids is not None:
             self.require_workspace(material_ids)

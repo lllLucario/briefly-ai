@@ -13,6 +13,7 @@ from sqlalchemy import Engine, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
+from ..errors import UserInputError
 from ..materials import KNOWLEDGE, TRACKED, KnowledgeOnlyMaterial, Material, MaterialNotFound, MaterialStore
 from .models import (
     ARCHIVED,
@@ -46,7 +47,7 @@ class TodoNotFound(MaterialNotFound):
     """待办不存在。复用 MaterialNotFound，接口层统一返回 404。"""
 
 
-class ConfirmationRequired(ValueError):
+class ConfirmationRequired(UserInputError):
     """操作会影响其他待办（如父待办还有未完成的子待办），需要用户明确确认。接口返回 409。"""
 
 
@@ -107,7 +108,7 @@ class TodoService:
             try:
                 s.flush()
             except IntegrityError as exc:
-                raise ValueError("正在检查文件更新，请稍后重试删除。") from exc
+                raise UserInputError("正在检查文件更新，请稍后重试删除。") from exc
             todo = s.get(Todo, todo_id)
             if todo is None:
                 raise TodoNotFound(f"待办 {todo_id} 不存在")
@@ -195,7 +196,7 @@ class TodoService:
     ) -> Todo:
         title = title.strip()
         if not title:
-            raise ValueError("待办标题不能为空")
+            raise UserInputError("待办标题不能为空")
         _check_status(status)
         with self._session() if session is None else nullcontext(session) as s:
             if parent_id is not None:
@@ -241,7 +242,7 @@ class TodoService:
             before = _values(todo)
             if title is not _UNSET:
                 if not (title or "").strip():
-                    raise ValueError("待办标题不能为空")
+                    raise UserInputError("待办标题不能为空")
                 todo.title = title.strip()[:200]
             if description is not _UNSET:
                 todo.description = (description or "").strip()
@@ -249,11 +250,11 @@ class TodoService:
                 todo.due_date = due_date
             if parent_id is not _UNSET and parent_id != todo.parent_id:
                 if parent_id is None:
-                    raise ValueError("要把子待办变成独立待办，请使用“转为独立待办”")
+                    raise UserInputError("要把子待办变成独立待办，请使用“转为独立待办”")
                 if todo.parent_id is not None:
-                    raise ValueError("子待办不能直接换到别的父待办下，请先转为独立待办")
+                    raise UserInputError("子待办不能直接换到别的父待办下，请先转为独立待办")
                 if s.scalar(select(func.count()).select_from(Todo).where(Todo.parent_id == todo.id)):
-                    raise ValueError("这个待办下面有子待办，不能再放到别的待办下（最多两级）")
+                    raise UserInputError("这个待办下面有子待办，不能再放到别的待办下（最多两级）")
                 parent = self._valid_parent(s, parent_id, child_id=todo.id)
                 todo.parent_id = parent.id
                 s.add(TodoActivity(todo_id=parent.id, event_type=CHILD_ADDED, new_value={"child_id": todo.id, "title": todo.title}))
@@ -312,7 +313,7 @@ class TodoService:
         with self._session() as s:
             todo = self._active(s, todo_id)
             if todo.parent_id is None:
-                raise ValueError("这已经是独立待办")
+                raise UserInputError("这已经是独立待办")
             parent = s.get(Todo, todo.parent_id)
             todo.parent_id = None
             todo.updated_at = datetime.now()
@@ -355,7 +356,7 @@ class TodoService:
             if todo.archived_at is None:
                 return todo
             if todo.parent_id is not None and s.get(Todo, todo.parent_id).archived_at is not None:
-                raise ValueError("父待办已归档，请先恢复父待办")
+                raise UserInputError("父待办已归档，请先恢复父待办")
             todo.archived_at = None
             s.add(TodoActivity(todo_id=todo.id, event_type=RESTORED))
             s.commit()
@@ -365,9 +366,9 @@ class TodoService:
     def add_note(self, todo_id: int, text: str, *, session=None) -> TodoActivity:
         text = text.strip()
         if not text:
-            raise ValueError("进展说明不能为空")
+            raise UserInputError("进展说明不能为空")
         if len(text) > MAX_NOTE:
-            raise ValueError(f"进展说明请控制在 {MAX_NOTE} 字以内")
+            raise UserInputError(f"进展说明请控制在 {MAX_NOTE} 字以内")
         with self._session() if session is None else nullcontext(session) as s:
             self._active(s, todo_id)
             row = TodoActivity(todo_id=todo_id, event_type=NOTE, note=text)
@@ -545,19 +546,19 @@ class TodoService:
         if todo is None:
             raise TodoNotFound(f"待办 {todo_id} 不存在")
         if todo.archived_at is not None:
-            raise ValueError(f"待办「{todo.title}」已归档，请先恢复")
+            raise UserInputError(f"待办「{todo.title}」已归档，请先恢复")
         return todo
 
     def _valid_parent(self, s, parent_id: int, child_id: int | None = None) -> Todo:
         if parent_id == child_id:
-            raise ValueError("待办不能是自己的子待办")
+            raise UserInputError("待办不能是自己的子待办")
         parent = s.get(Todo, parent_id)
         if parent is None:
             raise TodoNotFound(f"父待办 {parent_id} 不存在")
         if parent.archived_at is not None:
-            raise ValueError(f"父待办「{parent.title}」已归档")
+            raise UserInputError(f"父待办「{parent.title}」已归档")
         if parent.parent_id is not None:
-            raise ValueError(f"「{parent.title}」是子待办，子待办不能再有子待办（最多两级）。可以先把它转为独立待办")
+            raise UserInputError(f"「{parent.title}」是子待办，子待办不能再有子待办（最多两级）。可以先把它转为独立待办")
         return parent
 
 
@@ -592,5 +593,5 @@ def _iso(value: datetime | None) -> str | None:
 
 def _check_status(status: str) -> None:
     if status not in STATUS_NAMES:
-        raise ValueError(f"状态只能是 {' / '.join(STATUS_NAMES)}（{' / '.join(STATUS_NAMES.values())}）")
+        raise UserInputError(f"状态只能是 {' / '.join(STATUS_NAMES)}（{' / '.join(STATUS_NAMES.values())}）")
 

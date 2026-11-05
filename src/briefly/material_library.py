@@ -14,6 +14,7 @@ from datetime import datetime
 from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
+from .errors import UserInputError
 from .materials import TRACKED, Material, visible
 
 PREVIEW_CHARS = 120
@@ -218,11 +219,11 @@ def browse(
 
     q = q.strip()
     if relation == "todo" and todo_id is None:
-        raise ValueError("按具体待办筛选时需要指定待办（todo_id）")
+        raise UserInputError("按具体待办筛选时需要指定待办（todo_id）")
     if relation != "todo" and todo_id is not None:
-        raise ValueError("只有按具体待办筛选（relation=todo）时才能指定 todo_id")
+        raise UserInputError("只有按具体待办筛选（relation=todo）时才能指定 todo_id")
     if material_ids is not None and len(material_ids) > MAX_IDS:
-        raise ValueError(f"一次最多查看 {MAX_IDS} 份指定材料")
+        raise UserInputError(f"一次最多查看 {MAX_IDS} 份指定材料")
     with Session(engine) as s:
         if todo_id is not None and s.get(Todo, todo_id) is None:
             raise TodoNotFound(f"待办 {todo_id} 不存在")
