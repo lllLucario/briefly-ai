@@ -172,7 +172,9 @@ def feishu(tmp_path, monkeypatch):
         ("POST", f"{API}/drive/v1/metas/batch_query"): {"metas": [{"doc_token": DOC, "latest_modify_user": "ou_me", "owner_id": "ou_me"}]},
         ("GET", f"{API}/contact/v3/users/ou_me"): {"user": {"name": "王五"}},
     })  # fmt: skip
-    engine = create_db_engine("sqlite://")
+    # 用文件库，和正式部署一样每个线程一条连接。内存库所有线程共用一条连接：create_app 接上的后台同步线程
+    # 归还连接时的回滚，会把扫描线程还没提交的写入一起撤销，扫描偶发撞外键
+    engine = create_db_engine(f"sqlite:///{(tmp_path / 'app.db').as_posix()}")
     store = MaterialStore(engine)
     svc = TrackingService(engine, store, BlobStore(tmp_path / "store"), feishu_factory=feishu.client)
     with TestClient(create_app(store, model_factory=lambda: fake(), feishu_factory=feishu.client)) as c:
