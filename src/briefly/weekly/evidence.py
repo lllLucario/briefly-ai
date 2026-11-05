@@ -29,7 +29,7 @@ from sqlalchemy.orm import sessionmaker
 from .. import clock, config
 from ..context_builder import input_limit
 from ..context_store import ContextStore
-from ..llm import create_chat_model
+from ..llm import CachedCall, create_chat_model
 from ..skills import read_prompt
 from ..summarize import CATEGORY_NAMES, Source, WorkItem, extract_items
 from ..tokens import estimate_tokens
@@ -326,10 +326,13 @@ class EvidenceBuilder:
         messages = [("system", read_prompt("evidence_compose")), ("user", user)]
         tokens = sum(estimate_tokens(t) for _, t in messages)
         try:
-            draft = model.with_structured_output(EvidenceDraft, method="function_calling").invoke(messages)
+            call = CachedCall("evidence_compose", model, messages, schema=EvidenceDraft)
+            draft = call.structured()
             if not isinstance(draft, EvidenceDraft) or not draft.title.strip():
+                call.reject()
                 raise ValueError("输出格式不对")
-            return draft, 1, tokens
+            call.accept()
+            return draft, 0 if call.hit else 1, tokens
         except Exception as e:
             log.warning("候选记录描述生成失败，改用要点拼接: %s", type(e).__name__)
             points = "；".join(i.point for i in items[:5])

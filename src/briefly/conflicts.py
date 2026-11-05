@@ -19,6 +19,7 @@ from typing import Literal
 from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, Field
 
+from .llm import CachedCall
 from .summarize import WorkItem
 
 log = logging.getLogger(__name__)
@@ -388,16 +389,16 @@ def classify(model: BaseChatModel, conflicts: list[FactConflict], items: list[Wo
             where = "用户简述" if origin_of(member) == BRIEF else f"出处 {member.source}"
             lines.append(f"  说法 {j}（{where}，主体写作“{member.subject}”{('，含义“' + member.aspect + '”') if member.aspect else ''}）值：{member.value}；原文：{member.quote}")
         blocks.append("\n".join(lines))
+    call = CachedCall("conflict_judge", model, [("system", JUDGE_PROMPT), ("user", "\n\n".join(blocks))], schema=_Judgments)
     try:
-        result = model.with_structured_output(_Judgments, method="function_calling").invoke(
-            [("system", JUDGE_PROMPT), ("user", "\n\n".join(blocks))]
-        )
+        result = call.structured()
         judgments = getattr(result, "judgments", []) or []
     except Exception as e:
         log.warning("冲突归类失败，全部按未解决处理，未确认的主体候选丢弃: %s", type(e).__name__)
         conflicts[:] = [c for c in conflicts if not c.needs_identity]
         return 1
     judged = set()
+    verified = True  # 模型给的依据都核对上了才缓存：核对不上的判断下次应该重新问
     for j in judgments:
         if not 1 <= j.index <= len(conflicts):
             continue
@@ -419,12 +420,17 @@ def classify(model: BaseChatModel, conflicts: list[FactConflict], items: list[Wo
         else:
             c.resolution, c.current, c.evidence = UNRESOLVED, "", ""  # 依据核对不上：不替用户选定
             if j.resolution not in (UNRESOLVED, NOT_SAME):
+                verified = False
                 c.explanation = (c.explanation + "（模型判断的依据或当前取值无法核对，按未解决处理）").strip()
+    if verified and len(judged) == len(conflicts):
+        call.accept()
+    else:
+        call.reject()
     # 没有得到判断的候选：无法确认是同一对象，不判冲突
     conflicts[:] = [
         c for k, c in enumerate(conflicts, start=1) if c.resolution != NOT_SAME and not (c.needs_identity and k not in judged)
     ]
-    return 1
+    return 0 if call.hit else 1
 
 
 # ---------- 给写作模型的说明

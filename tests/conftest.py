@@ -118,3 +118,9 @@ def _no_real_feishu_credentials(monkeypatch):
     """本机 .env 里的飞书凭证不进测试：否则定时提醒的用例会真的连飞书（CI 没有凭证，以前只在本机发生）。"""
     for name in ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_NOTIFY_USER", "FEISHU_FOLDER_TOKEN"):
         monkeypatch.setattr(config, name, "")
+
+
+@pytest.fixture(autouse=True)
+def _llm_cache_off(monkeypatch):
+    """模型响应缓存默认关闭：很多用例用假模型重复提问，并按顺序断言回复。缓存行为由 test_llm_cache.py 打开后专门测。"""
+    monkeypatch.setattr(config, "LLM_CACHE", False)

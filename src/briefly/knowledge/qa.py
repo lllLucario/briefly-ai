@@ -5,7 +5,7 @@
 """
 import re
 
-from .. import config
+from .. import config, turn_timing
 from .evidence import restricted_answer
 from .payload import evidence_payload
 from .retrieval import relevance_floor, relevant, similarity
@@ -171,6 +171,7 @@ class KnowledgeQA:
         ranked = [(1 / (60 + i), 0, i, e) for i, e in enumerate(kb_items, 1)] + [(1 / (60 + i), 1, i, e) for i, e in enumerate(ws_items, 1)]
         return [e for *_, e in sorted(ranked, key=lambda row: (-row[0], row[1], row[2]))]
 
+    @turn_timing.timed("retrieval")
     def bundle(self, kb_id, questions, *, document_ids=None, allow_partial=False, private_values=(), start=1,
                max_questions=MAX_SUB_QUESTIONS):
         """本轮依据包。返回 status 及 evidence、references、warnings、authorized；status 为 ready 或
@@ -325,17 +326,11 @@ class KnowledgeQA:
             "只有会改变结论的限制才写。"
             "未提及只用于问题要求且依据确实缺少的信息；不能一方面引用该事实、一方面又说未提及，也不要扩展到用户未问的功能或错误码。"
             "不能从同一数字或相邻文字推断归属；不得猜测或还原已隐藏字段。回答是草稿，不表示已保存或发送业务数据。\n\n" + bundle["payload_text"])
-        from ..agent import Agent
-        from ..context_store import ContextStore
-        from ..db import create_db_engine
-        engine = create_db_engine("sqlite://")
-        try:
-            agent = Agent(model=self.model_factory(), tools=[], context_store=ContextStore(engine))
-            if agent.counter.count_text(prompt) > config.KNOWLEDGE_PROMPT_TOKENS:
-                raise KnowledgeConflict("本次依据超过回答预算，请缩小文档范围")
-            answer = agent.chat(prompt)
-        finally:
-            engine.dispose()
+        # 到这里授权、质量限制和依据包都已通过，才查缓存：关闭授权后 bundle 已经返回，不会读到旧答案
+        model = self.model_factory()
+        call = self._answer_call(model, prompt, evidence, private_values)
+        cached = call.lookup()
+        answer = cached["answer"] if cached is not None else self._generate(model, prompt, call)
         cited = cited_numbers(answer)
         declared = re.search(r"【可答性[：:]\s*(可回答|部分可答|依据不足)】", answer)
         warnings = []
@@ -350,7 +345,70 @@ class KnowledgeQA:
         answer = Redactor(private_values).text(answer)
         state = {"可回答": "answered", "部分可答": "partial_answer", "依据不足": "insufficient_evidence"}.get(declared[1] if declared else None)
         references = [r for i, r in enumerate(bundle["references"], 1) if i in cited]
-        return dict(evidence=evidence, model_called=True, status="needs_review" if warnings else state,
+        status = "needs_review" if warnings else state
+        if status in {"answered", "partial_answer", "insufficient_evidence"}:
+            call.accept(dict(answer=answer))  # 存脱敏后的文字，和用户看到的一致
+        else:
+            call.reject()
+        out = dict(evidence=evidence, model_called=not call.hit, status=status,
             answer=answer, warnings=warnings, egress=bundle["egress"], references=references,
             citations=[dict(label=r["label"], reference=r["reference"]) for r in references],
             citation_support="需逐条核对结论与原文，引用存在本身不证明事实归属")
+        if call.hit:  # 引用和提醒都按本轮依据包重新算；这次实际没有发送片段
+            out.update(from_cache=True, egress=dict(bundle["egress"], evidence_sent=0, workspace_sent=0, redactions={},
+                                                    from_cache=True, cached_evidence=len(evidence)))
+        return out
+
+    @staticmethod
+    def _answer_call(model, prompt, evidence, private_values):
+        """单问捷径的缓存键：系统提示词、工具定义、依据包（在 prompt 里）、依据的文档和版本、模型参数、主体。
+
+        系统提示词里的当前时间精确到秒，进键就永远不会命中，所以只把日期放进键：问题里的“今天”按天算。
+        脱敏字段只存哈希，其他脱敏规则的结果已经反映在依据包里。"""
+        import hashlib
+
+        from langchain_core.utils.function_calling import convert_to_openai_tool
+
+        from ..agent import build_system_prompt
+        from ..clock import local_today
+        from ..llm import CachedCall
+        from ..tools.context import context_tools
+        return CachedCall("knowledge_answer", model, [("system", build_system_prompt()), ("user", prompt)],
+                          tools=[convert_to_openai_tool(t) for t in context_tools(None)],
+                          extra=dict(date=local_today().isoformat(),
+                                     evidence=[[e["document_id"], e["version_id"]] for e in evidence],
+                                     private=hashlib.sha256("\0".join(sorted(private_values)).encode()).hexdigest()))
+
+    @staticmethod
+    def _generate(model, prompt, call):
+        """经智能体和回答检查链生成回答，把干净的结果交给 call 待写入（调用方算完提醒后再决定）。"""
+        from time import perf_counter
+
+        from langchain_core.messages import AIMessage, ToolMessage
+
+        from ..agent import Agent
+        from ..context_builder import SYSTEM_REPLY
+        from ..context_store import ContextStore
+        from ..db import create_db_engine
+        from ..output_check import CHECK_FLAGS
+        engine = create_db_engine("sqlite://")
+        try:
+            agent = Agent(model=model, tools=[], context_store=ContextStore(engine))
+            if agent.counter.count_text(prompt) > config.KNOWLEDGE_PROMPT_TOKENS:
+                raise KnowledgeConflict("本次依据超过回答预算，请缩小文档范围")
+            started = perf_counter()
+            answer = agent.chat(prompt)
+            seconds = perf_counter() - started
+            history = agent.history
+        finally:
+            engine.dispose()
+        meta = history[-1].response_metadata if history and isinstance(history[-1], AIMessage) else {SYSTEM_REPLY: True}
+        if meta.get(SYSTEM_REPLY) or any(meta.get(flag) for flag in CHECK_FLAGS) or any(isinstance(m, ToolMessage) for m in history):
+            call.reject()
+            return answer
+        replies = [m for m in history if isinstance(m, AIMessage)]
+        usage = [getattr(m, "usage_metadata", None) or {} for m in replies]
+        call.remember(dict(answer=answer), input_tokens=sum(u.get("input_tokens") or 0 for u in usage),
+                      output_tokens=sum(u.get("output_tokens") or 0 for u in usage), latency_ms=int(seconds * 1000),
+                      truncated=meta.get("finish_reason") == "length")
+        return answer

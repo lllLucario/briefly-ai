@@ -137,6 +137,17 @@ class WorkspaceIndex:
                 except Exception:
                     log.warning("工作区同步后的处理失败", exc_info=True)
 
+    def reuse_stat(self) -> dict:
+        """向量复用的现状（不是累计）：内容相同的切片共用一条向量，hits 是少算的切片数，misses 是实际算过的向量数。"""
+        try:
+            with self.connect() as db:
+                slices = db.execute("SELECT COUNT(*) FROM slices").fetchone()[0]
+                vectors = db.execute("SELECT COUNT(DISTINCT text_sha) FROM slices").fetchone()[0]
+        except Exception as e:
+            log.warning("读取工作区索引统计失败: %s", type(e).__name__)
+            slices = vectors = 0
+        return dict(name="embedding.workspace", hits=slices - vectors, misses=vectors, snapshot=True)
+
     def wait(self, timeout: float = 30) -> None:
         """等后台同步结束（关闭服务、测试用）。"""
         with self._state:

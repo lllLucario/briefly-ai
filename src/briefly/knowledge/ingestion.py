@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from ..materials import KNOWLEDGE, MaterialStore
 from ..parse_process import ParseFailure, load_isolated
@@ -16,6 +17,16 @@ from .lifecycle import IndexLifecycle
 from .models import KnowledgeImport, KnowledgeVersion, KnowledgeParseCache, KnowledgeImportMetrics
 from .service import KnowledgeConflict, KnowledgeNotFound, KnowledgeService, fingerprint, outline_preview
 from .slicing import token_slices
+
+
+def parse_cache_stat(engine) -> dict:
+    """解析缓存的统计：从每次入库已有的指标记录算，不改解析和核验流程。显式重新解析不算未命中。
+    不给节省时间：历史解析耗时不能当作这次省下的时间。"""
+    with Session(engine) as s:
+        rows = list(s.scalars(select(KnowledgeImportMetrics.values)))
+    counted = [v for v in rows if isinstance(v, dict) and "cache_hit" in v and not v.get("force_reparse")]
+    hits = sum(1 for v in counted if v["cache_hit"])
+    return dict(name="parse.document", hits=hits, misses=len(counted) - hits)
 
 
 def utcnow():

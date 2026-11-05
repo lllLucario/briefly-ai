@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from langchain.agents.middleware import AgentMiddleware, ModelResponse
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
 
-from . import config
+from . import config, turn_timing
 from .compaction import Compactor, render_memory, split_turns
 from .context import Context
 from .context_store import ContextStore
@@ -307,7 +307,8 @@ class ContextBuilder(AgentMiddleware):
                 return system_reply(str(e))
             started = time.monotonic()
             try:
-                response = handler(request.override(system_message=built.system, messages=built.messages))
+                with turn_timing.span("model"):
+                    response = handler(request.override(system_message=built.system, messages=built.messages))
             except Exception as e:
                 if not is_context_overflow(e):
                     raise
@@ -323,6 +324,7 @@ class ContextBuilder(AgentMiddleware):
             if ai is not None:
                 ai.response_metadata["context_omitted_turns"] = built.parts["omitted_turns"]
                 ai.response_metadata["egress_sent"] = built.parts["egress"]  # 知识轮次收尾按此统计实际外发
+                turn_timing.add_usage(ai)
             usage = (getattr(ai, "usage_metadata", None) or {}) if ai else {}
             self.counter.calibrate(built.estimated, usage.get("input_tokens"))
             self._record(

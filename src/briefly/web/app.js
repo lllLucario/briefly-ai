@@ -1255,6 +1255,7 @@ function egressParts(egress) {
 
 // 本次实际外发：本轮片段、历史中残留的片段、附带的材料分开说明（助理路径还会带上对话历史）。
 function egressText(egress) {
+  if (egress?.from_cache) return `<span class="muted small" data-egress>本次答案来自缓存，依据与上次完全一致，没有向外部生成服务发送片段 · </span>`;
   if (!egress?.evidence_sent && !egress?.workspace_sent) return "";
   const extra = [egress.history_evidence ? `历史中的 ${egress.history_evidence} 个片段` : "", egress.materials ? `${egress.materials} 份材料内容` : ""].filter(Boolean);
   const history = egress.history_sent ? `，连同对话历史${extra.length ? "及" + extra.join("、") : ""}` : "";
@@ -1263,7 +1264,7 @@ function egressText(egress) {
 
 // 知识回答的原文依据：按稳定引用打开当时的版本，不把模型回答当事实。
 function knowledgeReferences(el, knowledge) {
-  if (!knowledge?.references?.length && !knowledge?.egress?.evidence_sent && !knowledge?.egress?.workspace_sent) return;
+  if (!knowledge?.references?.length && !knowledge?.egress?.evidence_sent && !knowledge?.egress?.workspace_sent && !knowledge?.egress?.from_cache) return;
   const box = document.createElement("div");
   box.className = "knowledge-refs";
   box.innerHTML = egressText(knowledge.egress) + (knowledge.references?.length ? `<span class="muted small">核对原文：</span>` : "") + (knowledge.references || []).map((r) =>

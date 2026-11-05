@@ -10,10 +10,13 @@
 - 工具预算（每次执行工具前后，tool_budget.py）：预留 → 执行 → 结算，并行调用不能绕过单轮总预算。
 以上都只影响发给模型的内容，checkpointer 里保存完整历史。
 """
+import json
 import logging
+import re
 import sqlite3
 import uuid
 from collections.abc import Callable
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 
@@ -26,13 +29,13 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from . import config
+from . import config, turn_timing
 from .compaction import Compactor
 from .context import Context
 from .context_builder import CONTEXT_OVERFLOW, SYSTEM_REPLY, ContextBuilder, system_reply
-from .context_store import ContextStore
+from .context_store import TURN, ContextStore
 from .db import create_db_engine
-from .llm import create_chat_model
+from .llm import create_chat_model, fresh_model_calls
 from .materials import EgressRestricted, MaterialStore, wrap_material
 from .output_check import INTERNAL_PATTERNS, PROGRAM_MATERIAL_REF, InternalTermCheck, reply_char_limit
 from .skills import SKILLS, read_prompt
@@ -63,6 +66,7 @@ __all__ = [
 
 log = logging.getLogger(__name__)
 
+_ASKS_REDO = re.compile(r"重新|重做|重写|重来|再(?:来|做|写|生成|总结|提炼|整理|概括|梳理|归纳|分析)|换(?:一|个)(?:版|种|下)|\b(?:redo|regenerate|again)\b", re.I)
 TOOL_ROUNDS_EXCEEDED = "工具调用次数过多，已中止，请换一种方式描述需求。"
 INPUT_TOO_LONG = (
     "这段输入约 {tokens} tokens，超出单次可直接处理的长度（{limit}），且当前没有配置材料库，无法转存。"
@@ -274,10 +278,30 @@ class Agent:
         corrects 为被纠正的那条用户消息 ID，记入意图日志（intent_log.py）。
         """
         thread_id = thread_id or self.thread_id
+        # “交给助理处理”和“重新……”都是用户在要新的结果；判断宽一点也只是多调用一次模型
+        refresh = fresh_model_calls() if skip_funnel or _ASKS_REDO.search(text) else nullcontext()
+        with turn_timing.measure() as turn, refresh:
+            try:
+                return self._chat(text, skill, material_ids, thread_id, kb_id, skip_funnel, corrects)
+            finally:
+                if turn is not None:
+                    self._record_timing(thread_id, turn)
+
+    def _record_timing(self, thread_id: str, turn: turn_timing.TurnTiming) -> None:
+        """一轮的耗时拆分记一行观测（task_type=turn，明细 JSON 放 note，旧库不用加列）。只有数字，没有内容。"""
+        summary = turn.summary()
+        log.info("turn_timing %s", summary)
+        self.context_store.record_usage(thread_id=thread_id, run_id=turn.run_id, model=self.model_name, task_type=TURN,
+                                        input_tokens=turn.input_tokens, output_tokens=turn.output_tokens,
+                                        latency_ms=summary["total_ms"], note=json.dumps(summary))
+
+    def _chat(self, text, skill, material_ids, thread_id, kb_id, skip_funnel, corrects) -> str:
         display = text
         if skill and skill not in SKILLS:
             raise ValueError(f"未知技能: {skill}，可选: {', '.join(SKILLS)}")
         run_id = uuid.uuid4().hex[:12]
+        if (turn := turn_timing.current()) is not None and not turn.run_id:
+            turn.run_id = run_id
         started = request_time()  # 本轮内所有模型调用、工具和检查共用这一时间
         # 在附加全文和压缩历史之前挡住受限来源，避免压缩模型成为旁路。
         if self.store is not None:
@@ -293,7 +317,8 @@ class Agent:
         if skip_funnel:
             decision = IntentDecision("agent", 3, "用户认为判断有误，跳过意图判断交给助理")
         else:
-            decision = self.funnel.classify(display, state, skill)
+            with turn_timing.span("intent"):
+                decision = self.funnel.classify(display, state, skill)
         intent = decision.to_dict()
         if skip_funnel:
             intent["skip_funnel"], intent["corrects"] = True, corrects
@@ -381,7 +406,7 @@ class Agent:
                 return None  # 知识问答入口不处理的请求，交给智能体结合上下文判断
             # 引用由依据包确定：模型回答只列实际引用的依据，编号与回答一致；低相关时列最接近的出处
             references = result.get("references") or []
-            if result.get("model_called"):
+            if result.get("model_called") or result.get("from_cache"):
                 reply = AIMessage(result["answer"], id=uuid.uuid4().hex)
             elif result["status"] == "low_relevance":  # 正常结论（库里没有相关内容），不是失败提示
                 reply = _intent_reply(result["answer"])
@@ -389,7 +414,9 @@ class Agent:
                 reply = system_reply(result["answer"])
         reply.response_metadata["knowledge"] = dict(kb_id=kb_id, status=result["status"], references=references,
                                                     warnings=result.get("warnings") or [],
-                                                    egress=result.get("egress") if result.get("model_called") else None)  # 只记录实际发生的外发
+                                                    egress=result.get("egress") if result.get("model_called") or result.get("from_cache") else None)  # 只记录实际发生的外发；命中缓存时计数为 0 并标明
+        if result.get("from_cache"):
+            reply.response_metadata["knowledge"]["from_cache"] = True
         return reply
 
     def _close_failed_turn(self, thread_id, message_id):
