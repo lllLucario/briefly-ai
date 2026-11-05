@@ -611,16 +611,27 @@ def test_text_contrast_on_all_pages(web_page, scheme):
 # ---------- 晚到的材料列表响应
 
 
+def wait_until(page, condition, what):
+    for _ in range(1000):
+        if condition():
+            return
+        page.wait_for_timeout(10)  # 让路由处理函数有机会运行；只是轮询，条件满足立刻返回
+    raise AssertionError(f"没有等到：{what}")
+
+
 class HeldMaterials:
     """扣住 GET /materials，请求发出时就取到当时的数据，由用例决定何时交给页面。
 
     启动时的刷新可能晚于路由安装（首屏会取两次材料），所以不能按请求序号判断哪个是旧快照，
     只按响应内容区分。退出时放行全部，不留下永远不返回的请求，否则浏览器关闭会卡住。
+
+    退出时不 unroute，路由留到页面关闭，之后的请求直接放行。原因见 HeldRequests。
     """
 
     def __init__(self, page):
         self.page = page
         self.held = []  # [(route, response, 材料编号集合)]
+        self.closed = False
 
     def __enter__(self):
         self.page.route("**/materials", self._handle)
@@ -637,20 +648,21 @@ class HeldMaterials:
         try:
             self.drain()
         finally:
-            self.page.unroute("**/materials")
+            self.closed = True
+            self.release()  # drain 之后才进来的，或者 drain 没等到就退出时剩下的
 
     def _handle(self, route):
         if route.request.method != "GET":
             return route.fallback()
+        if self.closed:
+            return route.continue_()
         response = route.fetch()
+        if self.closed:  # 取数据期间用例已经退出，没有人再放行它
+            return route.fulfill(response=response)
         self.held.append((route, response, {m["id"] for m in response.json()}))
 
     def _poll(self, condition, what):
-        for _ in range(1000):
-            if condition():
-                return
-            self.page.wait_for_timeout(10)  # 让路由处理函数有机会运行；只是轮询，条件满足立刻返回
-        raise AssertionError(f"没有等到：{what}")
+        wait_until(self.page, condition, what)
 
     def pending(self):
         return self.page.evaluate("() => window.materialsPending")
@@ -786,12 +798,18 @@ def test_really_deleted_material_is_removed_and_late_response_does_not_restore_i
 
 
 class HeldRequests:
-    """扣住第一个符合条件的请求，由用例决定放行。退出时放行，不留下永远不返回的请求。"""
+    """扣住第一个符合条件的请求，由用例决定放行。其余请求直接放行。退出时放行，不留下永远不返回的请求。
+
+    退出时不 unroute，路由留到页面关闭。页面可能随时发新请求（比如丢弃旧响应后的刷新），
+    而撤掉页面上最后一个路由时，Playwright 服务端会把在途的请求转给 context 路由，
+    客户端这边它也会转过去：同一个请求被放行两次，第二次报 Route is already handled，
+    错误还要到下一次 API 调用才抛出。这个窗口在用例里关不掉，只能不撤。
+    """
 
     def __init__(self, page, pattern, method, at_response=True):
         self.page, self.pattern, self.method, self.at_response = page, pattern, method, at_response
         self.route = self.response = None
-        self.done = False
+        self.ready = self.released = False
 
     def __enter__(self):
         self.page.route(self.pattern, self._handle)
@@ -799,30 +817,29 @@ class HeldRequests:
 
     def __exit__(self, *_):
         self.release()
-        self.page.unroute(self.pattern)
 
     def _handle(self, route):
-        if route.request.method != self.method or self.route is not None:
+        if route.request.method != self.method or self.route is not None or self.released:
             return route.continue_()  # 只放行这一层：这里的请求都是同源的
+        self.route = route  # fetch 期间可能再来同类请求：先占住，否则它会顶掉这个，这个就再也不放行了
         if self.at_response:  # 请求已由服务端处理，只是响应晚到
             self.response = route.fetch()
-        self.route = route
+        self.ready = True
 
     def wait(self):
-        for _ in range(1000):
-            if self.route is not None:
-                return
-            self.page.wait_for_timeout(10)  # 让路由处理函数有机会运行；只是轮询，条件满足立刻返回
-        raise AssertionError(f"没有等到 {self.method} {self.pattern}")
+        wait_until(self.page, lambda: self.ready, f"{self.method} {self.pattern}")
 
     def release(self):
-        if self.route is None or self.done:
+        if self.released:
             return
-        self.done = True
+        self.released = True  # 放行期间新来的请求走上面的直接放行
+        if self.route is None:
+            return
+        self.wait()  # 可能还在 fetch
         if self.at_response:
             self.route.fulfill(response=self.response)
         else:
-            self.route.fallback()
+            self.route.continue_()
 
 
 TODO_STATUS_PUT = "**/weekly/*/items/*/todos/*"
@@ -951,3 +968,49 @@ def test_note_typed_before_switching_week_is_saved_to_its_own_week(web_page):
     assert saved.value.json()["note"] == "本周说明"
     page.evaluate("async () => { await api('/weekly/week'); }")
     assert page.evaluate("() => weekly.current.period_start") == day
+
+
+# ---------- 扣请求的辅助类本身
+
+
+@pytest.mark.parametrize("make_helper", [
+    lambda page: HeldRequests(page, "**/materials", "GET"),
+    HeldMaterials,
+], ids=["HeldRequests", "HeldMaterials"])
+def test_held_helpers_survive_request_in_flight_at_exit(web_page, make_helper):
+    """请求已被服务端交给页面路由，客户端还没处理时用例退出：这个请求只能放行一次。
+
+    扣住事件的投递来固定顺序，不靠时机：退出做完以后才把事件交给 Playwright 客户端。
+    """
+    page = ready(web_page)
+    impl = page._impl_obj
+    deliver, parked = impl._on_route, []
+
+    async def park(route):
+        parked.append(route)
+
+    impl._on_route = park
+    try:
+        with make_helper(page):
+            page.evaluate("() => { window.lateDone = false; fetch('/materials').then(() => { window.lateDone = true; }); }")
+            wait_until(page, lambda: parked, "请求到达页面路由")
+    finally:
+        impl._on_route = deliver
+    tasks = [impl._loop.create_task(deliver(route)) for route in parked]
+    wait_until(page, lambda: all(task.done() for task in tasks), "事件处理完")
+    page.wait_for_function("() => window.lateDone")
+    assert [task.exception() for task in tasks] == [None] * len(tasks)
+
+
+def test_held_requests_keeps_first_when_another_arrives_during_fetch(web_page):
+    """第一个请求还在 route.fetch 时来了第二个：扣住的还是第一个，两个最后都要返回。"""
+    page = ready(web_page)
+    with HeldRequests(page, "**/weekly/week", "GET") as held:
+        page.evaluate("""() => {
+          window.finished = 0;
+          for (let i = 0; i < 2; i++) fetch('/weekly/week').then(() => { window.finished++; });
+        }""")
+        held.wait()
+        page.wait_for_function("() => window.finished === 1")  # 第二个已直接放行，第一个还扣着
+        held.release()
+    page.wait_for_function("() => window.finished === 2")
