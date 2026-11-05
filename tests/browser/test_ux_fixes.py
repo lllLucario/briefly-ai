@@ -612,36 +612,74 @@ def test_text_contrast_on_all_pages(web_page, scheme):
 
 
 class HeldMaterials:
-    """扣住 GET /materials：请求发出时就向服务端取到当时的数据，由用例决定何时交给页面。"""
+    """扣住 GET /materials，请求发出时就取到当时的数据，由用例决定何时交给页面。
+
+    启动时的刷新可能晚于路由安装（首屏会取两次材料），所以不能按请求序号判断哪个是旧快照，
+    只按响应内容区分。退出时放行全部，不留下永远不返回的请求，否则浏览器关闭会卡住。
+    """
 
     def __init__(self, page):
         self.page = page
-        self.held = []
-        page.route("**/materials", self._handle)
+        self.held = []  # [(route, response, 材料编号集合)]
+
+    def __enter__(self):
+        self.page.route("**/materials", self._handle)
+        # 统计页面上还没结束的加载，放行后等它们真正处理完，不靠固定等待
+        self.page.evaluate("""() => {
+          if (window.materialsPending !== undefined) return;
+          window.materialsPending = 0;
+          const real = loadMaterials;
+          loadMaterials = () => { window.materialsPending++; return real().finally(() => { window.materialsPending--; }); };
+        }""")
+        return self
+
+    def __exit__(self, *_):
+        try:
+            self.drain()
+        finally:
+            self.page.unroute("**/materials")
 
     def _handle(self, route):
         if route.request.method != "GET":
             return route.fallback()
-        self.held.append((route, route.fetch()))
+        response = route.fetch()
+        self.held.append((route, response, {m["id"] for m in response.json()}))
 
-    def wait_for(self, count):
-        for _ in range(500):
-            if len(self.held) >= count:
+    def _poll(self, condition, what):
+        for _ in range(1000):
+            if condition():
                 return
-            self.page.wait_for_timeout(10)
-        raise AssertionError(f"没有等到第 {count} 个 /materials 请求")
+            self.page.wait_for_timeout(10)  # 让路由处理函数有机会运行；只是轮询，条件满足立刻返回
+        raise AssertionError(f"没有等到：{what}")
 
-    def release(self, index):
-        route, response = self.held[index]
-        route.fulfill(response=response)
+    def pending(self):
+        return self.page.evaluate("() => window.materialsPending")
 
-    def stop(self):
-        self.page.unroute("**/materials")
+    def wait_all_held(self):
+        """页面上发出的加载都已被扣住：这之后添加的材料，一定不在这些快照里。"""
+        self._poll(lambda: self.held and len(self.held) >= self.pending(), "全部 /materials 请求被扣住")
 
+    def wait_snapshot(self, matches, what):
+        self._poll(lambda: any(matches(ids) for _, _, ids in self.held), what)
 
-def settled(page, promise_name):
-    """等页面里保存的 loadMaterials Promise 结束，不靠固定等待。"""
-    page.evaluate(f"() => window.{promise_name}")
+    def release(self, matches=lambda ids: True):
+        for item in [x for x in self.held if matches(x[2])]:
+            self.held.remove(item)
+            item[0].fulfill(response=item[1])
+
+    def release_until(self, done, matches, what):
+        """持续放行符合条件的快照，直到页面状态满足 done。"""
+        def step():
+            self.release(matches)
+            return self.page.evaluate(done)
+        self._poll(step, what)
+
+    def drain(self):
+        """放行全部，直到页面上的加载都结束。"""
+        def step():
+            self.release()
+            return not self.held and self.pending() == 0
+        self._poll(step, "/materials 请求全部结束")
 
 
 def picked_ids(page):
@@ -660,67 +698,85 @@ def add_for_assistant(page, title):
     page.locator("#paste-form").get_by_role("button", name="保存为材料").click()
 
 
-@pytest.mark.parametrize("order", [(0, 1), (1, 0)], ids=["old_first", "new_first"])
-def test_late_materials_response_keeps_just_added_material(web_page, order):
+def stale_load(page, extra):
+    """发一个加载；extra 时再多混一个，模拟启动刷新等额外请求。"""
+    page.evaluate("() => { loadMaterials(); }")
+    if extra:
+        page.evaluate("() => { loadMaterials(); }")
+
+
+EXTRA = pytest.mark.parametrize("extra", [False, True], ids=["", "extra_request"])
+
+
+@EXTRA
+@pytest.mark.parametrize("old_first", [True, False], ids=["old_first", "new_first"])
+def test_late_materials_response_keeps_just_added_material(web_page, old_first, extra):
     """添加前发出的列表响应无论先到后到，都不能删掉刚选的材料。"""
     page = ready(web_page)
     tab(page, "chat")
-    page.wait_for_load_state("networkidle")
-    held = HeldMaterials(page)
-    page.evaluate("() => { window.staleLoad = loadMaterials(); }")  # 这个快照里没有新材料
-    held.wait_for(1)
-    add_for_assistant(page, "刚导入的材料")
-    held.wait_for(2)  # 添加后的刷新
-    expect(page.locator("#add-msg")).to_contain_text("已保存")
-    added = picked_ids(page)
-    assert len(added) == 1
-    held.release(order[0])
-    held.release(order[1])
-    settled(page, "staleLoad")
-    page.wait_for_load_state("networkidle")
-    held.stop()
-    assert picked_ids(page) == added
-    assert added[0] in material_ids(page)  # 旧响应也不能覆盖较新的列表
+    with HeldMaterials(page) as held:
+        stale_load(page, extra)
+        held.wait_all_held()
+        add_for_assistant(page, "刚导入的材料")
+        expect(page.locator("#add-msg")).to_contain_text("已保存")
+        added = picked_ids(page)
+        assert len(added) == 1
+        new = added[0]
+        fresh = lambda ids: new in ids  # noqa: E731
+        stale = lambda ids: new not in ids  # noqa: E731
+        held.wait_snapshot(fresh, "添加后的刷新")
+        applied = f"() => state.materials.some(m => m.id === {new})"
+        if old_first:
+            held.release(stale)
+            held._poll(lambda: picked_ids(page) == added, "旧快照到达后已选材料还在")
+            held.release_until(applied, fresh, "新列表生效")
+        else:
+            held.release_until(applied, fresh, "新列表生效")
+        held.drain()  # 其余旧快照都到达
+        assert picked_ids(page) == added
+        assert new in material_ids(page)  # 旧响应不能覆盖较新的列表
     page.locator("#add-dialog [data-close]").click()
     expect(page.locator("#picked")).to_contain_text("刚导入的材料")
 
 
-def test_late_materials_response_without_newer_request_keeps_pick(web_page):
+@EXTRA
+def test_late_materials_response_without_newer_request_keeps_pick(web_page, extra):
     """多文件上传时，每份之间不刷新：旧响应到达时还没有更新的请求，也不能删掉。"""
     page = ready(web_page)
     tab(page, "chat")
-    page.wait_for_load_state("networkidle")
-    held = HeldMaterials(page)
-    page.evaluate("() => { window.staleLoad = loadMaterials(); }")
-    held.wait_for(1)
-    added = page.request.post(base(page) + "/materials", data={"title": "上传中的材料", "content": "上传中的正文"}).json()["material"]["id"]
-    page.evaluate("id => { state.picked.add(id); renderPicked(); }", added)
-    held.release(0)
-    settled(page, "staleLoad")
-    held.stop()
-    assert picked_ids(page) == [added]
+    with HeldMaterials(page) as held:
+        stale_load(page, extra)
+        held.wait_all_held()
+        added = page.request.post(base(page) + "/materials", data={"title": "上传中的材料", "content": "上传中的正文"}).json()["material"]["id"]
+        page.evaluate("id => { state.picked.add(id); renderPicked(); }", added)
+        held.drain()
+        assert picked_ids(page) == [added]
     expect(page.locator("#picked .chip")).to_have_count(1)
 
 
-def test_really_deleted_material_is_removed_and_late_response_does_not_restore_it(web_page):
+@EXTRA
+def test_really_deleted_material_is_removed_and_late_response_does_not_restore_it(web_page, extra):
     page = ready(web_page)
     tab(page, "chat")
-    page.wait_for_load_state("networkidle")
     gone = page.request.post(base(page) + "/materials", data={"title": "要删除的材料", "content": "要删除的正文"}).json()["material"]["id"]
-    page.evaluate("async id => { await loadMaterials(); state.picked.add(id); renderPicked(); }", gone)
+    # 确实选中后再开始：只有已经在列表里的材料，才能验证“删除后移除”
+    page.wait_for_function("""async id => {
+      await loadMaterials();
+      if (!state.materials.some(m => m.id === id)) return false;
+      state.picked.add(id); renderPicked();
+      return true;
+    }""", arg=gone)
     expect(page.locator("#picked")).to_contain_text("要删除的材料")
-    held = HeldMaterials(page)
-    page.evaluate("() => { window.staleLoad = loadMaterials(); }")  # 这个快照里还有它
-    held.wait_for(1)
-    assert page.request.delete(base(page) + f"/materials/{gone}").ok
-    page.evaluate("() => { window.freshLoad = loadMaterials(); }")
-    held.wait_for(2)
-    held.release(1)
-    settled(page, "freshLoad")
-    assert picked_ids(page) == []  # 真的删除了：从已选列表移除
-    expect(page.locator("#picked .chip")).to_have_count(0)
-    held.release(0)
-    settled(page, "staleLoad")
-    held.stop()
-    assert gone not in material_ids(page)
-    assert picked_ids(page) == []
+    with HeldMaterials(page) as held:
+        stale_load(page, extra)  # 这些快照里还有它
+        held.wait_all_held()
+        assert all(gone in ids for _, _, ids in held.held if ids)
+        assert page.request.delete(base(page) + f"/materials/{gone}").ok
+        page.evaluate("() => { window.freshLoad = loadMaterials().then(() => { window.freshDone = true; }); }")
+        without = lambda ids: gone not in ids  # noqa: E731
+        held.release_until("() => window.freshDone === true", without, "删除后的刷新")
+        assert picked_ids(page) == []  # 真的删除了：从已选列表移除
+        expect(page.locator("#picked .chip")).to_have_count(0)
+        held.drain()  # 还带着它的旧快照晚到
+        assert gone not in material_ids(page)
+        assert picked_ids(page) == []
