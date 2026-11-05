@@ -90,7 +90,10 @@ def ask_all(client, app, kb_id, phase: str, *, enabled: bool) -> list[dict]:
     rows = []
     for question in QUESTIONS:
         response = client.post("/chat", json=dict(text=question, kb_id=kb_id))
-        response.raise_for_status()
+        if response.status_code != 200:  # 真实模型只授权跑一次：失败也留下记录，不中断，不重试
+            rows.append(dict(phase=phase, question=question, route=None, status=f"http_{response.status_code}", from_cache=False,
+                             evidence_sent=0, references=0, answer_chars=0))
+            continue
         body = response.json()
         thread = body["thread_id"]
         answer = client.get(f"/chat/sessions/{thread}").json()["messages"][-1]
@@ -176,11 +179,17 @@ def main() -> None:
                          agent_factory=lambda s: Agent(model_factory(), store=s, checkpointer=saver))
         with TestClient(app) as client:
             kb_id = build_knowledge(app)
-            ask_all(client, app, kb_id, "warmup", enabled=False) if not args.real_model else None  # 假模型下预热，不计入
+            # 预热语义层（只在本地，不调模型）：第一题不背首次加载的时间，三个阶段可比
+            from briefly.intent import TurnState
+            client.post("/chat", json=dict(text="你好")).raise_for_status()
+            app.state.agent.funnel.classify(QUESTIONS[0], TurnState(kb_id=kb_id))
             rows = []
             for phase, enabled in (("off", False), ("cold", True), ("repeat", True)):
                 rows += ask_all(client, app, kb_id, phase, enabled=enabled)
-            synth = synth_scene(app, model_factory)
+            try:
+                synth = synth_scene(app, model_factory)
+            except Exception as e:  # 前面的结果不能因此丢掉
+                synth = [dict(error=type(e).__name__)]
             config.LLM_CACHE = True
             stats = cache_stats(engine, [])
         saver.conn.close()
