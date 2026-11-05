@@ -1,9 +1,12 @@
 """知识库入库、范围召回、原文引用与问答；不提供伪造索引就绪的入口。"""
+import logging
 from typing import Annotated
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from ..errors import UserInputError
+from ..llm import ModelConfigurationError
 from .service import KnowledgeConflict, KnowledgeNotFound, KnowledgeService, index_fingerprint
 
 
@@ -41,6 +44,9 @@ class AnswerIn(SearchIn):
     private_values: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(default_factory=list, max_length=50)
 
 
+log = logging.getLogger(__name__)
+
+
 def document_out(doc):
     return dict(id=doc.id, kb_id=doc.kb_id, title=doc.title, source_key=doc.source_key,
                 relative_path=doc.source_key.removeprefix("upload:") if doc.source_key.startswith("upload:") else None,
@@ -71,9 +77,10 @@ def register(app: FastAPI,model_factory):
         try:
             return qa.answer(kb_id, body.question, document_ids=body.document_ids,
                 allow_partial=body.allow_partial, private_values=body.private_values)
-        except (KnowledgeConflict, KnowledgeNotFound, ValueError):
+        except (UserInputError, ModelConfigurationError):
             raise
         except Exception as exc:
+            log.exception("知识问答生成失败")
             raise HTTPException(502, "知识问答生成失败，请稍后重试") from exc
 
     @app.post("/knowledge-bases/{kb_id}/search", tags=["知识库"])
@@ -102,7 +109,7 @@ def register(app: FastAPI,model_factory):
     def create(body: BaseIn):
         try:
             b = service.create(body.name)
-        except ValueError as exc:
+        except UserInputError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return dict(id=b.id, name=b.name, revision=b.revision, created_at=b.created_at, external_allowed=False)
 
@@ -130,7 +137,7 @@ def register(app: FastAPI,model_factory):
             doc, ver, created = service.attach(kb_id, body.material_id, source_key=body.source_key, business_version=body.business_version)
         except (KnowledgeConflict, KnowledgeNotFound):
             raise
-        except ValueError as exc:
+        except UserInputError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         from ..materials import KNOWLEDGE
         if app.state.store.get(body.material_id, content=False, workspace=False).source != KNOWLEDGE:
@@ -185,5 +192,5 @@ def register(app: FastAPI,model_factory):
             return service.resolve_reference(kb_id, reference)
         except KnowledgeNotFound:
             raise
-        except ValueError as exc:
+        except UserInputError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

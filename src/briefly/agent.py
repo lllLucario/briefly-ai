@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 from langchain.agents import create_agent
+from langgraph.prebuilt.tool_node import ToolInvocationError
 from langchain.agents.middleware import ModelRequest, ToolErrorMiddleware, after_agent, before_model, dynamic_prompt
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
@@ -29,6 +30,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+from .errors import UserInputError, is_user_facing
 from . import config, turn_timing
 from .compaction import Compactor
 from .context import Context
@@ -135,11 +137,16 @@ def _record_turn(state, runtime):
 
 # 程序直接写入的轮次（直接回复、受限来源提示、失败收尾）以轮次收尾节点的身份写入，会话停在“已结束”
 TURN_END = f"{_record_turn.name}.after_agent"
+FAILED_TURN = "本轮调用失败，未生成回答。请修改要求或稍后重试。"
 
 
 def _tool_error(error: Exception, request) -> str:
-    # 工具失败不抛给用户，作为工具结果回传模型，由模型如实说明
-    return f"工具执行失败: {error}"
+    # 工具失败不抛给用户，作为工具结果回传模型，由模型如实说明。给调用方看的说明原样回传，
+    # 其他异常（程序 bug、第三方库）的文字可能带路径和内部信息，模型又在外部服务，只进日志
+    if is_user_facing(error) or isinstance(error, ToolInvocationError):  # 后者是模型自己传错参数，要看到原因才能改正
+        return f"工具执行失败: {error}"
+    log.error("工具执行失败", exc_info=error)
+    return "工具执行失败: 内部错误，这次操作没有完成。请如实告诉用户，不要编造结果。"
 
 
 def sqlite_checkpointer(path: str | Path) -> SqliteSaver:
@@ -298,7 +305,7 @@ class Agent:
     def _chat(self, text, skill, material_ids, thread_id, kb_id, skip_funnel, corrects) -> str:
         display = text
         if skill and skill not in SKILLS:
-            raise ValueError(f"未知技能: {skill}，可选: {', '.join(SKILLS)}")
+            raise UserInputError(f"未知技能: {skill}，可选: {', '.join(SKILLS)}")
         run_id = uuid.uuid4().hex[:12]
         if (turn := turn_timing.current()) is not None and not turn.run_id:
             turn.run_id = run_id
@@ -324,7 +331,20 @@ class Agent:
             intent["skip_funnel"], intent["corrects"] = True, corrects
         if kb_id and self.knowledge is not None:
             intent["kb_id"], intent["kb_name"] = kb_id, self.knowledge.base_name(kb_id)
-        direct = self._direct(decision, display, kb_id)
+        try:
+            direct = self._direct(decision, display, kb_id)
+        except UserInputError:
+            raise
+        except Exception:  # 单问捷径的模型调用失败或超时：这时还没写入历史，不记下来用户重新打开就是空会话
+            message = HumanMessage(display, id=uuid.uuid4().hex, additional_kwargs=dict(
+                display=display, material_ids=material_ids or [], skill=skill, intent=intent, kb_id=kb_id))
+            try:
+                self.graph.update_state({"configurable": {"thread_id": thread_id}},
+                                        {"messages": [message, system_reply(FAILED_TURN)]}, as_node=TURN_END)
+                self._log_intent(thread_id, message, state, skill, corrects)
+            except Exception:
+                log.exception("保存本轮调用失败说明失败")
+            raise
         if direct is not None:
             # 捷径和直接回复由处理器执行，实际能力就是漏斗的判断
             _, direct.response_metadata["result"] = turn_record(
@@ -339,7 +359,7 @@ class Agent:
             return direct.text
         try:
             text, stored = self._preflight(text)
-        except ValueError as e:
+        except UserInputError as e:
             return str(e)
         if material_ids:
             try:
@@ -435,7 +455,7 @@ class Agent:
             elif isinstance(m, ToolMessage):
                 pending.pop(m.tool_call_id, None)
         closed = [ToolMessage("本轮调用失败，工具结果不可用，请重新提问后查询。", tool_call_id=cid, name=name, status="error") for cid, name in pending.items()]
-        closed.append(system_reply("本轮调用失败，未生成回答。请修改要求或稍后重试。"))
+        closed.append(system_reply(FAILED_TURN))
         self.graph.update_state({"configurable": {"thread_id": thread_id}}, {"messages": closed}, as_node=TURN_END)
 
     def _compact(self, thread_id: str, run_id: str) -> bool:
@@ -455,7 +475,7 @@ class Agent:
         if tokens <= config.INPUT_INLINE_TOKENS:
             return text, []
         if self.store is None:
-            raise ValueError(INPUT_TOO_LONG.format(tokens=tokens, limit=config.INPUT_INLINE_TOKENS))
+            raise UserInputError(INPUT_TOO_LONG.format(tokens=tokens, limit=config.INPUT_INLINE_TOKENS))
         material, _ = self.store.add_text(f"对话输入 {datetime.now():%m-%d %H:%M}", text)
         head, tail = text[:INPUT_HEAD_CHARS], text[-INPUT_TAIL_CHARS:]
         text = (

@@ -9,6 +9,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, tool
 
+from ..errors import UserInputError
 from ..context import Context
 from ..context_store import ContextStore
 from ..tool_budget import output_limit
@@ -25,7 +26,7 @@ def _text(content) -> str:
 def _page(text: str, page: int, chars: int) -> tuple[str, int]:
     pages = max(1, -(-len(text) // chars))
     if not 1 <= page <= pages:
-        raise ValueError(f"页码超出范围，共 {pages} 页")
+        raise UserInputError(f"页码超出范围，共 {pages} 页")
     return text[(page - 1) * chars : page * chars], pages
 
 
@@ -54,13 +55,13 @@ def context_tools(store: ContextStore) -> list[BaseTool]:
         if turn is not None:
             hits = [f"{who}：{text}" for t, who, text in numbered if t == turn]
             if not hits:
-                raise ValueError(f"没有第 {turn} 轮，本会话共 {n} 轮")
+                raise UserInputError(f"没有第 {turn} 轮，本会话共 {n} 轮")
             body, pages = _page("\n\n".join(hits), page, _page_chars())
             more = f"继续请用 turn={turn}, page={page + 1}" if page < pages else "已读完"
             return f"【第 {turn} 轮原始对话】\n{body}\n（第 {page}/{pages} 页，{more}）"
         words = [w.lower() for w in keywords.split() if w]
         if not words:
-            raise ValueError("keywords 和 turn 至少填一个")
+            raise UserInputError("keywords 和 turn 至少填一个")
         out = []
         for t, who, text in reversed(numbered):  # 新的在前
             ranges = sorted((max(0,m.start()-SNIPPET_RADIUS),min(len(text),m.end()+SNIPPET_RADIUS))
@@ -76,7 +77,7 @@ def context_tools(store: ContextStore) -> list[BaseTool]:
                 out.append(f"- 第 {t} 轮 {who}：{snippet}")
         if not out:
             if page != 1:
-                raise ValueError("没有搜索结果，页码超出范围")
+                raise UserInputError("没有搜索结果，页码超出范围")
             return f"本会话中没有找到包含“{keywords}”的对话。"
         body,pages = _page("\n".join(out),page,_page_chars())
         tail = f"继续请用相同keywords、page={page+1}，也可按轮次读取全文" if page<pages else "已读完"
@@ -90,9 +91,9 @@ def context_tools(store: ContextStore) -> list[BaseTool]:
         record = store.tool_result(result_id) if result_id.startswith("r_") else None
         if record is not None:
             if record.thread_id and runtime.context and runtime.context.thread_id not in ("", record.thread_id):
-                raise ValueError(f"工具结果 {result_id} 不属于当前会话")
+                raise UserInputError(f"工具结果 {result_id} 不属于当前会话")
             if record.tool_name == KNOWLEDGE_TOOL and runtime.context and record.run_id != runtime.context.run_id:
-                raise ValueError(STALE_KNOWLEDGE)
+                raise UserInputError(STALE_KNOWLEDGE)
             content = record.content
         else:
             messages = (runtime.state or {}).get("messages", [])
@@ -101,10 +102,10 @@ def context_tools(store: ContextStore) -> list[BaseTool]:
             if hit is not None and hit.name == KNOWLEDGE_TOOL:
                 start = max((i for i, m in enumerate(messages) if isinstance(m, HumanMessage) and not m.additional_kwargs.get("internal")), default=-1)
                 if index < start:
-                    raise ValueError(STALE_KNOWLEDGE)
+                    raise UserInputError(STALE_KNOWLEDGE)
             content = _text(hit.content) if hit else None
         if content is None:
-            raise ValueError(f"找不到工具结果 {result_id}")
+            raise UserInputError(f"找不到工具结果 {result_id}")
         chars = _page_chars()
         body, pages = _page(content, page, chars)
         tail = f"\n（第 {page}/{pages} 页，继续请用 page={page + 1}）" if page < pages else f"\n（第 {page}/{pages} 页，已读完）"

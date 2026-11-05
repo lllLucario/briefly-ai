@@ -361,7 +361,8 @@ def test_failed_scan_is_recorded(env, monkeypatch):
     env.write("a.md", "# A2")
     monkeypatch.setattr(env.svc.scanner, "_scan_existing", lambda *a, **k: 1 / 0)
     result = env.svc.scan()
-    assert result.status == "failed" and "ZeroDivisionError" in env.svc.scans()[0].error
+    assert result.status == "failed" and "没有完成" in env.svc.scans()[0].error
+    assert "ZeroDivisionError" not in env.svc.scans()[0].error  # 扫描记录会给用户看，异常只进日志
     monkeypatch.undo()
 
 

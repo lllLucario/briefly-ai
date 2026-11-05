@@ -23,6 +23,7 @@ from datetime import datetime
 from sqlalchemy import Engine, or_, select, update
 from sqlalchemy.orm import sessionmaker
 
+from ..errors import UserInputError
 from ..materials import MaterialStore
 from ..tracking.models import ATTRIBUTED, FileSnapshot, TrackedFile
 from ..weekly.evidence import _is_reviewed, period_bounds
@@ -311,7 +312,7 @@ class TodoEvidence:
         if link is None:
             raise TodoNotFound(f"记录 E{evidence_id} 没有关联待办 {todo_id}")
         if e.review_status not in (PENDING, CONFIRMED, REJECTED):
-            raise ValueError(f"记录 E{evidence_id} 已被合并、拆分或替换，不能再修改")
+            raise UserInputError(f"记录 E{evidence_id} 已被合并、拆分或替换，不能再修改")
         return link, e
 
     def set_report_status(self, report_id: int, evidence_id: int, todo_id: int, status: str | None) -> EvidenceTodoLink:
@@ -321,7 +322,7 @@ class TodoEvidence:
         清单已确认的，回到待确认（周报内容变了）。
         """
         if status is not None and status not in STATUS_NAMES:
-            raise ValueError(f"状态只能是 {' / '.join(STATUS_NAMES)}")
+            raise UserInputError(f"状态只能是 {' / '.join(STATUS_NAMES)}")
         with self._session() as s:
             link, _ = self._link(s, report_id, evidence_id, todo_id)
             before = link.report_status
@@ -340,10 +341,10 @@ class TodoEvidence:
             link, _ = self._link(s, report_id, evidence_id, todo_id)
             target = link.report_status
         if target is None:
-            raise ValueError("请先在本次报告里选择状态，再同步到待办")
+            raise UserInputError("请先在本次报告里选择状态，再同步到待办")
         todo = self.todos.get(todo_id)
         if todo.status == target:
-            raise ValueError(f"待办「{todo.title}」已经是{STATUS_NAMES[target]}")
+            raise UserInputError(f"待办「{todo.title}」已经是{STATUS_NAMES[target]}")
         if not confirm:
             extra = ""
             if target == DONE and todo.parent_id is None:

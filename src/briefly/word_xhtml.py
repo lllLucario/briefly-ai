@@ -2,6 +2,7 @@
 import re
 import xml.etree.ElementTree as ET
 
+from .errors import UserInputError
 from .tables import merged_value
 
 
@@ -15,16 +16,16 @@ def tag(node):
 
 def xhtml_markdown(payload):
     if b"<!DOCTYPE" in payload.upper() or b"<!ENTITY" in payload.upper():
-        raise ValueError("不接受XML实体声明")
+        raise UserInputError("不接受XML实体声明")
     root=ET.fromstring(payload)
     body=next((n for n in root.iter() if tag(n)=="body"),None)
     if body is None:
-        raise ValueError("解析结果缺少正文")
+        raise UserInputError("解析结果缺少正文")
     warnings=[]
     table_ids={id(n):i for i,n in enumerate((n for n in body.iter() if tag(n)=="table"),1)}
     def table(node,depth=0):
         if depth>16:
-            raise ValueError("表格嵌套超过16层")
+            raise UserInputError("表格嵌套超过16层")
         rows=[]
         for child in node:
             if tag(child)=="tr":
@@ -44,10 +45,10 @@ def xhtml_markdown(payload):
                     col+=1
                 rs,cs=int(cell.attrib.get("rowspan","1")),int(cell.attrib.get("colspan","1"))
                 if not 1<=rs<=1000 or not 1<=cs<=1000:
-                    raise ValueError("表格合并跨度无效")
+                    raise UserInputError("表格合并跨度无效")
                 cells+=rs*cs
                 if cells>250000:
-                    raise ValueError("表格展开超过25万格，请拆分文档")
+                    raise UserInputError("表格展开超过25万格，请拆分文档")
                 def cell_text(part):
                     if tag(part)=="table":
                         children.append((part,r,col,rs,cs))
@@ -60,7 +61,7 @@ def xhtml_markdown(payload):
                 for rr in range(r,r+rs):
                     for cc in range(col,col+cs):
                         if (rr,cc) in occupied:
-                            raise ValueError("表格合并区域重叠")
+                            raise UserInputError("表格合并区域重叠")
                         occupied[rr,cc]=merged_value(content,rr,cc,r,col,r==0 or tag(cell)=="th") or ""
                 col+=cs
                 width=max(width,col)
@@ -114,7 +115,7 @@ def xhtml_document(payload):
                           if tag(n) == "meta" and n.attrib.get("name") == "briefly:footnotes"), 0)
         return text, footnotes
     except (ET.ParseError, TypeError, OverflowError) as exc:
-        raise ValueError("旧Word直接解析返回了无效结构") from exc
+        raise UserInputError("旧Word直接解析返回了无效结构") from exc
 
 
 def xhtml_structure_report(payload):
@@ -125,7 +126,7 @@ def xhtml_structure_report(payload):
                       ("unverified_table_segments","briefly:unverified-table-segments"),("object_anchors","briefly:object-anchors")):
         value=int(meta.get(key,"0"))
         if value<0 or value>1000000:
-            raise ValueError("旧Word结构计数无效")
+            raise UserInputError("旧Word结构计数无效")
         report[label]=value
     warnings=[]
     if report['unverified_table_segments']:
@@ -140,7 +141,7 @@ def xhtml_structure_report(payload):
     for label,key in (("textbox_ranges","briefly:textbox-ranges"),("textbox_cell_boundaries","briefly:textbox-cell-boundaries"),("textbox_range_boundaries_unverified","briefly:textbox-range-boundaries-unverified")):
         value=int(meta.get(key,"0"))
         if not 0<=value<=1000000:
-            raise ValueError("旧Word文本框计数无效")
+            raise UserInputError("旧Word文本框计数无效")
         if key in meta:
             report[label]=value
     if report.get('textbox_ranges'):

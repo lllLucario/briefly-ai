@@ -11,6 +11,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..errors import UserInputError
 from ..materials import KNOWLEDGE, MaterialStore
 from ..parse_process import ParseFailure, load_isolated
 from .lifecycle import IndexLifecycle
@@ -66,16 +67,16 @@ class ImportService:
                 expected_revision=0, business_version=None, tokens=512):
         from .. import config
         if not request_key.strip() or len(request_key) > 200:
-            raise ValueError("幂等标识须为1～200字")
+            raise UserInputError("幂等标识须为1～200字")
         filename = Path(filename).name[:200]
         source_key = source_key or "upload:" + filename
         if not source_key.strip() or len(source_key) > 200 or expected_revision < 0:
-            raise ValueError("来源标识或修订号无效")
+            raise UserInputError("来源标识或修订号无效")
         self.knowledge._business_version(business_version)
         if not data or len(data) > config.MAX_UPLOAD_MB * 1024 * 1024:
-            raise ValueError("上传文件为空或超过单文件上限")
+            raise UserInputError("上传文件为空或超过单文件上限")
         if type(tokens) is not int or not 32 <= tokens <= 1024:
-            raise ValueError("切片预算须为32～1024token")
+            raise UserInputError("切片预算须为32～1024token")
         digest = fingerprint(dict(filename=filename, sha256=hashlib.sha256(data).hexdigest(), source=source_key,
             revision=expected_revision, business_version=business_version, tokens=tokens))
         job_id = uuid4().hex
@@ -160,7 +161,7 @@ class ImportService:
                 s.execute(update(KnowledgeImport).where(KnowledgeImport.id == job_id,
                     KnowledgeImport.lease_token == token).values(status="failed", lease_token=None,
                     lease_until=None, error_code=getattr(exc, "code", "import_failed"),
-                    error=str(exc) if isinstance(exc, ValueError) else "文件处理失败，可单独重试"))
+                    error=str(exc) if isinstance(exc, UserInputError) else "文件处理失败，可单独重试"))
             raise
         finally:
             stopped.set()

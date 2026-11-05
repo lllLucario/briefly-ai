@@ -1,4 +1,5 @@
 """飞书与材料、周报的衔接：粘贴链接导入为材料、周报写入飞书文档（并记录写入历史）。"""
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -6,6 +7,7 @@ from datetime import datetime
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, select
 from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
 
+from ..errors import UserInputError, failure_text
 from .. import config
 from ..db import Base
 from ..materials import Material, MaterialStore
@@ -19,6 +21,9 @@ from .minutes import read_minutes
 _SECTION = re.compile(r"(?m)^【([^】\n]+)】(.*)$")
 FEISHU_SOURCE = "feishu"  # 材料来源
 DOC_TYPE, TABLE_TYPE, MINUTES_TYPE = "feishu", "bitable", "minutes"  # 材料类型
+
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -43,13 +48,13 @@ def resolve(client: FeishuClient, link: FeishuLink) -> FeishuLink:
     if obj_type == "bitable":
         return FeishuLink(BITABLE, obj_token, link.table_id, link.view_id, link.url)
     names = {"doc": "旧版文档", "sheet": "电子表格", "mindnote": "思维笔记", "file": "文件", "slides": "幻灯片"}
-    raise ValueError(f"知识库页面是{names.get(obj_type, obj_type or '未知类型')}，目前只支持新版文档和多维表格")
+    raise UserInputError(f"知识库页面是{names.get(obj_type, obj_type or '未知类型')}，目前只支持新版文档和多维表格")
 
 
 def fetch(client: FeishuClient, url: str) -> Fetched:
     link = resolve(client, parse_link(url))
     if link.kind == FOLDER:
-        raise ValueError("文件夹不能直接导入：可以追踪整个文件夹，或展开后勾选其中的文档导入")
+        raise UserInputError("文件夹不能直接导入：可以追踪整个文件夹，或展开后勾选其中的文档导入")
     if link.kind == DOCX:
         doc = read_document(client, link.token)
         return Fetched(DOCX, link.token, doc.title, doc.markdown, url, doc.revision_id, doc.warnings)
@@ -64,7 +69,7 @@ def import_link(client: FeishuClient, store: MaterialStore, url: str) -> tuple[M
     """读取飞书文档、多维表格或妙记文字稿的当前内容，存为材料（内容相同的不重复存）。"""
     got = fetch(client, url)
     if not got.markdown.strip() or (got.kind == MINUTES and got.warnings):
-        raise ValueError(got.warnings[0] if got.warnings else f"《{got.title}》没有可读取的文字内容")
+        raise UserInputError(got.warnings[0] if got.warnings else f"《{got.title}》没有可读取的文字内容")
     is_markdown = got.kind != MINUTES  # 妙记文字稿是纯文本（说话人 + 时间戳），章节按规则识别
     report = {
         "structure": "markdown" if is_markdown else "",
@@ -139,7 +144,8 @@ def export_weekly(client: FeishuClient, weekly, report_id: int, me: str = "") ->
     try:
         document_id = create_document(client, title, text, config.FEISHU_FOLDER_TOKEN, on_created=created)
     except Exception as exc:
-        error = f"创建或写入未完成：{type(exc).__name__}: {exc}"[:1500]
+        log.exception("周报写入飞书未完成")
+        error = ("创建或写入未完成：" + failure_text(exc, "内部错误，详情见服务日志"))[:1500]
         if not export.document_id:
             error += "。未取得文档链接；创建结果可能未知，请检查飞书空间后再决定是否重试。"
         with sessions() as s:

@@ -9,6 +9,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool, tool
 
+from ..errors import UserInputError
 from .. import config
 from ..conflicts import ATTRIBUTES, UNRESOLVED, classify, conflict_problems, detect_conflicts, describe
 from ..context import Context
@@ -33,7 +34,7 @@ def _scope(runtime: ToolRuntime[Context]) -> list[int] | None:
 
 def _check_in_scope(material_id: int, scope: list[int] | None) -> None:
     if scope is not None and material_id not in scope:
-        raise ValueError(f"材料 {material_id} 不在用户本次选择的范围内，可用: {scope}")
+        raise UserInputError(f"材料 {material_id} 不在用户本次选择的范围内，可用: {scope}")
 
 
 def _recorder(context_store: ContextStore | None, context: Context | None, model_name: str):
@@ -116,7 +117,7 @@ def material_tools(
         """读取某份材料。chunk 是块号（从 1 开始，每块约 1500 字）；section 是 get_outline 里的章节编号。两者只填一个，都不填时读第 1 块。
         返回内容会注明共几块；需要完整内容时按顺序读完所有块。章节过长时只返回前几块，并注明从哪一块接着读。"""
         if chunk is not None and section is not None:
-            raise ValueError("chunk 和 section 只能填一个")
+            raise UserInputError("chunk 和 section 只能填一个")
         _check_in_scope(material_id, _scope(runtime))
         store.require_workspace([material_id])
         store.require_egress([material_id])
@@ -125,7 +126,7 @@ def material_tools(
             chunk = chunk or 1
             title, count, current = store.read_chunk(material_id, chunk)
             if not 1 <= chunk <= count or current is None:
-                raise ValueError(f"块号超出范围，材料 {material_id} 共 {count} 块")
+                raise UserInputError(f"块号超出范围，材料 {material_id} 共 {count} 块")
             name = f"材料 {material_id}《{title}》"
             where = f"（{current.section}）" if current.section else ""
             from ..knowledge.evidence import material_reference_artifact
@@ -136,7 +137,7 @@ def material_tools(
         sections = store.sections(material_id)
         target = next((s for s in sections if s.index == section), None)
         if target is None:
-            raise ValueError(f"章节编号超出范围，材料 {material_id} 共 {len(sections)} 个章节，请先调用 get_outline")
+            raise UserInputError(f"章节编号超出范围，材料 {material_id} 共 {len(sections)} 个章节，请先调用 get_outline")
         first, last = store.chunk_range(material_id, target.start, target.end)
         max_chars = _section_chars()
         text, length = store.section_text(material_id, target.start, target.end, max_chars)

@@ -18,6 +18,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
+from ..errors import UserInputError, failure_text
 from .. import config
 from ..clock import system_naive, tz_label
 from ..tracking.models import ScanLock
@@ -56,13 +57,13 @@ def parse_weekday(text: str) -> int:
         return int(value) - 1
     if value in _WEEKDAY_ALIASES:
         return _WEEKDAY_ALIASES[value]
-    raise ValueError(f"无法识别的星期：{text}（可写 1–7、周五、星期五）")
+    raise UserInputError(f"无法识别的星期：{text}（可写 1–7、周五、星期五）")
 
 
 def parse_time(text: str) -> str:
     m = re.fullmatch(r"(\d{1,2})[:：](\d{2})", str(text).strip())
     if not m or not (0 <= int(m.group(1)) < 24 and 0 <= int(m.group(2)) < 60):
-        raise ValueError(f"时间格式应为 HH:MM，例如 16:30（当前为 {text}）")
+        raise UserInputError(f"时间格式应为 HH:MM，例如 16:30（当前为 {text}）")
     return f"{int(m.group(1)):02d}:{m.group(2)}"
 
 
@@ -136,7 +137,7 @@ class Schedule:
 
     def set(self, weekday: int, time: str) -> WeeklySettings:
         if not 0 <= weekday <= 6:
-            raise ValueError("星期应为 0–6")
+            raise UserInputError("星期应为 0–6")
         time = parse_time(time)
         self.weekly.settings()
         with self._session() as s:
@@ -200,7 +201,7 @@ class Schedule:
             report, info = self.weekly.prepare(day)
         except Exception as e:  # 包括正在扫描（ScanBusy）：按失败记录，稍后重试
             log.exception("每周自动整理失败")
-            error = f"{type(e).__name__}: {e}"[:1000]
+            error = failure_text(e, "整理没有完成，详情见服务日志")[:1000]
             if not self._finish(run.id, RUN_FAILED, error=error):
                 return "原整理任务已中断，本次不再覆盖执行记录"
             if run.attempt > config.TRACKING_SCAN_RETRIES:

@@ -11,6 +11,7 @@ from fastapi import BackgroundTasks, FastAPI
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
+from ..errors import UserInputError
 from .. import api_docs as docs
 from ..llm import fresh_model_calls
 from ..todos.evidence import TodoEvidence
@@ -212,7 +213,7 @@ def register(app: FastAPI) -> None:
         elif body.action == "reset":
             r.reset(report_id, body.ids)
         else:
-            raise ValueError("操作只能是 confirm / exclude / reset")
+            raise UserInputError("操作只能是 confirm / exclude / reset")
         return detail(weekly().report(report_id))
 
     @app.put("/weekly/{report_id}/items/{evidence_id}", tags=[docs.WEEKLY], summary="修改一条记录（修改不等于确认）")

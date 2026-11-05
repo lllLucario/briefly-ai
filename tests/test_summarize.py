@@ -94,7 +94,8 @@ def test_chunk_that_keeps_failing_is_reported_not_dropped_silently(monkeypatch):
     model = FunctionModel(respond=by_chunk({1: [], 2: ConnectionError("boom"), 3: []}))
     result = extract_items(model, SOURCES)
     assert result.processed == 2 and result.total == 3
-    assert result.failed[0]["source"] == "1-2" and "boom" in result.failed[0]["error"]
+    assert result.failed[0]["source"] == "1-2" and "模型调用失败" in result.failed[0]["error"]
+    assert "boom" not in result.failed[0]["error"]  # 失败记录会给用户看，异常文字只进日志
     assert sum("第 2 块" in c[-1].content for c in model.calls) == 2  # 首次 + 重试 1 次
 
 

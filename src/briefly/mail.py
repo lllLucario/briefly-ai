@@ -15,6 +15,7 @@ from email.utils import formataddr, make_msgid
 from sqlalchemy import DateTime, Integer, String, Text, select
 from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
 
+from .errors import UserInputError
 from . import config
 from .db import Base
 
@@ -23,7 +24,7 @@ _EMAIL = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$")
 SENT, FAILED, UNKNOWN = "sent", "failed", "unknown"
 
 
-class MailNotConfigured(ValueError):
+class MailNotConfigured(UserInputError):
     """没有配置 SMTP。继承 ValueError，接口层返回 400。"""
 
 
@@ -55,7 +56,7 @@ def parse_addresses(value: str | list[str] | None) -> list[str]:
         if not item:
             continue
         if not _EMAIL.match(item):
-            raise ValueError(f"邮箱地址格式不对：{item}")
+            raise UserInputError(f"邮箱地址格式不对：{item}")
         if item.lower() not in {x.lower() for x in out}:
             out.append(item)
     return out
@@ -78,7 +79,7 @@ def _uncertain(e: Exception) -> bool:
 
 def _describe(e: Exception, send_started: bool = False) -> str:
     if send_started and _uncertain(e):
-        return f"发送结果不确定，邮件可能已发出，请先检查已发送邮件再重试（{type(e).__name__}: {e}）"
+        return "发送结果不确定，邮件可能已发出，请先检查已发送邮件再重试"
     if isinstance(e, smtplib.SMTPAuthenticationError):
         return "邮箱登录失败：请检查 SMTP_USER 和 SMTP_PASSWORD（QQ、163 等邮箱要填“授权码”，不是登录密码）"
     if isinstance(e, smtplib.SMTPDataError) and e.smtp_code == 554:
@@ -87,8 +88,8 @@ def _describe(e: Exception, send_started: bool = False) -> str:
     if isinstance(e, smtplib.SMTPRecipientsRefused):
         return f"收件人被邮件服务器拒绝：{', '.join(e.recipients)}"
     if isinstance(e, (OSError, smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected)):
-        return f"连接邮件服务器失败（{config.SMTP_HOST}:{config.SMTP_PORT}）：{e}"
-    return f"发送失败：{type(e).__name__}: {e}"
+        return f"连接邮件服务器失败（{config.SMTP_HOST}:{config.SMTP_PORT}），请检查邮箱配置和网络"
+    return "发送失败，详情见服务日志"
 
 
 def build_message(subject: str, body: str, to: list[str], cc: list[str], attachment: tuple[str, str] | None) -> EmailMessage:
@@ -114,7 +115,7 @@ def send_weekly(
         raise MailNotConfigured("未配置邮箱：请在 .env 中填写 SMTP_HOST、SMTP_USER、SMTP_PASSWORD（授权码）")
     to, cc = parse_addresses(to), parse_addresses(cc)
     if not to:
-        raise ValueError("请填写收件人")
+        raise UserInputError("请填写收件人")
     report = weekly.report(report_id)
     filename, text = weekly.export_markdown(report_id)  # 未完成的周报在这里报错
     name = (report.inputs or {}).get("name")

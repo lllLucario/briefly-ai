@@ -10,6 +10,7 @@ from briefly import config
 from briefly.agent import Agent
 from briefly.api import create_app
 from briefly.conflicts import FactConflict
+from briefly.llm import fresh_model_calls
 from briefly.skills import read_prompt
 from fakes import FunctionModel, structured
 from test_tracking_evidence import WEEK
@@ -165,6 +166,19 @@ def test_handing_over_to_assistant_does_not_read_digest_cache(env):
         assert calls["digest"] == 2
 
 
+def test_resending_after_retry_button_does_not_read_cache(env):
+    """网页“修改要求后重试”原样重发时带 fresh：同一句话不读缓存，结果仍写入；下一次普通提问读到新结果。"""
+    app, calls = digest_app(env)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        client.post("/chat", json=dict(text="帮我梳理周记的全部要点"))
+        client.post("/chat", json=dict(text="帮我梳理周记的全部要点"))
+        assert calls["digest"] == 1
+        assert client.post("/chat", json=dict(text="帮我梳理周记的全部要点", fresh=True)).status_code == 200
+        assert calls["digest"] == 2
+        client.post("/chat", json=dict(text="帮我梳理周记的全部要点"))
+        assert calls["digest"] == 2
+
+
 # ---- 单问捷径
 def test_shortcut_repeat_with_redo_words_calls_model_again(tmp_path):
     """同一句话带“重新”时不读缓存；不带时才是普通重复，继续命中。"""
@@ -197,6 +211,12 @@ def test_shortcut_repeat_with_redo_words_calls_model_again(tmp_path):
         for expected in (2, 3):
             agent.chat("重新查一下年假有几天", kb_id=kb.id)
             assert len(model.calls) == expected
+        # /chat 的 fresh 就是这个上下文：同一句话原样重发也不读缓存
+        agent.chat("年假有几天", kb_id=kb.id)
+        assert len(model.calls) == 3
+        with fresh_model_calls():
+            agent.chat("年假有几天", kb_id=kb.id)
+        assert len(model.calls) == 4
     finally:
         release_scope(token)
         engine.dispose()

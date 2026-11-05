@@ -7,15 +7,17 @@ from typing import Annotated
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from ..errors import UserInputError
 from .. import api_docs as docs
+from ..uploads import read_upload
 from .models import STATUS_NAMES, TODO, Todo, TodoActivity
 from .service import ConfirmationRequired, LinkedMaterial, TodoService
 
 
 class TodoIn(BaseModel):
-    title: str
+    title: str = Field(max_length=200)  # 超长时明确报错，不静默截断
     description: str = ""
     status: str = TODO  # todo / doing / done
     due_date: date | None = None
@@ -25,7 +27,7 @@ class TodoIn(BaseModel):
 class TodoPatch(BaseModel):
     """只修改传了的字段。"""
 
-    title: str | None = None
+    title: str | None = Field(default=None, max_length=200)
     description: str | None = None
     due_date: date | None = None
     parent_id: int | None = None  # 把没有子待办的顶级待办放到另一个顶级待办下
@@ -128,7 +130,7 @@ def register(app: FastAPI) -> None:
     def update_todo(todo_id: int, body: TodoPatch):
         fields = {k: getattr(body, k) for k in body.model_fields_set}
         if "title" in fields and fields["title"] is None:
-            raise ValueError("待办标题不能为空")
+            raise UserInputError("待办标题不能为空")
         return detail(svc().update(todo_id, **fields))
 
     @app.post("/todos/{todo_id}/status", tags=[docs.TODOS], summary="改状态（不连带父子待办；完成有未完成子待办的父待办需 confirm）")
@@ -168,7 +170,7 @@ def register(app: FastAPI) -> None:
     def upload(todo_id: int, file: Annotated[UploadFile, File(description="txt/md/doc/docx/pdf/xlsx/csv")]):
         if not file.filename:
             raise HTTPException(status_code=400, detail="缺少文件名")
-        material, created, _ = svc().upload(todo_id, file.filename, file.file.read())
+        material, created, _ = svc().upload(todo_id, file.filename, read_upload(file))
         return {"material_id": material.id, "title": material.title, "new_material": created, "materials": [material_out(m) for m in svc().materials(todo_id)]}
 
     @app.delete("/todos/{todo_id}/materials/{material_id}", tags=[docs.TODOS], summary="解除关联（材料、文件、追踪历史都保留）")

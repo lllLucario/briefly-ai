@@ -4,6 +4,7 @@ from collections.abc import Callable
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 
+from ..errors import UserInputError
 from .. import config
 from ..context import Context
 from ..feishu import FeishuError
@@ -22,7 +23,7 @@ def feishu_tools(store: MaterialStore, client_factory: Callable = default_client
             with client_factory() as client:
                 material, _ = import_link(client, store, url)
         except FeishuError as e:
-            raise ValueError(str(e)) from e
+            raise UserInputError(str(e)) from e
         context = runtime.context
         if context is not None and context.material_ids is not None and material.id not in context.material_ids:
             context.material_ids.append(material.id)  # 用户本次选了材料时，把刚读取的这份也纳入可访问范围

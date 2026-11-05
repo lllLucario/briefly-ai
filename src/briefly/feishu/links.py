@@ -2,6 +2,7 @@
 import re
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
+from ..errors import UserInputError
 
 DOCX, WIKI, BITABLE, MINUTES, FOLDER = "docx", "wiki", "bitable", "minutes", "folder"
 _HOSTS = ("feishu.cn", "larksuite.com", "larkoffice.com", "feishu.net")
@@ -36,16 +37,16 @@ def parse_link(url: str) -> FeishuLink:
     """解析飞书链接；不是飞书链接或类型不支持时抛出 ValueError（中文说明）。"""
     url = url.strip()
     if not looks_like_feishu(url):
-        raise ValueError(f"不是飞书链接：{url[:100]}")
+        raise UserInputError(f"不是飞书链接：{url[:100]}")
     parsed = urlparse(url)
     parts = [p for p in parsed.path.split("/") if p]
     for i, part in enumerate(parts[:-1]):
         if part in _UNSUPPORTED:
-            raise ValueError(_UNSUPPORTED[part])
+            raise UserInputError(_UNSUPPORTED[part])
         if part in _KINDS:
             token = parts[i + 1]
             if not re.fullmatch(r"[A-Za-z0-9]{10,64}", token):
-                raise ValueError(f"链接中的文档标识不完整：{token}")
+                raise UserInputError(f"链接中的文档标识不完整：{token}")
             query = parse_qs(parsed.query)
             return FeishuLink(
                 _KINDS[part],
@@ -54,7 +55,7 @@ def parse_link(url: str) -> FeishuLink:
                 view_id=(query.get("view") or [""])[0],
                 url=url,
             )
-    raise ValueError("无法识别的飞书链接：支持新版文档（/docx/）、知识库页面（/wiki/）、多维表格（/base/）和妙记（/minutes/）")
+    raise UserInputError("无法识别的飞书链接：支持新版文档（/docx/）、知识库页面（/wiki/）、多维表格（/base/）和妙记（/minutes/）")
 
 
 def find_links(text: str) -> list[str]:

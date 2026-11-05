@@ -23,6 +23,7 @@ from sqlalchemy import Engine, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from ..errors import UserInputError, failure_text
 from .. import config
 from ..feishu.docx import FeishuDoc
 from ..loaders import IMAGE_TYPES, SUPPORTED_TYPES, load_document
@@ -352,7 +353,7 @@ class Scanner:
             raise  # 模拟进程被杀：不收尾，记录保持 running，锁留到过期
         except Exception as e:
             log.exception("扫描失败")
-            self._finish(run.id, FAILED, stats, f"{type(e).__name__}: {e}")
+            self._finish(run.id, FAILED, stats, failure_text(e, "检查更新没有完成，详情见服务日志"))
             self._release()
             return ScanResult(run.id, FAILED, stats)
         self._finish(run.id, DONE, stats, "")
@@ -925,7 +926,7 @@ class Scanner:
                 pass  # 材料被删了，重新解析
         try:
             doc = load_document(filename, data)
-        except ValueError as e:
+        except UserInputError as e:
             return None, str(e)
         if not doc.text.strip():
             return None, "未从文件中提取到文字" + ("，可能是扫描版 PDF" if kind == "pdf" else "")

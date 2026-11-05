@@ -140,16 +140,22 @@ document.addEventListener("toggle", (e) => {
 // Markdown 渲染；本地渲染库不可用时退回纯文本
 // 材料正文的排版预览：Markdown、Word（导入时已转为 Markdown）、飞书文档。不加载外部图片；渲染库不可用时退回纯文本
 const RICH_TYPES = new Set(["md", "doc", "docx", "feishu"]);
+// 这些内容都可能受文档内容影响（包括被恶意文档诱导的模型回答）。不加载任何外部资源：
+// 一张图片的地址就能把回答里的内容带给外部服务器，而且不需要用户点击。
+const SAFE_MARKDOWN = {
+  FORBID_TAGS: ["img", "picture", "source", "video", "audio", "track", "svg", "math", "style", "form", "input"],
+  FORBID_ATTR: ["style", "background", "poster", "srcset"],
+};
 function renderMaterialMarkdown(text) {
   if (window.marked && window.DOMPurify) {
-    return DOMPurify.sanitize(marked.parse(text, { breaks: true }), { FORBID_TAGS: ["img", "style", "form", "input"], FORBID_ATTR: ["style"] });
+    return DOMPurify.sanitize(marked.parse(text, { breaks: true }), SAFE_MARKDOWN);
   }
   return `<div style="white-space:pre-wrap">${escapeHtml(text)}</div>`;
 }
 
 function renderMarkdown(text) {
   if (window.marked && window.DOMPurify) {
-    return DOMPurify.sanitize(marked.parse(text, { breaks: true }));
+    return DOMPurify.sanitize(marked.parse(text, { breaks: true }), SAFE_MARKDOWN);
   }
   return `<div style="white-space:pre-wrap">${escapeHtml(text)}</div>`;
 }
@@ -1300,16 +1306,19 @@ $("#composer").addEventListener("submit", async (e) => {
   $("#input").value = "";
   const requestThread = state.threadId;
   const view = state.viewRevision;
-  const ok = await sendChat({text, material_ids:[...state.picked], kb_id:$("#chat-kb").value || null});
+  // 点过“修改要求后重试”又原样发送：用户在要新结果，不能拿到缓存里的同一个答案
+  const fresh = state.retryText === text;
+  const ok = await sendChat({text, material_ids:[...state.picked], kb_id:$("#chat-kb").value || null, fresh});
   if (state.viewRevision !== view) return; // 等待期间切换了会话：不动其他会话的输入
-  if (!ok) { $("#input").value = text; return; } // 失败时把输入放回去
+  if (!ok) { $("#input").value = text; return; } // 失败时把输入放回去，重试标记也留着
+  state.retryText = null;
   state.picked.clear();
   state.drafts.delete(requestThread || "new");
   renderPicked();
 });
 
 // 发送一轮对话：输入框发送，或点“交给助理处理”用同一句话跳过意图判断重发（skip_funnel）。成功返回 true。
-async function sendChat({text, material_ids, kb_id, skip_funnel = false, corrects = null}) {
+async function sendChat({text, material_ids, kb_id, skip_funnel = false, corrects = null, fresh = false}) {
   const requestThread = state.threadId;
   const view = state.viewRevision;
   $("#chat-msg").classList.add("hidden");
@@ -1321,7 +1330,7 @@ async function sendChat({text, material_ids, kb_id, skip_funnel = false, correct
   previousActions.forEach(({button}) => button.disabled = true);
   let ok = false;
   try {
-    const r = await api("/chat", { method: "POST", json: { text, thread_id: requestThread, material_ids, kb_id, skip_funnel, corrects } });
+    const r = await api("/chat", { method: "POST", json: { text, thread_id: requestThread, material_ids, kb_id, skip_funnel, corrects, fresh } });
     ok = true;
     // 等待期间用户切换了会话时，不把旧任务的结果和能力设置带到新会话。
     if (state.viewRevision !== view) { loadSessions(); return ok; }

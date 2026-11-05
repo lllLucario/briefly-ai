@@ -90,7 +90,7 @@ def _token_request(http: httpx.Client, form: dict) -> dict:
     try:
         r = http.post(TOKEN_URL, json=form)
     except httpx.HTTPError as e:
-        raise FeishuError(f"无法连接飞书授权服务：{type(e).__name__}: {e}") from e
+        raise FeishuError("无法连接飞书授权服务，请检查网络后重试") from e
     try:
         body = r.json()
     except ValueError:

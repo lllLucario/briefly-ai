@@ -9,13 +9,14 @@ from sqlalchemy import delete, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
+from ..errors import UserInputError
 from .. import config
 from ..tracking.models import ScanLock
 
 log = logging.getLogger(__name__)
 
 
-class PrepareBusy(ValueError):
+class PrepareBusy(UserInputError):
     pass
 
 

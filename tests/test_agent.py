@@ -4,6 +4,7 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 
 from briefly import config
+from briefly.errors import UserInputError
 from briefly.agent import CONTEXT_OVERFLOW, Agent, build_system_prompt
 from briefly.skills import SKILLS
 from fakes import FunctionModel, fake, text_msg, tool_msg
@@ -103,7 +104,30 @@ def test_tool_error_is_reported_to_model_not_raised():
     agent = Agent(model, tools=[date_tool(fail=True)])
     assert agent.chat("x") == "工具出错了"
     result = model.calls[1][-1]
-    assert "工具执行失败" in result.content and "boom" in result.content
+    # 内部异常的文字不回传模型（模型在外部服务），只进日志
+    assert "工具执行失败" in result.content and "boom" not in result.content and "内部错误" in result.content
+
+
+def test_tool_error_written_for_the_caller_is_passed_to_model():
+    @tool
+    def get_current_date() -> str:
+        """d"""
+        raise UserInputError("页码超出范围")
+
+    model = fake(tool_msg("get_current_date", {}), text_msg("ok"))
+    assert Agent(model, tools=[get_current_date]).chat("x") == "ok"
+    assert "页码超出范围" in model.calls[1][-1].content
+
+
+def test_wrong_tool_arguments_are_passed_to_model_so_it_can_correct_them():
+    @tool
+    def add_days(days: int) -> str:
+        """d"""
+        return str(days)
+
+    model = fake(tool_msg("add_days", {"days": "不是数字"}), text_msg("ok"))
+    assert Agent(model, tools=[add_days]).chat("x") == "ok"
+    assert "days" in model.calls[1][-1].content and "内部错误" not in model.calls[1][-1].content
 
 
 def test_unknown_tool_is_reported_as_error():

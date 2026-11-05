@@ -227,7 +227,8 @@ def test_model_error_marks_report_failed(store, material):
     report = draft(weekly, [material.id])
     weekly.run_generation(report.id)
     failed = weekly.report(report.id)
-    assert failed.status == FAILED and "API 欠费" in failed.error
+    assert failed.status == FAILED and "周报生成失败" in failed.error
+    assert "API 欠费" not in failed.error and "RuntimeError" not in failed.error  # 异常文字只进日志
 
 
 def test_material_deleted_before_generation_is_reported(store, material):

@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from ..errors import UserInputError
 from .. import api_docs as docs
 from .diff import Differ, format_hunk
 from .scanner import ScanBusy
@@ -64,7 +65,7 @@ def register(app: FastAPI) -> None:
             return {"source": source_out(source), "scan": scan_out(scan)}
         if action == "remove":
             return {"source": source_out(s.remove_source(source_id)), "scan": None}
-        raise ValueError("操作只能是 pause / resume / remove")
+        raise UserInputError("操作只能是 pause / resume / remove")
 
     @app.get("/tracking/feishu-docs", tags=[docs.TRACKING], summary="飞书文档的追踪状态（材料页“追踪”一栏）")
     def feishu_docs():

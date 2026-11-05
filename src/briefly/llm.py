@@ -19,6 +19,8 @@ log = logging.getLogger(__name__)
 class ModelConfigurationError(RuntimeError):
     """模型配置缺失；可直接向用户显示，不包含配置值。"""
 
+    user_facing = True
+
 
 def missing_model_config() -> list[str]:
     """缺少的模型配置项名称，不含配置值。"""
@@ -35,18 +37,15 @@ def create_chat_model(*, max_retries: int | None = None, timeout: float | None =
             f"模型配置不完整：缺少 {'、'.join(missing)}。请在 .env 中设置后重启服务；材料管理等不需要模型的功能仍可使用。"
         )
     # 必须在创建SDK客户端之前设置；创建后修改模型字段不会重建连接层。
-    options = {}
-    if max_retries is not None:
-        options["max_retries"] = max_retries
-    if timeout is not None:
-        options["timeout"] = timeout
+    # SDK 默认读超时 600 秒、重试 2 次，一次调用最长占线程和会话锁约 30 分钟。默认值的理由见 config.py。
     return ChatOpenAI(
         model=config.MODEL,
         api_key=config.API_KEY,
         base_url=config.BASE_URL,
         max_tokens=config.MAX_TOKENS,
         extra_body=_thinking_body(),
-        **options,
+        max_retries=config.MODEL_MAX_RETRIES if max_retries is None else max_retries,
+        timeout=config.MODEL_TIMEOUT_S if timeout is None else timeout,
     )
 
 
