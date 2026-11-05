@@ -14,6 +14,10 @@ class UserInputError(ValueError):
     user_facing = True
 
 
+class PayloadTooLarge(UserInputError):
+    """提交的内容超过大小上限，接口返回 413。"""
+
+
 def is_user_facing(error: BaseException) -> bool:
     """这个异常的文字是否写给用户看（类上标了 user_facing）。"""
     return getattr(type(error), "user_facing", False)

@@ -37,6 +37,12 @@ CHUNK_SIZE = int(os.getenv("BRIEFLY_CHUNK_SIZE", "1500"))
 CHUNK_OVERLAP = int(os.getenv("BRIEFLY_CHUNK_OVERLAP", "150"))
 # 上传文件大小上限（MB）
 MAX_UPLOAD_MB = int(os.getenv("BRIEFLY_MAX_UPLOAD_MB", "10"))
+# 普通请求体（主要是 JSON）的总上限，只防滥用，不是业务限制。默认 32MB：粘贴上限 10MB 的文字经 JSON 转义最多约 20MB，
+# 再留余量。实际上限不低于 MAX_UPLOAD_MB 的 3 倍，调大上传上限时不会挡住粘贴。
+MAX_JSON_MB = int(os.getenv("BRIEFLY_MAX_JSON_MB", "32"))
+# 知识库单次批量上传的请求总量，在框架写临时文件之前生效。100MB 是保守占位，之后还要再改。
+# 目前接口里另有单批 50MB 的限制（knowledge/imports_api.py），所以 50～100MB 的批次会被接口拒绝。
+MAX_IMPORT_BATCH_MB = int(os.getenv("BRIEFLY_MAX_IMPORT_BATCH_MB", "100"))
 # W3知识入库：覆盖排队、解析及DOC回退后Docling的整文件总预算。
 PARSE_TIMEOUT_S = max(1, int(os.getenv("BRIEFLY_PARSE_TIMEOUT_S", "120")))
 KNOWLEDGE_DIR = os.getenv("BRIEFLY_KNOWLEDGE_DIR", "data/knowledge")

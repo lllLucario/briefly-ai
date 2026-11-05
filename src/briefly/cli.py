@@ -2,6 +2,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from .errors import PayloadTooLarge
 from . import config
 from .agent import Agent, sqlite_checkpointer
 from .db import create_db_engine
@@ -95,7 +96,10 @@ def repl(agent: Agent, skill: str | None) -> None:
                 print(f"读取失败: {e}")
                 continue
             line, material_ids = instruction.strip() or NO_INSTRUCTION, [material.id]
-        print(f"助手> {agent.chat(line, skill, material_ids=material_ids)}\n")
+        try:
+            print(f"助手> {agent.chat(line, skill, material_ids=material_ids)}\n")
+        except PayloadTooLarge as e:
+            print(f"输入太长: {e}")
 
 
 def main() -> None:
@@ -148,7 +152,10 @@ def main() -> None:
         text = sys.stdin.read()
         if args.extra:
             text = f"{text}\n\n【额外要求】{args.extra}"
-        result = agent.chat(text, args.skill)  # 过长的输入在 chat 里转存为材料
+        try:
+            result = agent.chat(text, args.skill)  # 过长的输入在 chat 里转存为材料
+        except PayloadTooLarge as e:
+            sys.exit(str(e))
     else:
         try:
             material, _ = add_file(agent, args.input)

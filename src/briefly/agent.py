@@ -30,7 +30,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from .errors import UserInputError, is_user_facing
+from .errors import PayloadTooLarge, UserInputError, is_user_facing
 from . import config, turn_timing
 from .compaction import Compactor
 from .context import Context
@@ -38,7 +38,7 @@ from .context_builder import CONTEXT_OVERFLOW, SYSTEM_REPLY, ContextBuilder, sys
 from .context_store import TURN, ContextStore
 from .db import create_db_engine
 from .llm import create_chat_model, fresh_model_calls
-from .materials import EgressRestricted, MaterialStore, wrap_material
+from .materials import EgressRestricted, MaterialStore, check_pasted_size, wrap_material
 from .output_check import INTERNAL_PATTERNS, PROGRAM_MATERIAL_REF, InternalTermCheck, reply_char_limit
 from .skills import SKILLS, read_prompt
 from .sources import conversation_material_ids
@@ -359,6 +359,8 @@ class Agent:
             return direct.text
         try:
             text, stored = self._preflight(text)
+        except PayloadTooLarge:
+            raise  # 超限要让接口返回 413，页面把输入放回去；不能当成一条普通回复
         except UserInputError as e:
             return str(e)
         if material_ids:
@@ -476,6 +478,7 @@ class Agent:
             return text, []
         if self.store is None:
             raise UserInputError(INPUT_TOO_LONG.format(tokens=tokens, limit=config.INPUT_INLINE_TOKENS))
+        check_pasted_size(text)
         material, _ = self.store.add_text(f"对话输入 {datetime.now():%m-%d %H:%M}", text)
         head, tail = text[:INPUT_HEAD_CHARS], text[-INPUT_TAIL_CHARS:]
         text = (

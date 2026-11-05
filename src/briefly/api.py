@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from . import api_docs as docs
 from . import auth, config, mail
-from .errors import MODEL_FAILED, MODEL_TIMEOUT, UserInputError, is_timeout, validation_response
+from .errors import MODEL_FAILED, MODEL_TIMEOUT, PayloadTooLarge, UserInputError, is_timeout, validation_response
 from .agent import Agent, new_thread_id, sqlite_checkpointer
 from .context_builder import SYSTEM_REPLY
 from .db import create_db_engine
@@ -32,7 +32,7 @@ from .llm import ModelConfigurationError, create_chat_model, fresh_model_calls, 
 from .llm_cache import ResponseCache, ResponseCacheScope, cache_stats
 from .logs import RequestContextMiddleware, configure_logging
 from . import material_library as library
-from .materials import TRACKED, Material, MaterialNotFound, MaterialStore
+from .materials import TRACKED, Material, MaterialNotFound, MaterialStore, check_pasted_size
 from .sessions import ChatSession, SessionStore
 from .skills import SKILLS
 from .turn_record import output_kinds
@@ -362,6 +362,10 @@ def create_app(
         # 内容为空、格式不支持、扫描件、文件损坏等，消息本身就是给用户看的中文说明。其他 ValueError 是程序问题，走统一的 500
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
+    @app.exception_handler(PayloadTooLarge)
+    def payload_too_large(request: Request, exc: PayloadTooLarge):
+        return JSONResponse(status_code=413, content={"detail": str(exc)})
+
     @app.exception_handler(UnicodeEncodeError)
     def unencodable_text(request: Request, exc: UnicodeEncodeError):
         # JSON 里的单独代理字符能通过校验，写库或算哈希时才失败。这是输入的问题，文字不回显
@@ -529,6 +533,7 @@ def create_app(
 
     @app.post("/materials", tags=[docs.MATERIALS], response_model=CreatedMaterial, status_code=201, summary="粘贴文本创建材料")
     def add_text(body: MaterialIn, store: Store, response: Response):
+        check_pasted_size(body.content)
         material, is_new = store.add_text(body.title, body.content)
         return created(store, material, is_new, response)
 
