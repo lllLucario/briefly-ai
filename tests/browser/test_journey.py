@@ -119,7 +119,10 @@ def test_week_load_disables_actions_and_failure_can_be_retried(web_page):
     expect(page.locator("#week-go")).to_have_text("重新加载")
     expect(page.locator("#week-inputs")).to_be_hidden()
     expect(page.locator("#week-delete")).to_be_hidden()
-    page.unroute("**/weekly/week", unavailable)
+    # 首屏结束时会再激活一次当前页并重取：等它结束，否则错误状态可能被它恢复，也可能撞上下面的放行
+    page.wait_for_load_state("networkidle")
+    # 不撤路由：撤掉页面上最后一个路由时，在途请求会被放行两次（见 test_ux_fixes.HeldRequests）
+    page.route("**/weekly/week", lambda route: route.continue_())
     page.locator('[data-tab="weekly"]').click()
     expect(page.locator("#week-go")).to_have_text("整理本周工作")
     expect(page.locator("#week-inputs")).to_be_visible()
