@@ -144,7 +144,10 @@ def test_first_failure_is_not_empty_and_refresh_failure_keeps_results(web_page):
     page.locator('.tabs [data-tab="materials"]').click()
     expect(page.locator("#material-rows")).to_contain_text("材料加载失败")
     expect(page.locator("#material-rows")).not_to_contain_text("还没有材料")
-    page.unroute("**/materials/library*", fail)
+    # 首屏结束时会再激活一次当前页并重取：等它结束，否则错误状态可能被它恢复，也可能撞上下面的放行
+    page.wait_for_load_state("networkidle")
+    # 不撤路由：撤掉页面上最后一个路由时，在途请求会被放行两次（见 test_ux_fixes.HeldRequests）
+    page.route("**/materials/library*", lambda route: route.continue_())
     page.locator("#material-rows [data-lib-retry]").click()
     expect(rows(page)).to_have_count(1)
     page.route("**/materials/library*", fail)

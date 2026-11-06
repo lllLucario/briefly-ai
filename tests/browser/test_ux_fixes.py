@@ -146,7 +146,8 @@ def test_tracked_files_failure_is_not_shown_as_empty(web_page):
     page.locator('#mat-tabs [data-mt="tracked"]').click()
     expect(page.locator("#tracking-msg")).to_contain_text("追踪的文件加载失败")
     expect(page.locator("#tracked-label")).to_have_text("追踪信息暂时读取不到")
-    page.unroute("**/tracking/**")
+    # 不撤路由：这里三个请求同时发出，第一个失败就显示错误，其余的可能还在途（原因见 HeldRequests）
+    page.route("**/tracking/**", lambda route: route.continue_())
     page.locator("[data-tracking-retry]").click()
     expect(page.locator("#tracking-msg")).to_be_hidden()
     expect(page.locator("#tracked-label")).to_have_text("还没有追踪的文件")
@@ -351,7 +352,8 @@ def test_generation_polling_survives_a_failed_refresh(web_page):
     page.route(f"**/weekly/{report}", server_error)
     page.evaluate("() => { weekly.current.status = 'running'; renderWeek(); }")
     expect(page.locator("#week-msg")).to_contain_text("正在自动重试", timeout=8000)
-    page.unroute(f"**/weekly/{report}")
+    # 不撤路由：页面每 3 秒重试，可能正好撞上（原因见 HeldRequests）
+    page.route(f"**/weekly/{report}", lambda route: route.continue_())
     # 恢复后继续刷新到真实状态：这一周其实没有在生成
     expect(page.locator("#week-msg")).to_be_hidden(timeout=8000)
     expect(page.locator("#week-go")).to_have_text("确认并生成周报")

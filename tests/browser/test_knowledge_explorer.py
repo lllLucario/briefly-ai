@@ -110,7 +110,10 @@ def test_outline_error_is_visible_and_can_retry(web_page):
     p.reload()
     p.locator('[data-tab="knowledge"]').click()
     expect(p.locator("#kb-inspector")).to_contain_text("结构暂不可用")
-    p.unroute("**/versions/*/outline")
+    # 首屏结束时会再激活一次当前页并重取：等它结束，否则错误状态可能被它恢复，也可能撞上下面的放行
+    p.wait_for_load_state("networkidle")
+    # 不撤路由：撤掉页面上最后一个路由时，在途请求会被放行两次（见 test_ux_fixes.HeldRequests）
+    p.route("**/versions/*/outline", lambda route: route.continue_())
     p.locator("[data-kb-inspect-retry]").click()
     expect(p.locator(".kb-outline")).to_contain_text("制度")
     p.route("**/versions/*/outline", lambda route: route.fulfill(content_type="application/json", body='{"total":1,"status":"source_deleted","items":[{"index":1,"section":null,"constraints":{}}]}'))
