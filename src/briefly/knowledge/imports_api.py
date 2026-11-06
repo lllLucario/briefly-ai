@@ -19,12 +19,17 @@ from .service import KnowledgeConflict, KnowledgeNotFound
 log = logging.getLogger(__name__)
 
 
+MB = 1024 * 1024
+BATCH_MB, BATCH_FILES = 50, 16  # 单批上限；中间件另按 MAX_IMPORT_BATCH_MB 限制请求体
+
+
 class RetryIn(BaseModel):
     reparse: bool = False
 
 
-def job_out(job):
-    return dict(id=job.id, kb_id=job.kb_id, filename=job.filename, source_key=job.source_key,
+def job_out(job, coverage=None):
+    """coverage：有内容没识别成文字时的覆盖情况，见 evidence.coverage。"""
+    return dict(coverage=coverage, id=job.id, kb_id=job.kb_id, filename=job.filename, source_key=job.source_key,
         relative_path=job.source_key.removeprefix("upload:") if job.source_key.startswith("upload:") else None,
         status="indexing" if job.status == "preview" else job.status, error_code=job.error_code, error=job.error,
         material_id=job.material_id, version_id=job.version_id, generation_id=job.generation_id,
@@ -56,6 +61,10 @@ def register(app):
             # 失败状态已由持久任务记录；不让一个文件阻止后台批次后续文件。
             log.exception("知识库后台导入任务失败")
 
+    @app.get("/knowledge-limits", tags=["知识库"], summary="知识库上传上限，页面提示和提交前检查用")
+    def limits():
+        return dict(file_mb=config.MAX_KNOWLEDGE_FILE_MB, batch_mb=BATCH_MB, batch_files=BATCH_FILES)
+
     @app.post("/knowledge-bases/{kb_id}/imports", status_code=202, tags=["知识库"])
     def upload(kb_id: str, background: BackgroundTasks,
                files: Annotated[list[UploadFile], File()],
@@ -71,10 +80,13 @@ def register(app):
             raise HTTPException(400, str(exc)) from exc
         with service.knowledge._session() as s:
             service.knowledge._kb(s, kb_id)
-        if not 1 <= len(files) <= 16 or source_key and len(files) != 1:
+        if not 1 <= len(files) <= BATCH_FILES or source_key and len(files) != 1:
             raise HTTPException(400, "每批1～16份文件，显式更新来源时每次一份")
-        if sum(file.size or 0 for file in files) > 50 * 1024 * 1024:
-            raise HTTPException(413, "批次超过50MB，请分批提交")
+        file_limit, batch_limit = config.MAX_KNOWLEDGE_FILE_MB * MB, BATCH_MB * MB
+        too_big = f"文件超过单文件 {config.MAX_KNOWLEDGE_FILE_MB}MB 上限，未接收"
+        # 超过单文件上限的逐份拒绝（分批也传不了），不计入批次；其余合计超过批次上限才整批拒绝
+        if sum(file.size or 0 for file in files if (file.size or 0) <= file_limit) > batch_limit:
+            raise HTTPException(413, f"批次超过{BATCH_MB}MB，请分批提交")
         paths = [None] * len(files)
         if relative_paths is not None:
             try:
@@ -94,15 +106,16 @@ def register(app):
                 raise HTTPException(400, "更新已有来源时不能另行指定目录")
         result, total = [], 0
         for number, file in enumerate(files):
-            data = bytearray()
-            while block := file.file.read(64 * 1024):
-                total += len(block)
-                if total > 50 * 1024 * 1024:
-                    raise HTTPException(413, "批次超过50MB；已接收文件可在任务列表核对，未接收文件请另批提交")
+            data, oversized = bytearray(), (file.size or 0) > file_limit
+            while not oversized and (block := file.file.read(64 * 1024)):
                 data.extend(block)
-                if len(data) > config.MAX_UPLOAD_MB * 1024 * 1024:
-                    # 单文件拒绝不终止整个批次，也不无限读取超大文件。
-                    break
+                oversized = len(data) > file_limit  # 单文件拒绝不终止整个批次，也不无限读取超大文件。
+                if not oversized and total + len(data) > batch_limit:
+                    raise HTTPException(413, f"批次超过{BATCH_MB}MB；已接收文件可在任务列表核对，未接收文件请另批提交")
+            if oversized:
+                result.append(dict(filename=file.filename, status="rejected", error=too_big))
+                continue
+            total += len(data)
             try:
                 job, _ = service.enqueue(kb_id, file.filename or "未命名", bytes(data),
                     request_key=f"{request_key}:{number}", tokens=tokens, source_key=source_key or ("upload:" + paths[number] if paths[number] else None),
@@ -122,7 +135,8 @@ def register(app):
         rows = service.jobs(kb_id)
         for job_id in service.pending_ids(kb_id):
             background.add_task(run, service.process, kb_id, job_id)
-        return [job_out(job) for job in rows]
+        partial = service.knowledge.material_coverage(job.material_id for job in rows)
+        return [job_out(job, partial.get(job.material_id)) for job in rows]
 
     @app.get("/knowledge-bases/{kb_id}/imports/{job_id}/outline", tags=["知识库"])
     def outline(kb_id: str, job_id: str):

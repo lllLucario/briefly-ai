@@ -11,7 +11,7 @@ from ..errors import UserInputError
 from ..clock import now_local, system_naive
 from ..materials import Material, MaterialChunk
 from .models import IndexGeneration, KnowledgeBase, KnowledgeBaseRemoval, KnowledgeChunk, KnowledgeEgressGrant, KnowledgeDocument, KnowledgePublication, KnowledgeVersion
-from .evidence import constraints, quality_snapshot
+from .evidence import constraints, coverage, quality_snapshot
 
 KB_REMOVED = "knowledge_base_deleted"  # 引用状态：所在的知识库已删除
 
@@ -205,6 +205,36 @@ class KnowledgeService:
                 .order_by(KnowledgeDocument.created_at, KnowledgeDocument.id)).all()
             return [(doc, publication.version_id if publication else None,
                      generation.status if generation else "not_indexed") for doc, publication, generation in rows]
+
+    def document_coverage(self, kb_id, document_ids=None):
+        """库内有内容没识别成文字的文档 {文档ID: dict(title, coverage)}。看发布版本，没发布的看最新版本。"""
+        with self._session() as s:
+            self._kb(s, kb_id)
+            rows = s.execute(select(KnowledgeDocument.id, KnowledgeDocument.title, KnowledgeVersion.id, KnowledgeVersion.number,
+                                    KnowledgePublication.version_id, Material.parse_report)
+                             .join(KnowledgeVersion, KnowledgeVersion.document_id == KnowledgeDocument.id)
+                             .join(Material, Material.id == KnowledgeVersion.material_id)
+                             .outerjoin(KnowledgePublication, KnowledgePublication.document_id == KnowledgeDocument.id)
+                             .where(KnowledgeDocument.kb_id == kb_id, KnowledgeDocument.deleted_at.is_(None))).all()
+        chosen = {}
+        for doc_id, title, version_id, number, published, report in rows:
+            rank = (version_id == published, number)
+            if doc_id not in chosen or rank > chosen[doc_id][0]:
+                chosen[doc_id] = (rank, title, report)
+        result = {}
+        for doc_id, (_, title, report) in chosen.items():
+            found = coverage(report)
+            if found and (document_ids is None or doc_id in document_ids):
+                result[doc_id] = dict(title=title, coverage=found)
+        return result
+
+    def material_coverage(self, material_ids):
+        ids = {i for i in material_ids if i is not None}
+        if not ids:
+            return {}
+        with self._session() as s:
+            rows = s.execute(select(Material.id, Material.parse_report).where(Material.id.in_(ids))).all()
+        return {material_id: found for material_id, report in rows if (found := coverage(report))}
 
     @staticmethod
     def _append(s, doc, material_id, business_version, *, number=None, slices=None, chunk_config=None):

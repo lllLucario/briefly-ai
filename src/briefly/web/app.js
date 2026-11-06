@@ -475,6 +475,7 @@ async function showMaterialDetail(id) {
       <details class="meta"><summary>技术信息</summary>编号 ${m.id} · ${m.char_count} 字 · ${m.chunk_count} 块 · ${m.section_count} 个章节 · 结构来源：${escapeHtml(m.structure || "-")}</details>
       ${warnings}
       <p class="muted small">${escapeHtml(sourceLabel(m))} · ${m.source === "tracked" ? "追踪最新版本 · 随追踪更新" : m.tracking_state && m.tracking_state !== "fixed" ? "固定副本 · 已开启追踪（这份内容不变，新版本另存为材料）" : "固定副本 · 原文件后续修改不会自动更新"}${m.tracking_note ? ` · ${escapeHtml(m.tracking_note)}` : ""} · 添加时间 ${fmtTime(m.created_at)}${m.warnings.length ? ` · ${m.warnings.length} 项解析提示，请先核对` : " · 未报告解析警告（不代表所有内容均已完整识别）"}</p>
+      ${materialHolds(m.egress_holds || [])}
       ${materialLinks(m.links || [])}
       <div class="detail-todos"><b>关联待办</b>${relatedCell({ ...m, id: `detail-${m.id}` })}</div>
       <div class="material-extras">
@@ -492,6 +493,14 @@ async function showMaterialDetail(id) {
         await api(`/links/${b.dataset.linkId}/${b.dataset.linkDecide}`, { method: "POST" });
         await showMaterialDetail(id);
       } catch (err) { b.disabled = false; uiAlert(err.message); }
+    });
+    box.querySelector("[data-hold-release]")?.addEventListener("click", async (e) => {
+      if (!await uiConfirm("解除后，这份材料按个人材料处理，内容可能发给模型。", { title: "解除禁止外发", ok: "解除限制", danger: true })) return;
+      e.target.disabled = true;
+      try {
+        await api(`/materials/${id}/egress-holds/release?confirm=true`, { method: "POST" });
+        await showMaterialDetail(id);
+      } catch (err) { e.target.disabled = false; uiAlert(err.message); }
     });
     const showBody = (mode) => {
       const rich = RICH_TYPES.has(m.file_type) && mode === "rich";
@@ -516,6 +525,14 @@ async function showMaterialDetail(id) {
   } catch (err) {
     box.innerHTML = `<div class="notice error">${escapeHtml(err.message)}</div>`;
   }
+}
+
+// 删除未允许外发的知识库时留下的标记：内容不发给模型，用户确认后才解除
+function materialHolds(holds) {
+  if (!holds.length) return "";
+  const from = holds.map((h) => `知识库“${escapeHtml(h.kb_name)}”中的《${escapeHtml(h.document_title)}》`).join("、");
+  return `<div class="notice warn" data-egress-hold>这份文件曾关联${from}，该库删除时未允许外发，所以内容不会发给模型。
+    <button class="ghost small" data-hold-release>解除限制</button></div>`;
 }
 
 // 与知识库文档的关联：疑似重复请用户确认或否认；已关联的说明外发限制（随所关联知识库的授权）

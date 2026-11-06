@@ -5,6 +5,7 @@
 由轮次收尾的 record_knowledge_turn 按本轮实际检索和实际发给模型的内容写进回复元数据。
 """
 import logging
+import re
 import uuid
 
 from langchain.agents.middleware import AgentMiddleware, ModelResponse, after_agent
@@ -15,6 +16,7 @@ from langchain_core.tools import tool
 from ..context import Context
 from ..context_builder import SYSTEM_REPLY
 from ..intent import _FOLLOW_UP, knowledge_question
+from .evidence import NOT_FOUND_NOTE
 from .qa import EGRESS_POLICY, EGRESS_REQUIRED, MAX_SUB_QUESTIONS, KnowledgeQA, cited_numbers
 from .retrieval import PARAMETERS, both_routes, relevance_floor, relevant, similarity
 from .service import KnowledgeNotFound, fingerprint
@@ -22,6 +24,10 @@ from .service import KnowledgeNotFound, fingerprint
 __all__ = ["KnowledgeAssistant", "KnowledgeSearchGuard", "MAX_SUB_QUESTIONS", "knowledge_tools", "record_knowledge_turn"]
 
 log = logging.getLogger(__name__)
+
+# 库里有文件没识别完时随依据告诉模型。只限定“没找到”的含义，事实仍只能来自依据
+NOT_FOUND_RULE = f"{NOT_FOUND_NOTE}依据里没有的内容仍按未提及回答，不要猜测；回答未提及时说明这一点。"
+_NOT_FOUND = re.compile(r"未提及|未找到|没有找到|没找到|没有提到|没提到|没有写|没写|未写|依据不足")
 
 
 class KnowledgeAssistant:
@@ -85,7 +91,8 @@ class KnowledgeAssistant:
                 e for e in evidence if (s := similarity(e)) is None or s >= floor or both_routes(e)]
         if not evidence:
             status = "low_relevance" if result["evidence"] else result["status"]
-            return dict(status=status, answer="当前知识库没有找到相关文档。", evidence=[])
+            note = NOT_FOUND_NOTE if self.knowledge.document_coverage(kb_id) else ""
+            return dict(status=status, answer="当前知识库没有找到相关文档。" + note, evidence=[])
         documents: dict[str, list[str]] = {}
         for item in evidence:
             sections = documents.setdefault(item["source"]["title"], [])
@@ -93,7 +100,12 @@ class KnowledgeAssistant:
             if (section := (item["section"] or "章节未确定").split(" > ")[-1]) not in sections:
                 sections.append(section)
         lines = [f"- 《{title}》：{'、'.join(sections)}" for title, sections in documents.items()]
-        return dict(status="located", evidence=evidence,
+        partial = self.knowledge.document_coverage(kb_id)
+        warnings = [f"《{partial[doc_id]['title']}》{partial[doc_id]['coverage']['notice']}"
+                    for doc_id in dict.fromkeys(e["document_id"] for e in evidence) if doc_id in partial]
+        if partial and not warnings:
+            warnings.append(NOT_FOUND_NOTE)
+        return dict(status="located", evidence=evidence, warnings=warnings,
                     answer="以下文档与问题相关（按相关度排列，仅定位位置，请打开原文核对）：\n" + "\n".join(lines))
 
     def search(self, kb_id: str, questions: list[str], start: int = 1, max_questions: int = MAX_SUB_QUESTIONS) -> dict:
@@ -133,11 +145,12 @@ def knowledge_tools(assistant: KnowledgeAssistant) -> list:
             return "用户选择的知识库已被删除，无法检索。请如实告知用户，不要凭记忆回答，并提示重新选择知识库。", {}
         ready = result["status"] == "ready"
         artifact = dict(status=result["status"], knowledge=dict(
-            kb_id=kb_id, status=result["status"], questions=questions,
+            kb_id=kb_id, status=result["status"], questions=questions, not_found_note=result.get("not_found_note"),
             references=result["references"] if ready else [], warnings=result["warnings"],
             egress=result["egress"] if ready else None))
         if ready:
-            return result["payload_text"] + ("\n\n" + "\n".join(result["warnings"]) if result["warnings"] else ""), artifact
+            notes = result["warnings"] + ([NOT_FOUND_RULE] if result.get("not_found_note") else [])
+            return result["payload_text"] + ("\n\n" + "\n".join(notes) if notes else ""), artifact
         if result["status"] not in {"low_relevance", "external_authorization_required"} and not result["authorized"]:
             return EGRESS_REQUIRED, artifact  # 受限依据的限定摘录也只在授权后发给模型
         return result["answer"], artifact
@@ -254,6 +267,9 @@ def record_knowledge_turn(state, runtime):
         warnings = list(dict.fromkeys(w for s in searches for w in s["warnings"]))
         if cited - labels:
             warnings.append("回答含无法定位的依据编号，请核对原文。")
+        note = next((s["not_found_note"] for s in searches if s.get("not_found_note")), None)
+        if note and note not in warnings and (not cited or _NOT_FOUND.search(reply.text)):
+            warnings.append(note)  # 没给依据或说了没找到：程序补限定，不只靠模型照做
         knowledge = dict(kb_id=searches[-1]["kb_id"], status=searches[-1]["status"], warnings=warnings,
                          references=[r for r in refs if int(r["label"].removeprefix("依据")) in cited],
                          egress=_turn_egress(turn, searches),

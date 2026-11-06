@@ -521,7 +521,7 @@
   </main>
   <dialog id="kb-upload-dialog" aria-labelledby="kb-upload-title"><div class="kb-create-heading"><h3 id="kb-upload-title">添加资料</h3><button id="kb-upload-close" class="ghost" aria-label="关闭添加资料">×</button></div>
         <section class="knowledge-section">
-          <p class="muted small">每批最多16份、合计50MB。上传后自动解析、切片并建立索引。结构未确认的资料会保留复核提醒。</p>
+          <p class="muted small"><span data-kb-limits>每批最多16份、合计50MB，单个文件不超过50MB。</span>上传后自动解析、切片并建立索引。结构未确认的资料会保留复核提醒。</p>
           <p id="kb-update-target" class="muted small"></p>
           <div class="kb-file-zone"><svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg><strong>添加文件或整个文件夹</strong><p>文件夹会包含其中支持的文件及子文件夹。</p>
             <div class="row gap wrap"><button id="kb-pick-files" type="button" class="ghost">选择文件</button><button id="kb-pick-folder" type="button" class="ghost">选择文件夹</button></div>
@@ -543,7 +543,7 @@
       <div class="kb-file-zone"><svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg><strong>添加知识库资料</strong><p>选择文件或文件夹，包含子文件夹中的支持格式。</p>
         <div class="row gap wrap"><label class="button" for="kb-create-files">选择文件</label><input id="kb-create-files" class="visually-hidden" type="file" multiple accept=".txt,.md,.doc,.docx,.pdf,.xlsx,.xls,.csv,.pptx,.ppt,.png,.jpg,.jpeg,.bmp,.tif,.tiff,.webp">
           <label class="button" for="kb-create-folder">选择文件夹</label><input id="kb-create-folder" class="visually-hidden" type="file" webkitdirectory multiple></div>
-        <small class="muted">支持 Word、PDF、Excel、PPT、文本和图片。多个文件自动分批上传。</small>
+        <small class="muted">支持 Word、PDF、Excel、PPT、文本和图片。多个文件自动分批上传。<span data-kb-limits>每批最多16份、合计50MB，单个文件不超过50MB。</span></small>
       </div>
       <div id="kb-create-selection" aria-live="polite"></div>
       <div class="kb-slice-setting"><label for="kb-create-tokens">切片目标</label><details class="kb-help"><summary aria-label="了解切片目标">?</summary><p>系统会把长文档拆成便于检索的小片段。这里设置每段的目标长度，单位是模型使用的文本计量单位（token），不等于字数。默认 512，通常无需修改；标题和上下文也会计入长度，表格会尽量保留完整行。上传后会自动解析、切片并建立索引，无需审批；解析质量限制仍会保留。</p></details>

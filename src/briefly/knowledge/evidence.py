@@ -1,5 +1,6 @@
 """解析不确定性的引用边界；受限证据只给带限定的摘录，不生成精确归属。"""
 from copy import deepcopy
+import re
 
 QUALITY_KEYS=("document_quality", "table_structure_status", "restored_source_paragraphs",
               "unverified_table_segments", "object_anchors", "textbox_provenance", "textbox_markdown_range",
@@ -39,6 +40,67 @@ NOTES={
     "cell_attribution":"表格单元格归属仍待复核，不能据此给出确定的行列对应结论。",
     "ocr_text":"这段文字来自图片识别且置信度低，可能有错字漏字，不能据此给出确定结论。",
 }
+
+
+_OCR_REASONS = dict(time_budget="超过识别时长预算", page_limit="到达识别页数上限", image_limit="到达图片数量上限")
+_EMPTY_PAGES = re.compile(r"第 (.+?) 页几乎没有文字")
+NOT_FOUND_NOTE = "库里有文件未识别完，没找到不代表文件里没有。"
+
+
+def _count(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def _skipped_page_count(pages):
+    """pdf._page_list 的写法：“3、5、7”或“3、5 等 382 页”。"""
+    if match := re.search(r"等 (\d+)", pages):
+        return int(match[1])
+    return len(pages.split("、"))
+
+
+def _disabled_reason(warning):
+    if "已关闭" in warning:
+        return "图片文字识别已关闭"
+    return "未安装本地图片文字识别" if "未安装" in warning else "当时没有做图片文字识别"
+
+
+def coverage(report):
+    """文件里没有识别成文字的内容：{unit, total, recognized, unrecognized, reasons, notice}；都识别了或看不出来时返回 None。
+    只读解析报告，旧数据不用重新解析。没开识别时报告里只有警告文字，所以从警告里取。"""
+    report = report if isinstance(report, dict) else {}
+    warnings = [w for w in report.get("warnings") or () if isinstance(w, str)]
+    ocr = report.get("ocr") if isinstance(report.get("ocr"), dict) else None
+    pages = report.get("parser") in {"pdfplumber", "rapidocr"}
+    if ocr is not None:
+        skipped = ocr.get("skipped") if isinstance(ocr.get("skipped"), dict) else {}
+        reasons = [text for code, text in _OCR_REASONS.items() if _count(skipped.get(code))]
+        failed = _count(ocr.get("failed"))
+        if failed:
+            reasons.append("识别失败")
+        unrecognized = failed + sum(_count(skipped.get(code)) for code in _OCR_REASONS)
+        pages = pages or (_count(ocr.get("pages_recognized")) > 0 and not _count(ocr.get("images_recognized")))
+        recognized = _count(ocr.get("pages_recognized" if pages else "images_recognized"))
+    else:
+        reasons, unrecognized, recognized = [], 0, 0
+        for warning in warnings:
+            if pages and (match := _EMPTY_PAGES.search(warning)):
+                unrecognized = _skipped_page_count(match[1])
+            elif "未识别图片里的文字" in warning:
+                unrecognized, reasons = _count(report.get("pictures")) or unrecognized, [_disabled_reason(warning)]
+        if unrecognized and not reasons:
+            note = next((w for w in warnings if "没有文字层的页未识别" in w), "")
+            reasons = [_disabled_reason(note)]
+    if not unrecognized:
+        return None
+    if pages:
+        total = _count(report.get("pages")) or _count(report.get("frames"))
+    else:
+        total = _count(report.get("pictures"))
+    total = max(total, recognized + unrecognized)
+    why = "、".join(reasons)
+    head = f"{total} 页中有 {unrecognized} 页" if pages else f"{total} 张图片中有 {unrecognized} 张"
+    return dict(unit="page" if pages else "image", total=total, recognized=recognized, unrecognized=unrecognized,
+                reasons=reasons, notice=f"{head}未识别（{why}），这些内容检索不到。")
 
 
 def material_quality_notice(store, material_ids):

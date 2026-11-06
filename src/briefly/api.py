@@ -120,6 +120,8 @@ class MaterialDetail(MaterialOut):
     parse_report: dict
     # 与知识库文档的关联（explicit / suggested / confirmed），见 links.LinkService.material_links
     links: list[dict] = []
+    # 删除未允许外发的知识库时留下的“禁止外发”标记，见 links.EgressHold
+    egress_holds: list[dict] = []
 
 
 class CreatedMaterial(BaseModel):
@@ -596,8 +598,21 @@ def create_app(
         sections = [SectionOut(index=s.index, level=s.level, title=s.title, path=s.path) for s in store.sections(m.id)]
         return MaterialDetail(
             **summary(store, m).model_dump(), content=m.content, sections=sections, parse_report=m.parse_report,
-            links=app.state.links.material_links(m.id),
+            links=app.state.links.material_links(m.id), egress_holds=app.state.links.material_holds(m.id),
         )
+
+    @app.post("/materials/{material_id}/egress-holds/release", tags=[docs.MATERIALS],
+              summary="解除“禁止外发”标记，之后按个人材料处理；必须 confirm=true")
+    def release_egress_holds(material_id: int, store: Store, principal: Annotated[auth.Principal, Depends(auth.current_principal)],
+                             confirm: bool = False):
+        from .todos.service import ConfirmationRequired
+
+        store.get(material_id, content=False)  # 不存在时 404
+        if not confirm:
+            raise ConfirmationRequired("解除后，这份材料的内容可能发给模型。请明确确认。")
+        released = app.state.links.release_holds(material_id)
+        log.info("解除禁止外发标记 material_id=%s count=%s principal=%s", material_id, released, principal.id)
+        return dict(material_id=material_id, released=released)
 
     @app.post("/links/{link_id}/confirm", tags=[docs.MATERIALS], summary="确认疑似关联：工作区文件与知识库文档是同一份")
     def confirm_link(link_id: int):

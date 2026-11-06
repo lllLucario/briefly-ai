@@ -369,10 +369,11 @@ class MaterialStore:
                 if material_id in (report.material_ids or []):
                     report.material_ids = [i for i in report.material_ids if i != material_id]
                     report.removed_materials = [*(report.removed_materials or []), removed]
-            from .links import DocumentLink
+            from .links import DocumentLink, EgressHold
 
-            # 按材料记的关联随材料离开工作区一并去掉（追踪文件的关联跟着文件走）
+            # 按材料记的关联和“禁止外发”标记随材料离开工作区一并去掉（追踪文件的跟着文件走）
             s.execute(delete(DocumentLink).where(DocumentLink.material_id == material_id))
+            s.execute(delete(EgressHold).where(EgressHold.material_id == material_id))
             if knowledge_referenced(s, [material_id]):
                 # 与知识库共用的同一条记录（用户先上传、或另行添加过）：在工作区删除只是移出工作区，
                 # 知识库的来源正文、版本与引用不受影响；记录转回知识库专属，追踪版本不再指向它

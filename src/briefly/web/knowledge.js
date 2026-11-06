@@ -75,6 +75,15 @@
   window.holdLoginRedirect = () => Boolean(creation) || createFiles.length > 0
     || [...drafts.values()].some(d => d.files?.length)
     || [...uploadQueues.values()].some(batches => batches.some(batch => batch.files.length));
+  // 上传上限以服务端为准；取不到时用默认值，服务端仍会逐份核对
+  let limits = {file_mb:50, batch_mb:50, batch_files:16};
+  const fileLimitMb = () => Math.min(limits.file_mb, limits.batch_mb);
+  const oversized = files => files.find(file => file.size > fileLimitMb() * 1024 * 1024);
+  const oversizedText = file => `《${file.name}》超过单个文件 ${fileLimitMb()}MB 的上限，请移除后再提交。`;
+  async function loadLimits() {
+    try { limits = await api("/knowledge-limits"); } catch (_) { /* 用默认值 */ }
+    document.querySelectorAll("[data-kb-limits]").forEach(el => { el.textContent = `每批最多${limits.batch_files}份、合计${limits.batch_mb}MB，单个文件不超过${fileLimitMb()}MB。`; });
+  }
   async function uploadBatch(kbId, batch, changed) {
     {
       // 失败的结果不缓存，否则重新登录后重试还会失败
@@ -132,7 +141,7 @@
     const batches = []; let group = [], size = 0;
     const flush = () => { if (group.length) batches.push({key:crypto.randomUUID(), tokens, files:group, state:"queued", title:group.length === 1 ? group[0].name : `${group[0].name} 等 ${group.length} 份文件`}); group = []; size = 0; };
     for (const file of files) {
-      if (group.length === 16 || size + file.size > 50 * 1024 * 1024) flush();
+      if (group.length === limits.batch_files || size + file.size > limits.batch_mb * 1024 * 1024) flush();
       group.push(file); size += file.size;
     }
     flush();
@@ -175,7 +184,7 @@
         const key = `kb-folder:${current}:${path}/${name}`;
         return `<details class="kb-folder" data-disclosure="${escapeHtml(key)}" ${disclosureOpen(key, true)}><summary>${fileIcon("folder")}<span>${escapeHtml(name)}</span></summary><div>${branch(child, path + "/" + name)}</div></details>`;
       }).join("") + node.files.sort((a,b) => a.name.localeCompare(b.name,"zh")).map(({doc, name}) => `<div class="kb-tree-row" data-kb-doc="${escapeHtml(doc.id)}">
-        <button type="button" class="kb-tree-file" data-kb-document="${escapeHtml(doc.id)}" aria-pressed="${d.fileKey === `doc:${doc.id}`}" title="${escapeHtml(doc.relative_path || doc.title)}">${fileIcon(doc.title.split(".").at(-1))}<span><strong>${escapeHtml(name)}</strong><small>修订 ${doc.revision} · ${doc.index_status === "ready" ? "已有有效索引" : "尚无有效索引"}</small></span>${doc.workspace_update ? '<span class="kb-update-dot" title="工作区有更新">•</span>' : ""}</button></div>`).join("");
+        <button type="button" class="kb-tree-file" data-kb-document="${escapeHtml(doc.id)}" aria-pressed="${d.fileKey === `doc:${doc.id}`}" title="${escapeHtml(doc.relative_path || doc.title)}">${fileIcon(doc.title.split(".").at(-1))}<span><strong>${escapeHtml(name)}</strong><small>修订 ${doc.revision} · ${doc.index_status === "ready" ? "已有有效索引" : "尚无有效索引"}</small>${doc.coverage ? '<small class="kb-coverage-tag" data-kb-partial>部分内容未识别</small>' : ""}</span>${doc.workspace_update ? '<span class="kb-update-dot" title="工作区有更新">•</span>' : ""}</button></div>`).join("");
     }
     const html = branch(root) || `<p class="muted small kb-tree-empty">${query ? "没有匹配的文件" : "当前库暂无文档，请添加资料，系统将自动处理入库。"}</p>`;
     const signature = JSON.stringify([current,d.documents,query,d.fileKey]);
@@ -224,7 +233,7 @@
     if (d.fileKey !== key) { d.fileKey = key; d.fileVersion = null; }
     else if (!force) { versionId = d.fileVersion || null; }
     d.fileVersion = versionId;
-    const signature = JSON.stringify([id,key,doc?.revision,doc?.workspace_update,job?.status,job?.chunk_count,versionId]);
+    const signature = JSON.stringify([id,key,doc?.revision,doc?.workspace_update,doc?.coverage,job?.status,job?.chunk_count,job?.coverage,versionId]);
     if (!force && inspectionSignature === signature) return;
     inspectionSignature = signature;
     const seq = ++inspectionSequence, pane = $("#kb-inspector");
@@ -251,6 +260,7 @@
         <div class="kb-file-stats"><span><b>${total}</b> 个片段</span><span>片段目标 <b>${version?.chunk_config?.parameters?.tokens || job?.tokens || config?.tokens || "—"}</b></span>${version ? `<label>版本 <select id="kb-inspect-version" aria-label="查看文件版本">${[...versions].reverse().map(item => `<option value="${escapeHtml(item.id)}" ${item.id === version.id ? "selected" : ""}>第 ${item.number} 版${item.id === doc.active_version_id ? "（当前可检索）" : "（未发布或历史）"}</option>`).join("")}</select></label>` : ""}</div>
         <div class="row gap wrap kb-file-actions">${doc ? `<button class="ghost small" data-kb-update="${doc.id}">更新</button>${doc.index_status === "ready" ? `<button class="ghost small" data-kb-copy="${doc.id}">复制到工作区</button>` : ""}<button class="ghost small danger" data-kb-remove="${doc.id}">移出知识库</button>` : ""}</div>
         ${doc?.workspace_update ? `<p class="notice warn small" data-kb-workspace-update="${doc.id}">工作区有更新（${escapeHtml(fmtTime(doc.workspace_update.updated_at))}，《${escapeHtml(doc.workspace_update.title)}》），知识库仍为第 ${doc.workspace_update.version} 版。需要时请用“更新”导入新版本后将自动建立索引；工作区改动不会自动同步。</p>` : ""}
+        ${(doc?.coverage || job?.coverage) ? `<p class="notice warn small" data-kb-coverage>${escapeHtml((doc?.coverage || job.coverage).notice)}问答可能找不到这部分内容；需要时请核对原文件。</p>` : ""}
         ${job && job.status !== "ready" ? `<p class="notice small">${escapeHtml(job.error || "系统正在自动解析并建立索引，完成后即可用于知识问答。")}</p>` : ""}
         ${rows.some(row => Object.keys(row.constraints || {}).length) ? '<p class="kb-quality-note">部分标题或识别信息存在不确定性，问答会标明相关限制。</p>' : ""}
         ${["source_changed","source_deleted","source_missing","document_removed"].includes(outlineStatus) ? '<p class="notice warn">原文已变化或不可用，请更新文件后查看结构。</p>' : `<div class="kb-outline">${renderOutline(rows)}</div>`}`;
@@ -319,7 +329,7 @@
     $("#kb-import-history").open = pending;
     $("#kb-import-history").classList.toggle("hidden", !jobs.length);
     $("#kb-jobs").innerHTML = jobs.map(job => `<div class="knowledge-row" data-kb-job="${escapeHtml(job.id)}"><button class="kb-job-file" data-kb-select-job="${escapeHtml(job.id)}">${fileIcon(job.filename.split(".").at(-1))}${escapeHtml(job.relative_path || job.filename)}</button>
-      <span>${escapeHtml(names[job.status] || job.status)}</span>${job.chunk_count ? `<span class="muted small">${job.chunk_count} 个原文片段</span>` : ""}
+      <span>${escapeHtml(names[job.status] || job.status)}</span>${job.chunk_count ? `<span class="muted small">${job.chunk_count} 个原文片段</span>` : ""}${job.coverage ? '<span class="kb-coverage-tag small" data-kb-partial>部分内容未识别</span>' : ""}
 
       ${job.status === "failed" ? `<button class="ghost small" data-kb-retry="${escapeHtml(job.id)}">重试此文件</button><button class="ghost small" data-kb-reparse="${escapeHtml(job.id)}">重新解析</button>` : ""}
       ${job.error ? `<p class="danger small">${escapeHtml(job.error)}</p>` : ""}</div>`).join("");
@@ -363,6 +373,7 @@
   window.pauseKnowledge = () => { revision++; clearTimeout(timer); $("#kb-source").close(); $("#kb-settings-dialog").close(); $("#kb-create-dialog").close(); $("#kb-upload-dialog").close(); inspectionSequence++; inspectionSignature = ""; };
   window.loadKnowledge = async () => {
     const rev = ++revision;
+    loadLimits();
     try {
       bases = await api("/knowledge-bases");
       if (revision !== rev) return;
@@ -429,9 +440,8 @@
       const lines = [
         `确定删除知识库《${preview.name}》吗？删除后不能恢复。`,
         `这个库的 ${preview.documents} 份文件，连同切片、索引、解析结果和外发授权，都会一并删除。`,
-        preview.workspace_links
-          ? `工作区材料不会删除，但有 ${preview.workspace_links} 条与本库的关联会断开：相关材料不再继承本库的外发限制，之后按个人材料规则可能发给模型。`
-          : "工作区材料不受影响。",
+        preview.workspace_links ? `工作区材料不会删除，有 ${preview.workspace_links} 条与本库的关联会断开。` : "工作区材料不受影响。",
+        ...(preview.egress_holds ? [`本库未允许外发：其中 ${preview.egress_holds} 份已关联的材料删除后继续禁止发给模型，之后可以在材料页解除限制。`] : []),
         "历史回答保留原样，打开其中的引用时会提示来源已删除。助理不再检索这个库。",
       ];
       if (!await uiConfirm(lines.join("\n"), {title:"删除知识库", ok:"删除", danger:true})) return;
@@ -453,7 +463,7 @@
     if (creation && !creation.error) return;
     const files = [...createFiles], tokens = Number($("#kb-create-tokens").value);
     if (!Number.isInteger(tokens) || tokens < 32 || tokens > 512) { $("#kb-create-error").textContent = "切片目标须为 32～512 之间的整数。"; $("#kb-create-tokens").focus(); return; }
-    if (files.some(file => file.size > 50 * 1024 * 1024)) { $("#kb-create-error").textContent = "有文件超过单批 50MB 的接收上限，请移除该文件后再提交。"; return; }
+    if (oversized(files)) { $("#kb-create-error").textContent = oversizedText(oversized(files)); return; }
     const rev = revision;
     creation = {name, error:""};
     $("#kb-create-dialog").close(); renderLibraryState();
@@ -484,7 +494,7 @@
   $("#kb-upload").addEventListener("click", async () => {
     const id = current, d = draft(id), files = [...d.files], target = d.target;
     if (!files.length || target && files.length !== 1) { $("#kb-upload-error").textContent = "请选择文件；更新同一来源时只选择一份。"; return; }
-    if (files.some(file => file.size > 50 * 1024 * 1024)) { $("#kb-upload-error").textContent = "有文件超过单批50MB上限，请移除后再提交。"; return; }
+    if (oversized(files)) { $("#kb-upload-error").textContent = oversizedText(oversized(files)); return; }
     const tokens = Number($("#kb-tokens").value);
     if (!Number.isInteger(tokens) || tokens < 32 || tokens > 512) { $("#kb-upload-error").textContent = "切片目标须为 32～512 之间的整数。"; $("#kb-tokens").focus(); return; }
     $("#kb-upload-dialog").close();

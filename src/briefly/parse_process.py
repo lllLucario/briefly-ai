@@ -92,8 +92,8 @@ def load_isolated(filename, data, *, timeout=None):
 def _load_isolated(filename, data, *, timeout=None):
     """总预算包含排队、启动、DOC直读/回退、Docling和结果校验；不写业务库。"""
     file_type(filename)
-    if not data or len(data) > config.MAX_UPLOAD_MB * 1024 * 1024:
-        raise ParseFailure("invalid_size", f"文件为空或超过{config.MAX_UPLOAD_MB}MB上限")
+    if not data or len(data) > config.MAX_KNOWLEDGE_FILE_MB * 1024 * 1024:  # 这个入口只有知识入库在用
+        raise ParseFailure("invalid_size", f"文件为空或超过{config.MAX_KNOWLEDGE_FILE_MB}MB上限")
     timeout = config.PARSE_TIMEOUT_S if timeout is None else timeout
     if timeout <= 0:
         raise ValueError("解析总预算必须大于0")

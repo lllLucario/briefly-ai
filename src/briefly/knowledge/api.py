@@ -149,8 +149,9 @@ def register(app: FastAPI,model_factory):
     def documents(kb_id: str):
         states = service.document_states(kb_id)
         updates = app.state.links.document_updates([d.id for d, _, _ in states])  # 关联的工作区文件有更新（改稿提醒）
+        partial = service.document_coverage(kb_id)  # 有内容没识别成文字的文档
         return [dict(**document_out(d), active_version_id=version_id, index_status=index_status,
-                     workspace_update=updates.get(d.id))
+                     workspace_update=updates.get(d.id), coverage=partial.get(d.id, {}).get("coverage"))
                 for d, version_id, index_status in states]
 
     @app.post("/knowledge-bases/{kb_id}/documents/{doc_id}/copy-to-workspace", tags=["知识库"],

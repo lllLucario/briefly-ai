@@ -73,8 +73,8 @@ class ImportService:
         if not source_key.strip() or len(source_key) > 200 or expected_revision < 0:
             raise UserInputError("来源标识或修订号无效")
         self.knowledge._business_version(business_version)
-        if not data or len(data) > config.MAX_UPLOAD_MB * 1024 * 1024:
-            raise UserInputError("上传文件为空或超过单文件上限")
+        if not data or len(data) > config.MAX_KNOWLEDGE_FILE_MB * 1024 * 1024:
+            raise UserInputError(f"上传文件为空或超过单文件 {config.MAX_KNOWLEDGE_FILE_MB}MB 上限")
         if type(tokens) is not int or not 32 <= tokens <= 1024:
             raise UserInputError("切片预算须为32～1024token")
         digest = fingerprint(dict(filename=filename, sha256=hashlib.sha256(data).hexdigest(), source=source_key,

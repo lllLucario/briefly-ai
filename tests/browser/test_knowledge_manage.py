@@ -85,7 +85,7 @@ def test_confirm_mentions_workspace_links(web_page):
     p.locator("[data-kb-copy]").click()
     expect(p.locator("#kb-message")).to_contain_text("已把")
     open_delete(p)
-    for text in ("1 条与本库的关联会断开", "不再继承本库的外发限制", "工作区材料不会删除"):
+    for text in ("1 条与本库的关联会断开", "1 份已关联的材料删除后继续禁止发给模型", "在材料页解除限制", "工作区材料不会删除"):
         expect(p.locator("#ui-message")).to_contain_text(text)
     p.locator("#ui-ok").click()
     expect(p.locator("#kb-empty")).to_be_visible()
@@ -175,3 +175,120 @@ def test_page_moves_on_when_current_base_was_deleted_elsewhere(web_page):
     p.evaluate("() => window.loadKnowledge()")
     expect(p.locator("#kb-select")).to_have_value(keep)
     expect(p.locator("#kb-load-error")).to_be_hidden()
+
+
+def test_material_page_shows_hold_and_release_needs_confirmation(web_page):
+    p = web_page
+    open_knowledge(p)
+    create(p, "未授权的库")
+    import_file(p)
+    p.locator("[data-kb-copy]").click()
+    expect(p.locator("#kb-message")).to_contain_text("已把")
+    open_delete(p)
+    p.locator("#ui-ok").click()
+    expect(p.locator("#kb-empty")).to_be_visible()
+    p.locator('.tabs [data-tab="materials"]').click()
+    p.evaluate("""async () => {
+        const items = (await (await fetch('/materials/library')).json()).items;
+        await showMaterialDetail(items[0].id);
+    }""")
+    hold = p.locator("[data-egress-hold]")
+    expect(hold).to_contain_text("未授权的库")
+    expect(hold).to_contain_text("内容不会发给模型")
+    p.locator("[data-hold-release]").click()
+    expect(p.locator("#ui-message")).to_contain_text("可能发给模型")
+    p.locator("#ui-cancel").click()  # 取消：标记还在
+    expect(hold).to_be_visible()
+    p.locator("[data-hold-release]").click()
+    with p.expect_response(lambda r: "egress-holds/release" in r.url) as response:
+        p.locator("#ui-ok").click()
+    assert response.value.ok and "confirm=true" in response.value.url
+    expect(hold).to_have_count(0)
+
+
+def test_authorized_base_confirm_has_no_hold_sentence(web_page):
+    p = web_page
+    open_knowledge(p)
+    create(p, "已授权的库")
+    import_file(p)
+    allow_egress(p)
+    p.locator("[data-kb-copy]").click()
+    expect(p.locator("#kb-message")).to_contain_text("已把")
+    open_delete(p)
+    expect(p.locator("#ui-message")).to_contain_text("1 条与本库的关联会断开")
+    expect(p.locator("#ui-message")).not_to_contain_text("继续禁止")
+    p.locator("#ui-cancel").click()
+
+
+def test_oversized_file_is_stopped_before_upload(web_page, tmp_path):
+    p = web_page
+    big = tmp_path / "过大.md"
+    with big.open("wb") as f:
+        f.truncate(51 * 1024 * 1024)
+    posted = []
+    p.on("request", lambda r: posted.append(r.url) if r.method == "POST" and r.url.endswith("/imports") else None)
+    open_knowledge(p)
+    create(p, "上限检查")
+    p.locator("#kb-open-upload").click()
+    expect(p.locator("#kb-upload-dialog [data-kb-limits]")).to_contain_text("单个文件不超过50MB")
+    p.locator("#kb-files").set_input_files(str(big))
+    p.locator("#kb-upload").click()
+    expect(p.locator("#kb-upload-error")).to_contain_text("超过单个文件 50MB")
+    expect(p.locator("#kb-upload-dialog")).to_be_visible()
+    assert posted == []
+
+
+def test_file_between_old_and_new_limit_is_accepted(web_page, tmp_path):
+    p = web_page
+    file = tmp_path / "十一兆.md"
+    file.write_bytes(("# 制度\n" + "正式员工出差须在预订前审批。\n" * 40).encode() + b" " * (11 * 1024 * 1024))
+    open_knowledge(p)
+    create(p, "十一兆库")
+    p.locator("#kb-open-upload").click()
+    p.locator("#kb-files").set_input_files(str(file))
+    p.locator("#kb-upload").click()
+    expect(p.locator("[data-kb-job]").first).to_contain_text("已完成", timeout=60000)
+
+
+COVERAGE_CASES = {
+    "time": (dict(parser="pdfplumber", pages=413, warnings=[],
+                  ocr=dict(pages_recognized=18, images_recognized=0, failed=0, skipped=dict(time_budget=382), partial=True)),
+             "413 页中有 382 页未识别（超过识别时长预算），这些内容检索不到"),
+    "images": (dict(parser="docling", pictures=75, ocr=dict(images_recognized=60, failed=0, skipped=dict(image_limit=15), partial=True)),
+               "75 张图片中有 15 张未识别（到达图片数量上限）"),
+    "off": (dict(parser="docling", pictures=12, warnings=["幻灯片中有 12 张图片，未识别图片里的文字（图片文字识别已关闭（BRIEFLY_OCR=off）），请核对原文件"]),
+            "12 张图片中有 12 张未识别（图片文字识别已关闭）"),
+}
+
+
+@pytest.mark.parametrize("case", COVERAGE_CASES)
+def test_partial_recognition_is_visible_in_tree_and_detail(web_page, case):
+    """低置信段为 0 的报告也要显示：不靠“部分标题或识别信息存在不确定性”那句。"""
+    p = web_page
+    report, notice = COVERAGE_CASES[case]
+    open_knowledge(p)
+    kb = create(p, "未识别完的库")
+    import_file(p)
+    expect(p.locator("[data-kb-coverage]")).to_have_count(0)
+    p.route(f"**/knowledge-bases/{kb}/documents", lambda route: _with_coverage(route, report))
+    p.evaluate("() => window.loadKnowledge()")
+    expect(p.locator("#kb-documents [data-kb-partial]")).to_have_text("部分内容未识别")
+    p.locator("[data-kb-document]").first.click()
+    expect(p.locator("[data-kb-coverage]")).to_contain_text(notice)
+    assert "扫描" not in p.locator("[data-kb-coverage]").inner_text()
+
+
+def _with_coverage(route, report):
+    from briefly.knowledge.evidence import coverage
+
+    response = route.fetch()
+    route.fulfill(response=response, json=[{**doc, "coverage": coverage(report)} for doc in response.json()])
+
+
+def test_complete_file_shows_no_coverage_notice(web_page):
+    p = web_page
+    open_knowledge(p)
+    create(p, "完整的库")
+    import_file(p)
+    expect(p.locator("[data-kb-partial]")).to_have_count(0)
+    expect(p.locator("[data-kb-coverage]")).to_have_count(0)

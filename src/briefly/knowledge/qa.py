@@ -7,7 +7,7 @@ import re
 
 from ..errors import UserInputError
 from .. import config, turn_timing
-from .evidence import restricted_answer
+from .evidence import NOT_FOUND_NOTE, restricted_answer
 from .payload import evidence_payload
 from .retrieval import relevance_floor, relevant, similarity
 from .service import KnowledgeConflict
@@ -216,17 +216,21 @@ class KnowledgeQA:
                 if item["reference"] not in seen:
                     seen.add(item["reference"])
                     target.append({**item, "similarity": similarity(item)})
-        base = dict(evidence=evidence, references=[], warnings=[], authorized=knowledge.egress_allowed(kb_id))
+        # 有内容没识别成文字的文档。依据来自这些文档时写明；没找到依据时加限定：这只限定“没找到”的含义，
+        # 依据里没有的内容仍按未提及回答
+        partial = knowledge.document_coverage(kb_id, document_ids)
+        note = NOT_FOUND_NOTE if partial else None
+        base = dict(evidence=evidence, references=[], warnings=[], authorized=knowledge.egress_allowed(kb_id), not_found_note=note)
         if not evidence and not nearby and not workspace:
             status = next((x for x in statuses if x not in {"no_candidates", "candidates", "partial"}), "no_candidates")
             return dict(base, status=status, warnings=warnings, answer="当前范围资料尚未完成索引，请先处理入库状态。" if status == "not_ready"
-                        else "当前范围没有可用依据。")
+                        else "当前范围没有可用依据。" + (note or ""))
         if not evidence and not workspace:
             closest = sorted((e for e in nearby if e["similarity"] is not None), key=lambda e: -e["similarity"])[:3]
             lines = [f"- 《{e['source']['title']}》" + (f"：{e['section'].split(' > ')[-1]}" if e.get("section") else "") for e in closest]
             return dict(base, status="low_relevance", evidence=closest, warnings=warnings,
                         references=[reference_entry(f"出处{i}", e) for i, e in enumerate(closest, 1)],
-                        answer=LOW_RELEVANCE + "\n最接近的出处（相关度低于下限，仅供自行核对）：\n" + "\n".join(lines))
+                        answer=LOW_RELEVANCE + (note or "") + "\n最接近的出处（相关度低于下限，仅供自行核对）：\n" + "\n".join(lines))
         if joint and not base["authorized"] and evidence and any(not w.get("constraints") for w in workspace or []):
             # 所选知识库未允许外发、工作区有可用片段：只发工作区片段，知识库片段不发（2026-11-01 用户确定）
             warnings.append(KNOWLEDGE_WITHHELD.format(count=len(evidence)))
@@ -279,6 +283,11 @@ class KnowledgeQA:
             updates = document_updates(s, [e["document_id"] for e in knowledge_items])
         titles = {e["document_id"]: e["source"]["title"] for e in knowledge_items}
         warnings += [update_notice(titles[doc_id], update) for doc_id, update in updates.items()]
+        # 只提依据实际来自的文档：库里其他文件没识别完不影响这些依据，也就不让整个库的答案都不缓存
+        warnings += [f"《{partial[doc_id]['title']}》{partial[doc_id]['coverage']['notice']}回答可能不完整。"
+                     for doc_id in dict.fromkeys(e["document_id"] for e in knowledge_items) if doc_id in partial]
+        if note and base["authorized"] and not knowledge_items:  # 知识库一条依据都没有，只剩工作区片段
+            warnings.append(note)
         if withheld:
             titles = "、".join(dict.fromkeys(f"《{e['source']['title']}》" for e in withheld))
             warnings.append(f"另有 {len(withheld)} 条依据的结构仍有未确认部分（{titles}），未用于回答，请自行核对原文。")
@@ -345,6 +354,8 @@ class KnowledgeQA:
         # 脱敏值不会通过模型自行还原后直接显示；本次规则也作用于生成文字。
         answer = Redactor(private_values).text(answer)
         state = {"可回答": "answered", "部分可答": "partial_answer", "依据不足": "insufficient_evidence"}.get(declared[1] if declared else None)
+        if bundle["not_found_note"] and state in {"partial_answer", "insufficient_evidence"}:
+            warnings.append(bundle["not_found_note"])  # 模型说依据不足，可能正好在没识别的内容里
         references = [r for i, r in enumerate(bundle["references"], 1) if i in cited]
         status = "needs_review" if warnings else state
         if status in {"answered", "partial_answer", "insufficient_evidence"}:
