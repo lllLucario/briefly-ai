@@ -17,7 +17,7 @@ jobs:
   test:
     name: pytest (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45  # Windows 同一提交波动很大（测试步骤 16～28 分钟），30 分钟太接近上限
+    timeout-minutes: 45  # Windows 机器波动很大，曾到 28 分钟，留足余量
     strategy:
       fail-fast: false
       matrix:
@@ -41,5 +41,6 @@ jobs:
       - name: 检索门禁（不允许跳过）
         run: uv run --no-sync python -m pytest tests/test_retrieval_gate.py tests/test_retrieval_gate_compare.py tests/test_no_external_network.py -W error
 
+      # 临时目录默认在 Windows 的 C: 盘，那里建数据库特别慢；放到 runner.temp（D: 盘）后测试步骤约快 5 倍
       - name: 全量测试
-        run: uv run --no-sync python -m pytest -W error -rs
+        run: uv run --no-sync python -m pytest -W error -rs --basetemp=${{ runner.temp }}/pytest
