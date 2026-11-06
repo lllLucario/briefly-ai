@@ -27,8 +27,9 @@ class RetryIn(BaseModel):
     reparse: bool = False
 
 
-def job_out(job):
-    return dict(id=job.id, kb_id=job.kb_id, filename=job.filename, source_key=job.source_key,
+def job_out(job, coverage=None):
+    """coverage：有内容没识别成文字时的覆盖情况，见 evidence.coverage。"""
+    return dict(coverage=coverage, id=job.id, kb_id=job.kb_id, filename=job.filename, source_key=job.source_key,
         relative_path=job.source_key.removeprefix("upload:") if job.source_key.startswith("upload:") else None,
         status="indexing" if job.status == "preview" else job.status, error_code=job.error_code, error=job.error,
         material_id=job.material_id, version_id=job.version_id, generation_id=job.generation_id,
@@ -134,7 +135,8 @@ def register(app):
         rows = service.jobs(kb_id)
         for job_id in service.pending_ids(kb_id):
             background.add_task(run, service.process, kb_id, job_id)
-        return [job_out(job) for job in rows]
+        partial = service.knowledge.material_coverage(job.material_id for job in rows)
+        return [job_out(job, partial.get(job.material_id)) for job in rows]
 
     @app.get("/knowledge-bases/{kb_id}/imports/{job_id}/outline", tags=["知识库"])
     def outline(kb_id: str, job_id: str):

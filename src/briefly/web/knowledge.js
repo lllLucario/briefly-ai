@@ -184,7 +184,7 @@
         const key = `kb-folder:${current}:${path}/${name}`;
         return `<details class="kb-folder" data-disclosure="${escapeHtml(key)}" ${disclosureOpen(key, true)}><summary>${fileIcon("folder")}<span>${escapeHtml(name)}</span></summary><div>${branch(child, path + "/" + name)}</div></details>`;
       }).join("") + node.files.sort((a,b) => a.name.localeCompare(b.name,"zh")).map(({doc, name}) => `<div class="kb-tree-row" data-kb-doc="${escapeHtml(doc.id)}">
-        <button type="button" class="kb-tree-file" data-kb-document="${escapeHtml(doc.id)}" aria-pressed="${d.fileKey === `doc:${doc.id}`}" title="${escapeHtml(doc.relative_path || doc.title)}">${fileIcon(doc.title.split(".").at(-1))}<span><strong>${escapeHtml(name)}</strong><small>修订 ${doc.revision} · ${doc.index_status === "ready" ? "已有有效索引" : "尚无有效索引"}</small></span>${doc.workspace_update ? '<span class="kb-update-dot" title="工作区有更新">•</span>' : ""}</button></div>`).join("");
+        <button type="button" class="kb-tree-file" data-kb-document="${escapeHtml(doc.id)}" aria-pressed="${d.fileKey === `doc:${doc.id}`}" title="${escapeHtml(doc.relative_path || doc.title)}">${fileIcon(doc.title.split(".").at(-1))}<span><strong>${escapeHtml(name)}</strong><small>修订 ${doc.revision} · ${doc.index_status === "ready" ? "已有有效索引" : "尚无有效索引"}</small>${doc.coverage ? '<small class="kb-coverage-tag" data-kb-partial>部分内容未识别</small>' : ""}</span>${doc.workspace_update ? '<span class="kb-update-dot" title="工作区有更新">•</span>' : ""}</button></div>`).join("");
     }
     const html = branch(root) || `<p class="muted small kb-tree-empty">${query ? "没有匹配的文件" : "当前库暂无文档，请添加资料，系统将自动处理入库。"}</p>`;
     const signature = JSON.stringify([current,d.documents,query,d.fileKey]);
@@ -233,7 +233,7 @@
     if (d.fileKey !== key) { d.fileKey = key; d.fileVersion = null; }
     else if (!force) { versionId = d.fileVersion || null; }
     d.fileVersion = versionId;
-    const signature = JSON.stringify([id,key,doc?.revision,doc?.workspace_update,job?.status,job?.chunk_count,versionId]);
+    const signature = JSON.stringify([id,key,doc?.revision,doc?.workspace_update,doc?.coverage,job?.status,job?.chunk_count,job?.coverage,versionId]);
     if (!force && inspectionSignature === signature) return;
     inspectionSignature = signature;
     const seq = ++inspectionSequence, pane = $("#kb-inspector");
@@ -260,6 +260,7 @@
         <div class="kb-file-stats"><span><b>${total}</b> 个片段</span><span>片段目标 <b>${version?.chunk_config?.parameters?.tokens || job?.tokens || config?.tokens || "—"}</b></span>${version ? `<label>版本 <select id="kb-inspect-version" aria-label="查看文件版本">${[...versions].reverse().map(item => `<option value="${escapeHtml(item.id)}" ${item.id === version.id ? "selected" : ""}>第 ${item.number} 版${item.id === doc.active_version_id ? "（当前可检索）" : "（未发布或历史）"}</option>`).join("")}</select></label>` : ""}</div>
         <div class="row gap wrap kb-file-actions">${doc ? `<button class="ghost small" data-kb-update="${doc.id}">更新</button>${doc.index_status === "ready" ? `<button class="ghost small" data-kb-copy="${doc.id}">复制到工作区</button>` : ""}<button class="ghost small danger" data-kb-remove="${doc.id}">移出知识库</button>` : ""}</div>
         ${doc?.workspace_update ? `<p class="notice warn small" data-kb-workspace-update="${doc.id}">工作区有更新（${escapeHtml(fmtTime(doc.workspace_update.updated_at))}，《${escapeHtml(doc.workspace_update.title)}》），知识库仍为第 ${doc.workspace_update.version} 版。需要时请用“更新”导入新版本后将自动建立索引；工作区改动不会自动同步。</p>` : ""}
+        ${(doc?.coverage || job?.coverage) ? `<p class="notice warn small" data-kb-coverage>${escapeHtml((doc?.coverage || job.coverage).notice)}问答可能找不到这部分内容；需要时请核对原文件。</p>` : ""}
         ${job && job.status !== "ready" ? `<p class="notice small">${escapeHtml(job.error || "系统正在自动解析并建立索引，完成后即可用于知识问答。")}</p>` : ""}
         ${rows.some(row => Object.keys(row.constraints || {}).length) ? '<p class="kb-quality-note">部分标题或识别信息存在不确定性，问答会标明相关限制。</p>' : ""}
         ${["source_changed","source_deleted","source_missing","document_removed"].includes(outlineStatus) ? '<p class="notice warn">原文已变化或不可用，请更新文件后查看结构。</p>' : `<div class="kb-outline">${renderOutline(rows)}</div>`}`;
@@ -328,7 +329,7 @@
     $("#kb-import-history").open = pending;
     $("#kb-import-history").classList.toggle("hidden", !jobs.length);
     $("#kb-jobs").innerHTML = jobs.map(job => `<div class="knowledge-row" data-kb-job="${escapeHtml(job.id)}"><button class="kb-job-file" data-kb-select-job="${escapeHtml(job.id)}">${fileIcon(job.filename.split(".").at(-1))}${escapeHtml(job.relative_path || job.filename)}</button>
-      <span>${escapeHtml(names[job.status] || job.status)}</span>${job.chunk_count ? `<span class="muted small">${job.chunk_count} 个原文片段</span>` : ""}
+      <span>${escapeHtml(names[job.status] || job.status)}</span>${job.chunk_count ? `<span class="muted small">${job.chunk_count} 个原文片段</span>` : ""}${job.coverage ? '<span class="kb-coverage-tag small" data-kb-partial>部分内容未识别</span>' : ""}
 
       ${job.status === "failed" ? `<button class="ghost small" data-kb-retry="${escapeHtml(job.id)}">重试此文件</button><button class="ghost small" data-kb-reparse="${escapeHtml(job.id)}">重新解析</button>` : ""}
       ${job.error ? `<p class="danger small">${escapeHtml(job.error)}</p>` : ""}</div>`).join("");

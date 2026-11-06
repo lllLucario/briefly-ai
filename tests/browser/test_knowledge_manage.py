@@ -248,3 +248,47 @@ def test_file_between_old_and_new_limit_is_accepted(web_page, tmp_path):
     p.locator("#kb-files").set_input_files(str(file))
     p.locator("#kb-upload").click()
     expect(p.locator("[data-kb-job]").first).to_contain_text("已完成", timeout=60000)
+
+
+COVERAGE_CASES = {
+    "time": (dict(parser="pdfplumber", pages=413, warnings=[],
+                  ocr=dict(pages_recognized=18, images_recognized=0, failed=0, skipped=dict(time_budget=382), partial=True)),
+             "413 页中有 382 页未识别（超过识别时长预算），这些内容检索不到"),
+    "images": (dict(parser="docling", pictures=75, ocr=dict(images_recognized=60, failed=0, skipped=dict(image_limit=15), partial=True)),
+               "75 张图片中有 15 张未识别（到达图片数量上限）"),
+    "off": (dict(parser="docling", pictures=12, warnings=["幻灯片中有 12 张图片，未识别图片里的文字（图片文字识别已关闭（BRIEFLY_OCR=off）），请核对原文件"]),
+            "12 张图片中有 12 张未识别（图片文字识别已关闭）"),
+}
+
+
+@pytest.mark.parametrize("case", COVERAGE_CASES)
+def test_partial_recognition_is_visible_in_tree_and_detail(web_page, case):
+    """低置信段为 0 的报告也要显示：不靠“部分标题或识别信息存在不确定性”那句。"""
+    p = web_page
+    report, notice = COVERAGE_CASES[case]
+    open_knowledge(p)
+    kb = create(p, "未识别完的库")
+    import_file(p)
+    expect(p.locator("[data-kb-coverage]")).to_have_count(0)
+    p.route(f"**/knowledge-bases/{kb}/documents", lambda route: _with_coverage(route, report))
+    p.evaluate("() => window.loadKnowledge()")
+    expect(p.locator("#kb-documents [data-kb-partial]")).to_have_text("部分内容未识别")
+    p.locator("[data-kb-document]").first.click()
+    expect(p.locator("[data-kb-coverage]")).to_contain_text(notice)
+    assert "扫描" not in p.locator("[data-kb-coverage]").inner_text()
+
+
+def _with_coverage(route, report):
+    from briefly.knowledge.evidence import coverage
+
+    response = route.fetch()
+    route.fulfill(response=response, json=[{**doc, "coverage": coverage(report)} for doc in response.json()])
+
+
+def test_complete_file_shows_no_coverage_notice(web_page):
+    p = web_page
+    open_knowledge(p)
+    create(p, "完整的库")
+    import_file(p)
+    expect(p.locator("[data-kb-partial]")).to_have_count(0)
+    expect(p.locator("[data-kb-coverage]")).to_have_count(0)
