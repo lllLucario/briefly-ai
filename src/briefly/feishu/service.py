@@ -7,6 +7,7 @@ from datetime import datetime
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, select
 from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
 
+from .. import outbound
 from ..errors import UserInputError, failure_text
 from .. import config
 from ..db import Base
@@ -106,6 +107,8 @@ class FeishuExport(Base):
     def error(self):
         return getattr(self, "_export_error", "")
 
+    duplicate = False  # 这次请求没有写入，返回的是第一次的结果（不进数据库）
+
 
 class FeishuExportProgress(Base):
     """独立状态表兼容旧导出记录；旧记录没有该行时视为已完成。"""
@@ -116,17 +119,44 @@ class FeishuExportProgress(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
-def export_weekly(client: FeishuClient, weekly, report_id: int, me: str = "") -> FeishuExport:
+def export_weekly(client: FeishuClient, weekly, report_id: int, me: str = "", *,
+                  request_id: str | None = None, resend: bool = False) -> FeishuExport:
     """把周报（去掉出处标记的正文）写成一篇新的飞书文档，并把用户加为协作者。
 
     me：已连接飞书账号时用户的 open_id。文档以用户身份新建时用户就是所有者，不用再加协作者。
+    同样的内容只写一篇，重复时返回第一次的记录（duplicate=True）。写入失败时可能已经建了文档，所以失败也不自动重写，
+    只有 resend（用户确认后的再次写入）才算新的动作，见 outbound.py。
     """
     report = weekly.report(report_id)
     _, text = weekly.export_markdown(report_id)
     text = _SECTION.sub(lambda m: f"## {m.group(1)}" + (f"\n\n{m.group(2).strip()}" if m.group(2).strip() else ""), text)
     name = (report.inputs or {}).get("name")
     title = f"{name + ' ' if name else ''}周报 {report.period_start:%m.%d}–{report.period_end:%m.%d}"
-    sessions = sessionmaker(weekly.store.engine, expire_on_commit=False)
+    engine = weekly.store.engine
+    claim = outbound.begin(engine, "feishu", report_id, outbound.fingerprint(title, text), request_id, resend)
+    if not claim.owned:
+        return _first_result(engine, report_id, claim)
+    try:
+        return _write_export(client, engine, report_id, title, text, me, claim)
+    finally:
+        outbound.finish(engine, claim.key)
+
+
+def _first_result(engine, report_id: int, claim: outbound.Claim) -> FeishuExport:
+    if claim.stale:
+        with sessionmaker(engine)() as s:
+            progress = s.get(FeishuExportProgress, claim.record_id)
+            if progress and progress.status == "writing":
+                progress.status = "failed"
+                progress.error = "写入过程中断，结果未知。请检查飞书空间后再决定是否重新写入。"
+                s.commit()
+    export = next(x for x in exports_of(engine, report_id) if x.id == claim.record_id)
+    export.duplicate = True
+    return export
+
+
+def _write_export(client: FeishuClient, engine, report_id: int, title: str, text: str, me: str, claim: outbound.Claim) -> FeishuExport:
+    sessions = sessionmaker(engine, expire_on_commit=False)
     export = FeishuExport(report_id=report_id, document_id="", url="", title=title)
     with sessions() as s:
         s.add(export)
@@ -134,6 +164,7 @@ def export_weekly(client: FeishuClient, weekly, report_id: int, me: str = "") ->
         s.add(FeishuExportProgress(export_id=export.id, status="writing"))
         s.commit()
     export._export_status = "writing"
+    outbound.attach(engine, claim.key, export.id)
 
     def created(document_id):
         export.document_id, export.url = document_id, doc_url(document_id)

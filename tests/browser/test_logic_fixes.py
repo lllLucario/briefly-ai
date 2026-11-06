@@ -108,3 +108,43 @@ def test_validation_error_names_the_field(web_page):
         }
     }""")
     assert "提交的内容格式不正确" in result and "due_date" in result and "不是日期" not in result
+
+
+def test_oversized_paste_shows_the_limit(web_page, monkeypatch):
+    monkeypatch.setattr(config, "MAX_UPLOAD_MB", 1)
+    page = web_page
+    page.locator('[data-tab="chat"]').click()
+    page.locator("#chat-add").click()
+    page.locator('[data-add="paste"]').click()
+    page.locator("#paste-content").fill("长" * (1024 * 1024 // 3 + 1))
+    page.locator("#paste-form").get_by_role("button", name="保存为材料").click()
+    expect(page.locator("#add-msg")).to_contain_text("超过 1MB 上限")
+
+
+def test_oversized_chat_input_shows_the_limit_and_stays_in_the_box(web_page, monkeypatch):
+    monkeypatch.setattr(config, "MAX_UPLOAD_MB", 1)
+    monkeypatch.setattr(config, "INPUT_INLINE_TOKENS", 100)
+    page = web_page
+    page.locator('[data-tab="chat"]').click()
+    text = "长" * (1024 * 1024 // 3 + 1)
+    page.locator("#input").fill(text)
+    with page.expect_response(lambda r: r.url.endswith("/chat") and r.request.method == "POST") as response:
+        page.locator("#send").click()
+    assert response.value.status == 413
+    expect(page.locator(".msg.assistant").last).to_contain_text("超过 1MB 上限")
+    assert page.locator("#input").input_value() == text
+
+
+def test_oversized_json_body_is_readable_in_a_real_browser(web_page, monkeypatch):
+    """Content-Length 超限时不读请求体就返回：浏览器要能读到响应，而不是连接被重置。"""
+    monkeypatch.setattr(config, "MAX_UPLOAD_MB", 1)
+    monkeypatch.setattr(config, "MAX_JSON_MB", 1)
+    result = web_page.evaluate("""async (size) => {
+        try {
+            await api("/todos", { method: "POST", json: { title: "x", description: "x".repeat(size) } });
+            return "ok";
+        } catch (err) {
+            return err.message;
+        }
+    }""", 4 * 1024 * 1024)
+    assert "超过 3MB 上限" in result

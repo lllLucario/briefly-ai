@@ -25,6 +25,7 @@ def create_db_engine(url: str | None = None) -> Engine:
     from .knowledge import models as _knowledge  # noqa: F401  只新增表，不改旧材料/块
     from . import links  # noqa: F401  工作区与知识库文档的关联
     from . import llm_cache  # noqa: F401  模型响应缓存和缓存统计
+    from . import outbound  # noqa: F401  外发回执
 
     url = url or config.DATABASE_URL
     kwargs: dict = {}

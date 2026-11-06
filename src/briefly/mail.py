@@ -1,7 +1,8 @@
 """邮件：把生成好的周报发给指定收件人（SMTP）。
 
 只由用户在网页上手动触发、发送前确认收件人；不提供给智能体作为工具，避免模型代用户发信。
-发送失败不自动重试：SMTP 可能已经把信交出去了，重试会重复发送。每次发送都记录在 mail_sends。
+发送失败不自动重试：SMTP 可能已经把信交出去了，重试会重复发送。每次发送都记录在 mail_sends，发之前就写，
+进程中途退出也留得下。同一次发送动作只发一次，见 outbound.py。
 """
 import logging
 import re
@@ -16,12 +17,13 @@ from sqlalchemy import DateTime, Integer, String, Text, select
 from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
 
 from .errors import UserInputError
-from . import config
+from . import config, outbound
 from .db import Base
 
 log = logging.getLogger(__name__)
 _EMAIL = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$")
-SENT, FAILED, UNKNOWN = "sent", "failed", "unknown"
+SENT, FAILED, UNKNOWN, SENDING = "sent", "failed", "unknown", "sending"
+INTERRUPTED = "发送过程中断，邮件可能已发出，请先检查已发送邮件再决定是否重发"
 
 
 class MailNotConfigured(UserInputError):
@@ -40,6 +42,7 @@ class MailSend(Base):
     error: Mapped[str] = mapped_column(Text, default="")
     message_id: Mapped[str] = mapped_column(String(300), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    duplicate = False  # 这次请求没有发送，返回的是第一次的结果（不进数据库）
 
 
 def configured() -> bool:
@@ -108,9 +111,13 @@ def build_message(subject: str, body: str, to: list[str], cc: list[str], attachm
 
 
 def send_weekly(
-    weekly, report_id: int, to, cc=None, connect: Callable[[], smtplib.SMTP] = _connect
+    weekly, report_id: int, to, cc=None, connect: Callable[[], smtplib.SMTP] = _connect,
+    *, request_id: str | None = None, resend: bool = False,
 ) -> MailSend:
-    """发送周报：正文是去掉出处标记的纯文本，附件是同样内容的 Markdown。connect 可替换，测试时不连真实服务器。"""
+    """发送周报：正文是去掉出处标记的纯文本，附件是同样内容的 Markdown。connect 可替换，测试时不连真实服务器。
+
+    同样的内容发给同样的收件人只发一次，重复时返回第一次的记录（duplicate=True）。resend 是用户确认后的再次发送，见 outbound.py。
+    """
     if not configured():
         raise MailNotConfigured("未配置邮箱：请在 .env 中填写 SMTP_HOST、SMTP_USER、SMTP_PASSWORD（授权码）")
     to, cc = parse_addresses(to), parse_addresses(cc)
@@ -121,7 +128,16 @@ def send_weekly(
     name = (report.inputs or {}).get("name")
     subject = f"{name + ' ' if name else ''}周报 {report.period_start:%m.%d}–{report.period_end:%m.%d}"
     msg = build_message(subject, text, to, cc, (filename, text))
-    record = MailSend(report_id=report_id, to=", ".join(to), cc=", ".join(cc), subject=subject, message_id=msg["Message-ID"])
+    engine = weekly.store.engine
+    sessions = sessionmaker(engine, expire_on_commit=False)
+    claim = outbound.begin(engine, "mail", report_id, outbound.fingerprint(sorted(to), sorted(cc), subject, text), request_id, resend)
+    if not claim.owned:
+        return _first_result(sessions, claim)
+    record = MailSend(report_id=report_id, to=", ".join(to), cc=", ".join(cc), subject=subject, message_id=msg["Message-ID"], status=SENDING)
+    with sessions() as s:
+        s.add(record)
+        s.commit()
+    outbound.attach(engine, claim.key, record.id)
     send_started = False
     try:
         smtp = connect()
@@ -139,12 +155,31 @@ def send_weekly(
         log.warning("周报邮件发送失败：%s", e)
         record.status = UNKNOWN if send_started and _uncertain(e) else FAILED
         record.error = _describe(e, send_started)
-    with sessionmaker(weekly.store.engine, expire_on_commit=False)() as s:
-        s.add(record)
+    except Exception:  # 程序错误也要留下结果：已经开始发的算未知
+        log.exception("周报邮件发送出错")
+        record.status = UNKNOWN if send_started else FAILED
+        record.error = INTERRUPTED if send_started else "发送失败，详情见服务日志"
+    with sessions() as s:
+        s.merge(record)
         s.commit()
+    outbound.finish(engine, claim.key, retryable=record.status == FAILED)
+    return record
+
+
+def _first_result(sessions, claim: outbound.Claim) -> MailSend:
+    with sessions() as s:
+        record = s.get(MailSend, claim.record_id)
+        if claim.stale and record.status == SENDING:
+            record.status, record.error = UNKNOWN, INTERRUPTED
+            s.commit()
+    record.duplicate = True
     return record
 
 
 def sends_of(engine, report_id: int) -> list[MailSend]:
     with sessionmaker(engine, expire_on_commit=False)() as s:
-        return list(s.scalars(select(MailSend).where(MailSend.report_id == report_id).order_by(MailSend.id.desc())))
+        rows = list(s.scalars(select(MailSend).where(MailSend.report_id == report_id).order_by(MailSend.id.desc())))
+    for row in rows:  # 进程中途退出留下的“发送中”：只改显示，下一次发送时才落库
+        if row.status == SENDING and (datetime.now() - row.created_at).total_seconds() > outbound.STALE_SECONDS:
+            row.status, row.error = UNKNOWN, INTERRUPTED
+    return rows

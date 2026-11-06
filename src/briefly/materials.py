@@ -7,7 +7,7 @@ from sqlalchemy import JSON, DateTime, Engine, ForeignKey, Index, Integer, Strin
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, defer, mapped_column, relationship, sessionmaker
 
-from .errors import UserInputError
+from .errors import PayloadTooLarge, UserInputError
 from . import config
 from .chunking import chunk_text, parse_sections, uses_markdown
 from .db import Base
@@ -101,6 +101,13 @@ class SearchHit:
     similarity: float | None = None
     keyword_only: bool = False
     notes: tuple[str, ...] = ()
+
+
+def check_pasted_size(content: str) -> None:
+    """粘贴的文字（含对话里转存的长输入）和上传文件共用同一个上限。系统自己写入的（解析结果、追踪版本）不走这里。"""
+    limit = config.MAX_UPLOAD_MB * 1024 * 1024
+    if len(content) > limit or len(content.encode("utf-8", "replace")) > limit:
+        raise PayloadTooLarge(f"内容超过 {config.MAX_UPLOAD_MB}MB 上限，请拆分后再提交")
 
 
 def wrap_material(header: str, body: str) -> str:

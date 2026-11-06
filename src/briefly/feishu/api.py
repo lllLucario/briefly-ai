@@ -5,7 +5,7 @@ from urllib.parse import quote
 
 from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import api_docs as docs
 from .. import config
@@ -27,6 +27,11 @@ class LinkIn(BaseModel):
     url: str
 
 
+class ExportIn(BaseModel):
+    request_id: str | None = Field(default=None, max_length=64)  # 这次点击的编号
+    resend: bool = False  # 用户确认要再写一篇
+
+
 class ExportOut(BaseModel):
     id: int
     report_id: int
@@ -38,6 +43,7 @@ class ExportOut(BaseModel):
     status: str = "done"
     error: str = ""
     created_at: datetime
+    duplicate: bool = False  # 没有写入，这是第一次的结果
 
 
 def register(
@@ -124,11 +130,15 @@ def register(
         response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
         return app.state.created_material(material, is_new)
 
-    @app.post("/weekly/{report_id}/feishu", tags=[docs.FEISHU], response_model=ExportOut, status_code=201, summary="把周报写成一篇新的飞书文档")
-    def export_to_feishu(report_id: int):
+    @app.post("/weekly/{report_id}/feishu", tags=[docs.FEISHU], response_model=ExportOut, status_code=201, summary="把周报写成一篇新的飞书文档（同样的内容只写一篇，resend 才再写）")
+    def export_to_feishu(report_id: int, response: Response, body: ExportIn | None = None):
+        body = body or ExportIn()
         app.state.weekly.export_markdown(report_id)  # 不存在、未完成时先报错，不新建空文档
         with reader() as client:
-            export = export_weekly(client, app.state.weekly, report_id, me=(tokens.connected() or {}).get("open_id", ""))
+            export = export_weekly(client, app.state.weekly, report_id, me=(tokens.connected() or {}).get("open_id", ""),
+                                   request_id=body.request_id, resend=body.resend)
+        if export.duplicate:
+            response.status_code = status.HTTP_200_OK
         return ExportOut.model_validate(export, from_attributes=True)
 
     @app.get("/weekly/{report_id}/feishu", tags=[docs.FEISHU], response_model=list[ExportOut], summary="周报写入飞书的记录")

@@ -18,11 +18,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import api_docs as docs
 from . import auth, config, mail
-from .errors import MODEL_FAILED, MODEL_TIMEOUT, UserInputError, is_timeout, validation_response
+from .errors import MODEL_FAILED, MODEL_TIMEOUT, PayloadTooLarge, UserInputError, is_timeout, validation_response
 from .agent import Agent, new_thread_id, sqlite_checkpointer
 from .context_builder import SYSTEM_REPLY
 from .db import create_db_engine
@@ -32,7 +32,8 @@ from .llm import ModelConfigurationError, create_chat_model, fresh_model_calls, 
 from .llm_cache import ResponseCache, ResponseCacheScope, cache_stats
 from .logs import RequestContextMiddleware, configure_logging
 from . import material_library as library
-from .materials import TRACKED, Material, MaterialNotFound, MaterialStore
+from .outbound import SendInProgress
+from .materials import TRACKED, Material, MaterialNotFound, MaterialStore, check_pasted_size
 from .sessions import ChatSession, SessionStore
 from .skills import SKILLS
 from .turn_record import output_kinds
@@ -186,6 +187,8 @@ class ContextOut(BaseModel):
 class MailIn(BaseModel):
     to: str  # 收件人，逗号或分号分隔
     cc: str = ""
+    request_id: str | None = Field(default=None, max_length=64)  # 这次点击的编号
+    resend: bool = False  # 用户确认要再发一次
 
 
 class MailOut(BaseModel):
@@ -194,9 +197,10 @@ class MailOut(BaseModel):
     to: str
     cc: str
     subject: str
-    status: str  # sent / failed / unknown（发送阶段断线，结果待核对）
+    status: str  # sending / sent / failed / unknown（发送阶段断线，结果待核对）
     error: str
     created_at: datetime
+    duplicate: bool = False  # 没有发送，这是第一次的结果
 
 
 class MailStatus(BaseModel):
@@ -361,6 +365,14 @@ def create_app(
     def bad_request(request: Request, exc: UserInputError):
         # 内容为空、格式不支持、扫描件、文件损坏等，消息本身就是给用户看的中文说明。其他 ValueError 是程序问题，走统一的 500
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    @app.exception_handler(SendInProgress)
+    def send_in_progress(request: Request, exc: SendInProgress):
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(PayloadTooLarge)
+    def payload_too_large(request: Request, exc: PayloadTooLarge):
+        return JSONResponse(status_code=413, content={"detail": str(exc)})
 
     @app.exception_handler(UnicodeEncodeError)
     def unencodable_text(request: Request, exc: UnicodeEncodeError):
@@ -529,6 +541,7 @@ def create_app(
 
     @app.post("/materials", tags=[docs.MATERIALS], response_model=CreatedMaterial, status_code=201, summary="粘贴文本创建材料")
     def add_text(body: MaterialIn, store: Store, response: Response):
+        check_pasted_size(body.content)
         material, is_new = store.add_text(body.title, body.content)
         return created(store, material, is_new, response)
 
@@ -603,9 +616,12 @@ def create_app(
     def mail_status():
         return MailStatus(configured=mail.configured(), sender=config.SMTP_USER, default_to=config.MAIL_DEFAULT_TO)
 
-    @app.post("/weekly/{report_id}/email", tags=[docs.MAIL], response_model=MailOut, status_code=201, summary="把周报通过邮件发给收件人（失败不自动重试）")
-    def email_weekly(report_id: int, body: MailIn, weekly: Weekly):
-        record = mail.send_weekly(weekly, report_id, body.to, body.cc, connect=app.state.mail_connect)
+    @app.post("/weekly/{report_id}/email", tags=[docs.MAIL], response_model=MailOut, status_code=201, summary="把周报通过邮件发给收件人（失败不自动重试；同样的内容只发一次，resend 才再发）")
+    def email_weekly(report_id: int, body: MailIn, weekly: Weekly, response: Response):
+        record = mail.send_weekly(weekly, report_id, body.to, body.cc, connect=app.state.mail_connect,
+                                  request_id=body.request_id, resend=body.resend)
+        if record.duplicate:
+            response.status_code = status.HTTP_200_OK
         return MailOut.model_validate(record, from_attributes=True)
 
     @app.get("/weekly/{report_id}/email", tags=[docs.MAIL], response_model=list[MailOut], summary="周报的邮件发送记录")
