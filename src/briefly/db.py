@@ -41,8 +41,8 @@ def database_url(url: str) -> str:
     return url
 
 
-def create_db_engine(url: str | None = None) -> Engine:
-    """创建引擎并把表结构升到最新。sqlite 内存库用于测试。"""
+def create_db_engine(url: str | None = None, **options) -> Engine:
+    """创建引擎并把表结构升到最新。sqlite 内存库用于测试。options 原样传给 create_engine。"""
     register_models()
     from . import materials, schema
 
@@ -62,9 +62,9 @@ def create_db_engine(url: str | None = None) -> Engine:
         kwargs["pool_pre_ping"] = True
     # 不让数据库异常的文字带上 SQL 参数（材料正文、问题原文），这些异常可能进日志
     try:
-        engine = create_engine(url, hide_parameters=True, **kwargs)
+        engine = create_engine(url, hide_parameters=True, **{**kwargs, **options})
     except ModuleNotFoundError as exc:
-        raise RuntimeError("连接 PostgreSQL 需要额外依赖，请安装 postgres 分组：uv sync --extra postgres") from exc
+        raise RuntimeError("连接 PostgreSQL 需要额外依赖，请安装 postgres 分组：pip install -e '.[rag,postgres]'") from exc
     if engine.dialect.name == "sqlite":
         event.listen(engine, "connect", _enable_foreign_keys)
     if not memory:
@@ -91,8 +91,9 @@ def create_db_engine(url: str | None = None) -> Engine:
 def _warn_about_collation(engine: Engine) -> None:
     """非二进制排序（如 en_US）下，按文本排序的结果会和 SQLite 不一样。只提醒，不拦。"""
     with engine.connect() as connection:
-        collation = connection.exec_driver_sql(
-            "SELECT coalesce(datlocale, datcollate) FROM pg_database WHERE datname = current_database()").scalar()
+        # datlocale 是 PostgreSQL 17 才有的列；builtin、ICU 的排序规则记在这里，libc 的记在 datcollate
+        column = "coalesce(datlocale, datcollate)" if connection.dialect.server_version_info >= (17,) else "datcollate"
+        collation = connection.exec_driver_sql(f"SELECT {column} FROM pg_database WHERE datname = current_database()").scalar()
     if collation not in {"C", "C.UTF-8", "C.utf8", "POSIX"}:
         log.warning("PostgreSQL 数据库的排序规则是 %s：文本排序会和 SQLite 不同，建议用 C.UTF-8 建库（见 README）", collation)
 

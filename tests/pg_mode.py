@@ -39,6 +39,13 @@ def _connection_url(schema: str) -> str:
     return url.render_as_string(hide_password=False)
 
 
+def _test_engine(url: str):
+    """不用连接池：用例结束时后台线程可能还拿着连接，归还到已释放的池子后不会关闭，垃圾回收时报 ResourceWarning。"""
+    from sqlalchemy import NullPool
+
+    return real_create_db_engine(url, poolclass=NullPool, pool_pre_ping=False)
+
+
 def _new_schema() -> str:
     from sqlalchemy import text
 
@@ -105,7 +112,7 @@ def install() -> None:
         url = url or config.DATABASE_URL
         if db.is_postgres(url):  # 用例明确要 PostgreSQL（迁移命令的目标库等）
             return real_engine(url)
-        engine = real_engine(_connection_url(_schema_for(url)))
+        engine = _test_engine(_connection_url(_schema_for(url)))
         _engines.append(engine)
         return engine
 
@@ -118,7 +125,7 @@ def install() -> None:
 
     def local_index(path):
         key = f"index:{Path(path).resolve()}"
-        engine = real_engine(_connection_url(_schema_for(key)))
+        engine = _test_engine(_connection_url(_schema_for(key)))
         _engines.append(engine)
         built = PostgresIndex(engine)
         built.path = Path(path)

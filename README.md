@@ -214,7 +214,7 @@ briefly weekly schedule --weekday 周五 --time 16:30
 默认用 SQLite，零配置，什么都不用改。设置 `DATABASE_URL` 指向 PostgreSQL 后，业务数据、会话记录、知识和工作区索引都放到这一个数据库，第一次启动时自动建表（Alembic）。需要 pgvector 扩展，建扩展要有相应权限。
 
 ```bash
-uv sync --extra postgres
+pip install -e ".[rag,postgres]"
 ```
 
 本地开发可以用仓库里的容器（pgvector 官方镜像，只绑定本机 `127.0.0.1:55432`，数据卷 `briefly_dev_pgdata`，密码取 `.env` 的 `BRIEFLY_PG_PASSWORD`）：

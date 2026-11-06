@@ -257,6 +257,16 @@ def test_checkpointer_supports_what_the_agent_uses(engine):
         saver.conn.close()
 
 
+def test_checkpointer_follows_the_database_url(engine, tmp_path):
+    from langgraph.checkpoint.postgres import PostgresSaver
+
+    from briefly import agent as agent_module
+
+    saver = agent_module.open_checkpointer(url_of(engine))
+    assert isinstance(saver, PostgresSaver)
+    saver.conn.close()
+
+
 def test_models_and_migrations_have_no_difference(engine):
     with engine.connect() as connection:
         context = MigrationContext.configure(connection, opts=dict(compare_type=True, include_object=schema.include_object))
