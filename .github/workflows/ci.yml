@@ -17,7 +17,7 @@ jobs:
   test:
     name: pytest (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45  # Windows 同一提交波动很大（测试步骤 16～28 分钟），30 分钟太接近上限
     strategy:
       fail-fast: false
       matrix:
