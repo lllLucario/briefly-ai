@@ -37,6 +37,8 @@ CHUNK_SIZE = int(os.getenv("BRIEFLY_CHUNK_SIZE", "1500"))
 CHUNK_OVERLAP = int(os.getenv("BRIEFLY_CHUNK_OVERLAP", "150"))
 # 上传文件大小上限（MB）
 MAX_UPLOAD_MB = int(os.getenv("BRIEFLY_MAX_UPLOAD_MB", "10"))
+# 知识库单个文件的大小上限（MB）。普通材料上传和粘贴仍按 MAX_UPLOAD_MB；知识库接口另有单批 50MB 的限制，实际不会超过它
+MAX_KNOWLEDGE_FILE_MB = int(os.getenv("BRIEFLY_MAX_KNOWLEDGE_FILE_MB", "50"))
 # 普通请求体（主要是 JSON）的总上限，只防滥用，不是业务限制。默认 32MB：粘贴上限 10MB 的文字经 JSON 转义最多约 20MB，
 # 再留余量。实际上限不低于 MAX_UPLOAD_MB 的 3 倍，调大上传上限时不会挡住粘贴。
 MAX_JSON_MB = int(os.getenv("BRIEFLY_MAX_JSON_MB", "32"))

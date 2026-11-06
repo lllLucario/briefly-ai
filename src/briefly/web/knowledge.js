@@ -75,6 +75,15 @@
   window.holdLoginRedirect = () => Boolean(creation) || createFiles.length > 0
     || [...drafts.values()].some(d => d.files?.length)
     || [...uploadQueues.values()].some(batches => batches.some(batch => batch.files.length));
+  // 上传上限以服务端为准；取不到时用默认值，服务端仍会逐份核对
+  let limits = {file_mb:50, batch_mb:50, batch_files:16};
+  const fileLimitMb = () => Math.min(limits.file_mb, limits.batch_mb);
+  const oversized = files => files.find(file => file.size > fileLimitMb() * 1024 * 1024);
+  const oversizedText = file => `《${file.name}》超过单个文件 ${fileLimitMb()}MB 的上限，请移除后再提交。`;
+  async function loadLimits() {
+    try { limits = await api("/knowledge-limits"); } catch (_) { /* 用默认值 */ }
+    document.querySelectorAll("[data-kb-limits]").forEach(el => { el.textContent = `每批最多${limits.batch_files}份、合计${limits.batch_mb}MB，单个文件不超过${fileLimitMb()}MB。`; });
+  }
   async function uploadBatch(kbId, batch, changed) {
     {
       // 失败的结果不缓存，否则重新登录后重试还会失败
@@ -132,7 +141,7 @@
     const batches = []; let group = [], size = 0;
     const flush = () => { if (group.length) batches.push({key:crypto.randomUUID(), tokens, files:group, state:"queued", title:group.length === 1 ? group[0].name : `${group[0].name} 等 ${group.length} 份文件`}); group = []; size = 0; };
     for (const file of files) {
-      if (group.length === 16 || size + file.size > 50 * 1024 * 1024) flush();
+      if (group.length === limits.batch_files || size + file.size > limits.batch_mb * 1024 * 1024) flush();
       group.push(file); size += file.size;
     }
     flush();
@@ -363,6 +372,7 @@
   window.pauseKnowledge = () => { revision++; clearTimeout(timer); $("#kb-source").close(); $("#kb-settings-dialog").close(); $("#kb-create-dialog").close(); $("#kb-upload-dialog").close(); inspectionSequence++; inspectionSignature = ""; };
   window.loadKnowledge = async () => {
     const rev = ++revision;
+    loadLimits();
     try {
       bases = await api("/knowledge-bases");
       if (revision !== rev) return;
@@ -429,9 +439,8 @@
       const lines = [
         `确定删除知识库《${preview.name}》吗？删除后不能恢复。`,
         `这个库的 ${preview.documents} 份文件，连同切片、索引、解析结果和外发授权，都会一并删除。`,
-        preview.workspace_links
-          ? `工作区材料不会删除，但有 ${preview.workspace_links} 条与本库的关联会断开：相关材料不再继承本库的外发限制，之后按个人材料规则可能发给模型。`
-          : "工作区材料不受影响。",
+        preview.workspace_links ? `工作区材料不会删除，有 ${preview.workspace_links} 条与本库的关联会断开。` : "工作区材料不受影响。",
+        ...(preview.egress_holds ? [`本库未允许外发：其中 ${preview.egress_holds} 份已关联的材料删除后继续禁止发给模型，之后可以在材料页解除限制。`] : []),
         "历史回答保留原样，打开其中的引用时会提示来源已删除。助理不再检索这个库。",
       ];
       if (!await uiConfirm(lines.join("\n"), {title:"删除知识库", ok:"删除", danger:true})) return;
@@ -453,7 +462,7 @@
     if (creation && !creation.error) return;
     const files = [...createFiles], tokens = Number($("#kb-create-tokens").value);
     if (!Number.isInteger(tokens) || tokens < 32 || tokens > 512) { $("#kb-create-error").textContent = "切片目标须为 32～512 之间的整数。"; $("#kb-create-tokens").focus(); return; }
-    if (files.some(file => file.size > 50 * 1024 * 1024)) { $("#kb-create-error").textContent = "有文件超过单批 50MB 的接收上限，请移除该文件后再提交。"; return; }
+    if (oversized(files)) { $("#kb-create-error").textContent = oversizedText(oversized(files)); return; }
     const rev = revision;
     creation = {name, error:""};
     $("#kb-create-dialog").close(); renderLibraryState();
@@ -484,7 +493,7 @@
   $("#kb-upload").addEventListener("click", async () => {
     const id = current, d = draft(id), files = [...d.files], target = d.target;
     if (!files.length || target && files.length !== 1) { $("#kb-upload-error").textContent = "请选择文件；更新同一来源时只选择一份。"; return; }
-    if (files.some(file => file.size > 50 * 1024 * 1024)) { $("#kb-upload-error").textContent = "有文件超过单批50MB上限，请移除后再提交。"; return; }
+    if (oversized(files)) { $("#kb-upload-error").textContent = oversizedText(oversized(files)); return; }
     const tokens = Number($("#kb-tokens").value);
     if (!Number.isInteger(tokens) || tokens < 32 || tokens > 512) { $("#kb-upload-error").textContent = "切片目标须为 32～512 之间的整数。"; $("#kb-tokens").focus(); return; }
     $("#kb-upload-dialog").close();

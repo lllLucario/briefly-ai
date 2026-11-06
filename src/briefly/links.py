@@ -59,6 +59,26 @@ class DocumentLink(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class EgressHold(Base):
+    """“禁止外发”标记：删除未允许外发的知识库时，给 explicit / confirmed 关联的工作区材料留下。库和文档都已不在，
+    所以不设指向它们的外键，库名和文档名存在这里给用户看。工作区一侧的身份和关联相同：追踪文件按文件，其余按材料。"""
+    __tablename__ = "workspace_egress_holds"
+    __table_args__ = (
+        UniqueConstraint("material_id", "document_id"),
+        UniqueConstraint("tracked_file_id", "document_id"),
+        CheckConstraint("(material_id IS NULL) <> (tracked_file_id IS NULL)"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    material_id: Mapped[int | None] = mapped_column(ForeignKey("materials.id", ondelete="CASCADE"), index=True)
+    tracked_file_id: Mapped[int | None] = mapped_column(ForeignKey("tracked_files.id", ondelete="CASCADE"), index=True)
+    kb_id: Mapped[str] = mapped_column(String(32))
+    kb_name: Mapped[str] = mapped_column(String(200))
+    document_id: Mapped[str] = mapped_column(String(32))
+    document_title: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
 class LinkNotFound(MaterialNotFound):
     """关联不存在（接口按 404 返回）。"""
 
@@ -130,6 +150,32 @@ def _links_of(s: Session, material_id: int, kinds=None):
     return list(s.scalars(query.order_by(DocumentLink.id)))
 
 
+def _holds_of(s: Session, material_id: int) -> list[EgressHold]:
+    from .tracking.models import FileSnapshot
+
+    files = select(FileSnapshot.file_id).where(FileSnapshot.material_id == material_id)
+    return list(s.scalars(select(EgressHold).where(or_(EgressHold.material_id == material_id, EgressHold.tracked_file_id.in_(files)))
+                          .order_by(EgressHold.id)))
+
+
+def hold_links_of_base(s: Session, kb_id: str, *, add: bool) -> int:
+    """未允许外发的库删除时受影响的工作区文件份数；add=True 时打上“禁止外发”标记（调用方的事务里，要在关联删除之前）。
+    已允许外发的库不打；suggested 从未继承限制，也不打。已从库里移出的文档，关联还在的也打：拿不准时不放开外发。"""
+    from .knowledge.models import KnowledgeBase, KnowledgeDocument, KnowledgeEgressGrant
+
+    grant = s.get(KnowledgeEgressGrant, kb_id)
+    if grant is not None and grant.allowed:
+        return 0
+    links = list(s.scalars(select(DocumentLink).where(DocumentLink.kb_id == kb_id, DocumentLink.kind.in_(ACTIVE))))
+    if add:
+        kb_name = s.scalar(select(KnowledgeBase.name).where(KnowledgeBase.id == kb_id)) or ""
+        for link in links:
+            s.add(EgressHold(material_id=link.material_id, tracked_file_id=link.tracked_file_id, kb_id=kb_id, kb_name=kb_name,
+                             document_id=link.document_id, document_title=s.get(KnowledgeDocument, link.document_id).title))
+        s.flush()
+    return len({(link.material_id, link.tracked_file_id) for link in links})
+
+
 def current_material(s: Session, link: DocumentLink) -> int | None:
     """关联在工作区一侧当前的材料：追踪文件取最新版本，其余就是那份材料。"""
     if link.material_id is not None:
@@ -169,12 +215,18 @@ def _set(s: Session, owner: dict, kb_id: str, document_id: str, kind: str, score
 # —— 外发继承与改稿提醒（供各入口按会话查询） ——
 
 def egress_restrictions(s: Session, material_ids) -> dict[int, str]:
-    """explicit/confirmed 关联到未允许外发的知识库的材料 → 给用户看的说明。suggested 不继承。"""
+    """explicit/confirmed 关联到未允许外发的知识库的材料，以及删除这类库时留下“禁止外发”标记的材料 → 给用户看的说明。
+    suggested 不继承。所有外发入口都经 MaterialStore.require_egress / egress_blocked 走到这里。"""
     from .knowledge.models import KnowledgeBase, KnowledgeDocument, KnowledgeEgressGrant
     from .materials import Material
 
     result = {}
     for material_id in dict.fromkeys(material_ids):
+        if holds := _holds_of(s, material_id):
+            title = s.scalar(select(Material.title).where(Material.id == material_id)) or ""
+            result[material_id] = (f"材料 {material_id}《{title}》曾关联知识库“{holds[0].kb_name}”中的《{holds[0].document_title}》，"
+                                   "该库删除时未允许外发，内容不发给模型。可在材料页解除限制。")
+            continue
         for link in _links_of(s, material_id, ACTIVE):
             grant = s.get(KnowledgeEgressGrant, link.kb_id)
             if grant is not None and grant.allowed:
@@ -311,6 +363,21 @@ class LinkService:
                         else:
                             s.delete(link)
         return created
+
+    # —— “禁止外发”标记 ——
+
+    def material_holds(self, material_id: int) -> list[dict]:
+        with Session(self.engine) as s:
+            return [dict(id=h.id, kb_name=h.kb_name, document_title=h.document_title, created_at=h.created_at)
+                    for h in _holds_of(s, material_id)]
+
+    def release_holds(self, material_id: int) -> int:
+        """解除这份材料的全部标记，之后按个人材料处理。返回解除的条数。"""
+        with Session(self.engine) as s, s.begin():
+            holds = _holds_of(s, material_id)
+            for hold in holds:
+                s.delete(hold)
+            return len(holds)
 
     # —— 给页面看的 ——
 

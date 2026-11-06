@@ -3,7 +3,8 @@
 
 - 有入库任务未结束时拒绝，不和任务租约竞争。开头先改库这一行取得写锁：之后提交的任务看得见删除，
   之前提交的任务这里看得见它；库行真删除，外键也挡住任何晚到的写入。
-- 工作区材料不删，只断开关联。只属于这个库的知识库专属材料连同章节、分块一并删除。
+- 工作区材料不删，只断开关联。未允许外发的库删除时，已确认关联的材料留下“禁止外发”标记，在材料页解除。
+  只属于这个库的知识库专属材料连同章节、分块一并删除。
 - 历史回答不改写：会话记录不动，引用打开原文时由 service.resolve_reference 说明来源已删除。
 """
 import logging
@@ -11,7 +12,7 @@ import logging
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 
-from ..links import DISMISSED, DocumentLink
+from ..links import DISMISSED, DocumentLink, hold_links_of_base
 from ..llm_cache import purge_knowledge_answers
 from ..materials import KNOWLEDGE, Material, knowledge_referenced
 from ..todos.models import TodoActivity, TodoMaterial
@@ -40,7 +41,8 @@ def deletion_preview(imports, kb_id) -> dict:
                         KnowledgeDocument.kb_id == kb_id, KnowledgeDocument.deleted_at.is_(None))),
                     active_imports=_active_imports(s, kb_id),
                     workspace_links=s.scalar(select(func.count()).select_from(DocumentLink).where(
-                        DocumentLink.kb_id == kb_id, DocumentLink.kind != DISMISSED)))
+                        DocumentLink.kb_id == kb_id, DocumentLink.kind != DISMISSED)),
+                    egress_holds=hold_links_of_base(s, kb_id, add=False))
 
 
 def delete_base(imports, kb_id) -> dict:
@@ -120,6 +122,7 @@ def _delete_rows(s, kb_id) -> dict:
     for model, query in ((KnowledgeImport, KnowledgeImport.kb_id == kb_id), (KnowledgeParseCache, KnowledgeParseCache.kb_id == kb_id)):
         material_ids.update(i for i in s.scalars(select(model.material_id).where(query)) if i is not None)
 
+    holds = hold_links_of_base(s, kb_id, add=True)  # 要在关联和外发授权删除之前
     s.execute(delete(DocumentLink).where(DocumentLink.kb_id == kb_id))
     s.execute(delete(KnowledgeImportMetrics).where(KnowledgeImportMetrics.import_id.in_(
         select(KnowledgeImport.id).where(KnowledgeImport.kb_id == kb_id))))
@@ -136,7 +139,7 @@ def _delete_rows(s, kb_id) -> dict:
     s.add(KnowledgeBaseRemoval(kb_id=kb_id, name=name, generation_ids=generation_ids, job_ids=job_ids))
     s.flush()
     s.execute(delete(KnowledgeBase).where(KnowledgeBase.id == kb_id))
-    return dict(name=name, documents=count, workspace_links=links, removed_materials=removed_materials)
+    return dict(name=name, documents=count, workspace_links=links, egress_holds=holds, removed_materials=removed_materials)
 
 
 def _version_limits(version) -> dict:

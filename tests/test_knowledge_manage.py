@@ -300,7 +300,7 @@ def test_workspace_material_survives_and_link_is_cut(world):
     detail = world.get(f"/materials/{material}").json()
     assert detail["links"] == [] and "650" in detail["content"]
     assert material in [m["id"] for m in world.get("/materials").json()]
-    assert store.egress_blocked([material]) == {}  # 关联断开，外发继承失效
+    assert store.egress_blocked([material])  # 未授权库：关联断开，副本继续禁止外发（第 97 条）
     with Session(world.engine) as s:
         assert s.scalar(select(func.count()).select_from(DocumentLink)) == 0
     assert world.post("/knowledge-scope", json={"kb_ids": [other]}).json()["status"] == "ready"  # 其他库不受影响
