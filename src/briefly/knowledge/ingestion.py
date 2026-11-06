@@ -325,6 +325,8 @@ class ImportService:
         with self.knowledge._session.begin() as s:
             self.get(kb_id, job_id)
             row = s.get(KnowledgeImport, job_id)
+            if row is None:  # 上面核对之后知识库被删除
+                raise KnowledgeNotFound("导入任务不在当前知识库")
             if row.status != "failed" and not (reparse and row.status == "preview"):
                 raise KnowledgeConflict("只有失败文件可重试")
             if reparse:

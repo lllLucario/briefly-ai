@@ -113,6 +113,8 @@ class RetrievalService:
                     raise KnowledgeConflict("范围内存在不兼容的Embedding代次，请重建索引")
                 version = s.get(KnowledgeVersion, item["version_id"])
                 generation = s.get(IndexGeneration, item["generation_id"])
+                if version is None or generation is None:  # 取范围之后知识库被删除
+                    raise KnowledgeNotFound("知识库不存在或已移除")
                 self.imports.lifecycle.index.verify(generation, self.imports.lifecycle.rows(s, version))
         vector = encoder.embed_query(question)
         dense, lexical = self.imports.lifecycle.index.search(question, vector, encoder.identity["dimension"],
@@ -168,6 +170,8 @@ class RetrievalService:
                 item = next(v for v in versions if v["document_id"] == doc_id)
                 with svc._session() as s:
                     version = s.get(KnowledgeVersion, item["version_id"])
+                    if version is None:
+                        raise KnowledgeNotFound("知识库不存在或已移除")
                     first = version.chunk_manifest[0]["index"]
                 if (item["generation_id"], first) in selected:
                     continue

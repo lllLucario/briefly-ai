@@ -3,7 +3,7 @@ from sqlalchemy import select, update
 
 from ..materials import MaterialChunk
 from .models import IndexGeneration, KnowledgeChunk, KnowledgeDocument, KnowledgePublication
-from .service import KnowledgeConflict, KnowledgeService
+from .service import KnowledgeConflict, KnowledgeNotFound, KnowledgeService
 
 
 class IndexLifecycle:
@@ -89,6 +89,8 @@ class IndexLifecycle:
                 from .models import KnowledgeVersion
                 version = s.get(KnowledgeVersion, item["version_id"])
                 generation = s.get(IndexGeneration, item["generation_id"])
+                if version is None or generation is None:  # 取范围之后知识库被删除
+                    raise KnowledgeNotFound("知识库不存在或已移除")
                 self.index.verify(generation, self.rows(s, version))
         return scope
 

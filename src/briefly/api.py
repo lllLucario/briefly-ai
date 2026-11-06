@@ -306,6 +306,11 @@ def create_app(
         except Exception:
             logging.getLogger(__name__).warning("索引派生清理延后，逻辑删除约束继续生效")
         try:
+            from .knowledge.removal import retry_pending_removals
+            retry_pending_removals(app.state.knowledge_imports)  # 已删除知识库上次没清理完的索引和暂存文件
+        except Exception:
+            log.warning("已删除知识库的派生清理延后", exc_info=True)
+        try:
             from .relevance_floor import check_indexes
             check_indexes(app.state.store.engine)  # 已建索引的模型没有登记相关度下限时提示
         except Exception:

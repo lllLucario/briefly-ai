@@ -21,6 +21,18 @@ class KnowledgeBase(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class KnowledgeBaseRemoval(Base):
+    """已删除知识库留下的记录：库本身连同文档、切片一并真删除，这里只留名称和时间，让历史回答里的引用能说明“来源已删除”。
+    generation_ids、job_ids 是提交时还没清理的索引代次和上传暂存：独立的索引文件和磁盘文件进不了业务库事务，
+    所以和删除同一事务记下，清理成功后清空，失败时下次启动重试。"""
+    __tablename__ = "knowledge_base_removals"
+    kb_id: Mapped[str] = mapped_column(String(32), primary_key=True)  # 库已删除，不设外键
+    name: Mapped[str] = mapped_column(String(200))
+    removed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    generation_ids: Mapped[list] = mapped_column(JSON, default=list)
+    job_ids: Mapped[list] = mapped_column(JSON, default=list)
+
+
 class KnowledgeEgressGrant(Base):
     """按知识库一次性授权：允许把问题与检索片段经规则处理后发给外部生成服务。没有记录即未授权。"""
     __tablename__ = "knowledge_egress_grants"

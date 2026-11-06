@@ -177,6 +177,12 @@ class ResponseCache:
             return s.scalar(select(func.count()).select_from(LlmCacheEntry)) or 0
 
 
+def purge_knowledge_answers(session) -> None:
+    """删除知识库时调用，在调用方的事务里执行。条目不记属于哪个库（键是哈希），只能清掉全部单问捷径答案：
+    旧答案的文字来自已删除的资料，不留到过期；其他库的答案下次重新生成，只多一次模型调用。"""
+    session.execute(delete(LlmCacheEntry).where(LlmCacheEntry.site == "knowledge_answer"))
+
+
 @dataclass(frozen=True)
 class CacheScope:
     cache: ResponseCache

@@ -334,7 +334,11 @@
       loadFailed("");
       renderDocuments(documents); renderJobs(jobs); inspectSelection();
       if (jobs.some(job => ["queued", "parsing", "indexing"].includes(job.status))) timer = setTimeout(refresh, 1200);
-    } catch (error) { if (active(id, rev)) { loadFailed(`刷新资料列表失败：${error.message}。正在自动重试。`); timer = setTimeout(refresh, 3000); } }
+    } catch (error) {
+      if (!active(id, rev)) return;
+      if (error.status === 404) { window.loadKnowledge(); return; } // 这个库已在别处删除：改选其他库，不反复重试
+      loadFailed(`刷新资料列表失败：${error.message}。正在自动重试。`); timer = setTimeout(refresh, 3000);
+    }
   }
   // 加载失败单独显示，恢复后自动消失，不和操作结果的提示混在一起
   function loadFailed(text) {
@@ -388,6 +392,59 @@
       if (typeof loadChatBases === "function") loadChatBases().catch(() => {});
     } catch (error) { message(error.message, id); if (current === id) { $("#kb-settings-status").textContent = error.message; syncEgress(); } }
     finally { $("#kb-external").disabled = false; }
+  });
+  $("#kb-rename").addEventListener("click", async () => {
+    const id = current, kb = bases.find(item => item.id === id);
+    if (!kb) return;
+    $("#kb-settings-dialog").close();
+    const values = await uiPrompt({title:"重命名知识库", ok:"保存", fields:[{name:"name", label:"知识库名称", value:kb.name, required:true, maxlength:200, hint:"只改名称；文件、索引、外发授权和历史引用都不变。"}]});
+    if (!values || values.name === kb.name) return;
+    try {
+      const saved = await api(`/knowledge-bases/${id}`, {method:"PATCH", json:{name:values.name}});
+      kb.name = saved.name;
+      const option = [...$("#kb-select").options].find(item => item.value === id);
+      if (option) option.textContent = saved.name;
+      renderLibraryState();
+      message(`已重命名为《${saved.name}》。`, id);
+      loadChatBases().catch(() => {});
+    } catch (error) {
+      if (error.status === 404) { await window.loadKnowledge(); await uiAlert("这个知识库已被删除。", "没有重命名"); }
+      else message(error.message, id);
+    }
+  });
+  $("#kb-delete").addEventListener("click", async () => {
+    const id = current;
+    if (!id) return;
+    $("#kb-settings-dialog").close();
+    if ((uploadQueues.get(id) || []).some(batch => ["queued", "uploading"].includes(batch.state)) || draft(id).uploading) {
+      await uiAlert("这个知识库还有文件正在上传，请等上传结束后再删除。", "暂时不能删除");
+      return;
+    }
+    try {
+      const preview = await api(`/knowledge-bases/${id}/deletion-preview`);
+      if (preview.active_imports) {
+        await uiAlert(`这个知识库还有 ${preview.active_imports} 份文件正在入库，请等任务结束后再删除。`, "暂时不能删除");
+        return;
+      }
+      const lines = [
+        `确定删除知识库《${preview.name}》吗？删除后不能恢复。`,
+        `这个库的 ${preview.documents} 份文件，连同切片、索引、解析结果和外发授权，都会一并删除。`,
+        preview.workspace_links
+          ? `工作区材料不会删除，但有 ${preview.workspace_links} 条与本库的关联会断开：相关材料不再继承本库的外发限制，之后按个人材料规则可能发给模型。`
+          : "工作区材料不受影响。",
+        "历史回答保留原样，打开其中的引用时会提示来源已删除。助理不再检索这个库。",
+      ];
+      if (!await uiConfirm(lines.join("\n"), {title:"删除知识库", ok:"删除", danger:true})) return;
+      const result = await api(`/knowledge-bases/${id}?confirm=true`, {method:"DELETE"});
+      drafts.delete(id); uploadQueues.delete(id);
+      if (current === id) current = "";
+      await window.loadKnowledge();
+      $("#kb-message").textContent = `已删除知识库《${result.name}》。`;
+      loadChatBases().catch(() => {});
+    } catch (error) {
+      if (error.status === 404) { await window.loadKnowledge(); await uiAlert("这个知识库已被删除。", "提示"); }
+      else await uiAlert(error.message, "没有删除");
+    }
   });
   $("#kb-create-form").addEventListener("submit", async event => {
     event.preventDefault();
