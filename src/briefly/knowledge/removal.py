@@ -8,6 +8,7 @@
 - 历史回答不改写：会话记录不动，引用打开原文时由 service.resolve_reference 说明来源已删除。
 """
 import logging
+import time
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -28,6 +29,7 @@ log = logging.getLogger(__name__)
 
 ACTIVE_IMPORTS = ("queued", "parsing", "preview", "indexing")  # preview 是解析与索引之间的内部交接，任务还没结束
 WHOLE_DOCUMENT = 10 ** 12
+DELETE_ATTEMPTS = 3
 
 
 def deletion_preview(imports, kb_id) -> dict:
@@ -48,18 +50,24 @@ def deletion_preview(imports, kb_id) -> dict:
 def delete_base(imports, kb_id) -> dict:
     svc = imports.knowledge
     imports.recover_expired()  # 进程已不在的任务转为失败，不把库永远卡在“入库中”
-    try:
-        with svc._session.begin() as s:
-            locked = s.execute(update(KnowledgeBase).where(KnowledgeBase.id == kb_id, KnowledgeBase.deleted_at.is_(None))
-                               .values(revision=KnowledgeBase.revision + 1)
-                               .execution_options(synchronize_session=False))
-            if locked.rowcount != 1:
-                raise KnowledgeNotFound("知识库不存在或已移除")
-            if active := _active_imports(s, kb_id):
-                raise KnowledgeConflict(f"这个知识库还有 {active} 份文件正在入库，请等任务结束后再删除")
-            summary = _delete_rows(s, kb_id)
-    except IntegrityError as exc:  # 只有并发写入才会走到这里：事务已回滚，什么都没删
-        raise KnowledgeConflict("这个知识库正有新的写入，没有删除，请稍后重试") from exc
+    for attempt in range(DELETE_ATTEMPTS):
+        try:
+            with svc._session.begin() as s:
+                locked = s.execute(update(KnowledgeBase).where(KnowledgeBase.id == kb_id, KnowledgeBase.deleted_at.is_(None))
+                                   .values(revision=KnowledgeBase.revision + 1)
+                                   .execution_options(synchronize_session=False))
+                if locked.rowcount != 1:
+                    raise KnowledgeNotFound("知识库不存在或已移除")
+                if active := _active_imports(s, kb_id):
+                    raise KnowledgeConflict(f"这个知识库还有 {active} 份文件正在入库，请等任务结束后再删除")
+                summary = _delete_rows(s, kb_id)
+            break
+        except IntegrityError as exc:
+            # 只有并发写入才会走到这里，事务已回滚，什么都没删。PostgreSQL 没有 SQLite 的单写者：后台的疑似重复检测
+            # 可能在删关联和删文档两条语句之间提交一条新关联。这种写入很快结束，重来一次就能连它一起删掉。
+            if attempt == DELETE_ATTEMPTS - 1:
+                raise KnowledgeConflict("这个知识库正有新的写入，没有删除，请稍后重试") from exc
+            time.sleep(0.05 * (attempt + 1))
     return dict(summary, kb_id=kb_id, cleanup_pending=not finish_removal(imports, kb_id))
 
 

@@ -15,19 +15,21 @@ from alembic.migration import MigrationContext
 from langchain_core.messages import AIMessage, HumanMessage
 import pytest
 pytest.importorskip("pgvector", reason="PostgreSQL 用例需安装 .[postgres]")
-from sqlalchemy import select, text
+from sqlalchemy import event, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from briefly import schema
 from briefly.agent import postgres_checkpointer
 from briefly.db import create_db_engine
+from briefly.knowledge import removal
 from briefly.knowledge.index import open_index
 from briefly.knowledge.ingestion import ImportService
 from briefly.knowledge.lifecycle import IndexLifecycle
-from briefly.knowledge.models import IndexGeneration, KnowledgePublication
+from briefly.knowledge.models import IndexGeneration, KnowledgeBase, KnowledgePublication
 from briefly.knowledge.pg_index import PostgresIndex
 from briefly.knowledge.service import KnowledgeConflict, KnowledgeService
+from briefly.links import DocumentLink
 from briefly.materials import MaterialStore
 from briefly.todos.models import Todo
 import pg_mode
@@ -124,6 +126,56 @@ def test_concurrent_publish_has_one_winner_and_loser_leaves_nothing(engine):
         assert {g.status for g in s.scalars(select(IndexGeneration))} == {"ready", "failed"}
     with engine.connect() as connection:
         assert connection.execute(text("SELECT DISTINCT generation FROM kb_index_chunks")).scalars().all() == winners
+
+
+def _base_with_document(engine, tmp_path):
+    store, knowledge = MaterialStore(engine), KnowledgeService(engine)
+    material, _ = store.add_text("制度", "住宿上限650元。")
+    kb = knowledge.create("库")
+    document, version, _ = knowledge.attach(kb.id, material.id)
+    imports = ImportService(engine, tmp_path, PostgresIndex(engine), Encoder)
+    imports.lifecycle.build(kb.id, document.id, version.id, Encoder(), expected_revision=1)
+    return imports, kb, document
+
+
+def _link_appears_during_delete(engine, kb, document, times):
+    """后台的疑似重复检测在删除的两条语句之间提交一条关联。SQLite 的写锁不允许这样，PostgreSQL 允许。"""
+    left = [times]
+
+    def concurrent_commit(_conn, _cursor, statement, *_args):
+        if statement.startswith("DELETE FROM knowledge_versions") and left[0]:
+            left[0] -= 1
+            # 每次一份新材料：同一对材料和文档的关联正被这个事务删除，再写同样的一对会等它提交，用例自己卡死
+            material, _ = MaterialStore(engine).add_text(f"改稿{left[0]}", f"住宿上限{left[0]}元。")
+            with Session(engine) as s, s.begin():
+                s.add(DocumentLink(material_id=material.id, kb_id=kb.id, document_id=document.id, kind="suggested"))
+
+    event.listen(engine, "before_cursor_execute", concurrent_commit)
+    return lambda: event.remove(engine, "before_cursor_execute", concurrent_commit)
+
+
+def test_delete_base_survives_a_link_committed_mid_delete(engine, tmp_path):
+    imports, kb, document = _base_with_document(engine, tmp_path)
+    stop = _link_appears_during_delete(engine, kb, document, times=1)
+    try:
+        assert removal.delete_base(imports, kb.id)["kb_id"] == kb.id
+    finally:
+        stop()
+    with Session(engine) as s:
+        assert s.scalar(select(func.count()).select_from(DocumentLink)) == 0
+        assert s.get(KnowledgeBase, kb.id) is None
+
+
+def test_delete_base_reports_conflict_if_writes_keep_coming(engine, tmp_path):
+    imports, kb, document = _base_with_document(engine, tmp_path)
+    stop = _link_appears_during_delete(engine, kb, document, times=100)
+    try:
+        with pytest.raises(KnowledgeConflict, match="正有新的写入"):
+            removal.delete_base(imports, kb.id)
+    finally:
+        stop()
+    with Session(engine) as s:  # 没有删掉任何东西
+        assert s.get(KnowledgeBase, kb.id) is not None
 
 
 def test_todo_ids_never_reused_and_two_levels_enforced_by_database(engine):
