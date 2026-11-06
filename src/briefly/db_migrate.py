@@ -246,7 +246,17 @@ def migrate_from_sqlite(source_path, target_url: str, checkpoints_path=None) -> 
     finally:
         source.dispose()
         target.dispose()
-    return dict(tables=tables, checkpoints=checkpoints, knowledge_only_marked=marked, flags=flags)
+    return dict(tables=tables, checkpoints=checkpoints, knowledge_only_marked=marked, flags=flags,
+                warnings=_checkpoint_warnings(tables, checkpoints))
+
+
+def _checkpoint_warnings(tables: dict, checkpoints: dict) -> list[str]:
+    """会话清单有数据、会话记录却一条没复制到，多半是副本漏了文件。也可能确实没有记录，所以只警告，不拒绝。"""
+    sessions = tables["chat_sessions"]["rows"]
+    if not sessions or checkpoints.get("threads"):
+        return []
+    return [f"业务库有 {sessions} 个会话，但会话记录一条也没有复制到。如果会话记录文件是复制来的，可能漏了 -wal 文件"
+            "（WAL 模式下数据可能都在 -wal 里，主文件只有几 KB）。请确认后清空目标库重新迁移；确实没有会话记录可以忽略。"]
 
 
 def _flags(engine) -> dict:
@@ -329,6 +339,8 @@ def main(argv: list[str]) -> int:
         report = {}
         if args.command == "migrate-from-sqlite":
             report = migrate_from_sqlite(args.source, target, args.checkpoints)
+            for warning in report["warnings"]:
+                print(f"警告：{warning}", file=sys.stderr)
             if args.no_index:
                 report["index"] = "未重建：运行 briefly db rebuild-index"
         if not report.get("index"):

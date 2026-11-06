@@ -1,5 +1,6 @@
 """briefly db migrate-from-sqlite：源库只读、目标必须为空、行数和内容校验、序列重置、中断后能重来。"""
 import hashlib
+import json
 from pathlib import Path
 import sqlite3
 
@@ -86,6 +87,7 @@ def test_migrates_everything_and_checks_it(source, checkpoints, target):
     assert report["checkpoints"]["threads"] == 2 and report["checkpoints"]["checkpoints"] > 2
     assert report["flags"]["workspace_egress_holds"] == 1 and report["flags"]["outbound_claims"] == 1
     assert report["flags"]["knowledge_index_generations"] == 1
+    assert report["warnings"] == []
 
     engine = pg_mode.real_create_db_engine(target)
     with Session(engine) as s:
@@ -106,6 +108,37 @@ def test_migrates_everything_and_checks_it(source, checkpoints, target):
     state = saver.get_tuple(dict(configurable=dict(thread_id="t1", checkpoint_ns="")))
     assert [m.content for m in state.checkpoint["channel_values"]["messages"]] == ["你好 t1", "回声"]
     saver.conn.close()
+
+
+def _add_chat_session(path: Path) -> None:
+    db = sqlite3.connect(path)
+    db.execute("INSERT INTO chat_sessions(thread_id,title,created_at,updated_at) VALUES ('t1','会话','2026-01-01 00:00:00','2026-01-01 00:00:00')")
+    db.commit()
+    db.close()
+
+
+@pytest.mark.parametrize("leave_file", [True, False], ids=["main_file_without_wal", "no_file"])
+def test_warns_when_sessions_exist_but_no_checkpoints_copied(source, target, tmp_path, capsys, leave_file):
+    """WAL 模式的会话记录文件只复制主文件时，里面没有表，看起来像“没有记录”。只警告，不拒绝。"""
+    _add_chat_session(source)
+    copied = tmp_path / "copied-without-wal.db"
+    if leave_file:
+        sqlite3.connect(copied).close()
+        copied.write_bytes(b"")
+    code = db_migrate.main(["migrate-from-sqlite", "--source", str(source), "--checkpoints", str(copied), "--target", target, "--no-index"])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "-wal" in captured.err and "警告" in captured.err
+    assert "-wal" in json.loads(captured.out)["warnings"][0]
+
+
+def test_no_warning_when_sessions_and_checkpoints_both_present(source, checkpoints, target):
+    _add_chat_session(source)
+    assert db_migrate.migrate_from_sqlite(source, target, checkpoints)["warnings"] == []
+
+
+def test_no_warning_when_there_are_no_sessions(source, target, tmp_path):
+    assert db_migrate.migrate_from_sqlite(source, target, tmp_path / "none.db")["warnings"] == []
 
 
 def test_index_rebuild_passes_verify_and_can_repeat(source, checkpoints, target):
