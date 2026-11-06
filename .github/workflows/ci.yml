@@ -5,6 +5,19 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      defender_off:
+        description: 关闭 Defender 实时扫描
+        default: "false"
+      os:
+        description: 矩阵
+        default: '["ubuntu-latest", "windows-latest"]'
+      pytest_args:
+        description: 全量测试的额外参数
+        default: ""
+      install:
+        description: 额外安装的包（诊断）
+        default: ""
 
 permissions:
   contents: read
@@ -21,8 +34,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]  # Windows 是开发环境，Linux 是将来的部署环境，两边都跑
+        os: ${{ fromJSON(inputs.os || '["ubuntu-latest", "windows-latest"]') }}  # Windows 是开发环境，Linux 是将来的部署环境，两边都跑
     steps:
+      - name: Defender 状态（改之前）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-MpComputerStatus | Select-Object AMServiceEnabled,AntivirusEnabled,RealTimeProtectionEnabled,OnAccessProtectionEnabled,IoavProtectionEnabled,AMRunningMode | Format-List
+          Get-MpPreference | Select-Object DisableRealtimeMonitoring,ExclusionPath,ExclusionProcess | Format-List
+
+      - name: 关闭 Defender 实时扫描（诊断开关）
+        if: runner.os == 'Windows' && inputs.defender_off == 'true'
+        shell: pwsh
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $true
+          Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled,OnAccessProtectionEnabled | Format-List
+          Get-MpPreference | Select-Object DisableRealtimeMonitoring | Format-List
+
       - uses: actions/checkout@v7
 
       - uses: astral-sh/setup-uv@v10.3.3
@@ -38,8 +66,15 @@ jobs:
       - name: 确认 sqlite 能加载 sqlite-vec，FTS5 可用
         run: uv run --no-sync python -c "import sqlite3, sqlite_vec; db = sqlite3.connect(':memory:'); db.enable_load_extension(True); sqlite_vec.load(db); db.execute('CREATE VIRTUAL TABLE t USING fts5(x)'); print(sqlite3.sqlite_version, db.execute('select vec_version()').fetchone()[0])"
 
+      - name: 额外安装（诊断）
+        if: inputs.install != ''
+        run: uv pip install ${{ inputs.install }}
+
+      - name: 基准（诊断）
+        run: uv run --no-sync python .github/diag_bench.py
+
       - name: 检索门禁（不允许跳过）
         run: uv run --no-sync python -m pytest tests/test_retrieval_gate.py tests/test_retrieval_gate_compare.py tests/test_no_external_network.py -W error
 
       - name: 全量测试
-        run: uv run --no-sync python -m pytest -W error -rs
+        run: uv run --no-sync python -m pytest -W error -rs --durations=0 --durations-min=0.01 ${{ inputs.pytest_args }}
