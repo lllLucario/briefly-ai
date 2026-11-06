@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from ..errors import UserInputError
 from .. import config
 from ..llm import create_local_embeddings
-from .index import LocalIndex
+from .index import open_index
 from .ingestion import ImportService
 from .service import KnowledgeConflict, KnowledgeNotFound
 
@@ -49,7 +49,7 @@ def register(app):
                 encoder = create_local_embeddings(config.EMBEDDING_DIR)
             return encoder
     service = ImportService(app.state.store.engine, config.KNOWLEDGE_DIR,
-        LocalIndex(Path(config.KNOWLEDGE_DIR) / "index.sqlite"), encoder_factory)
+        open_index(app.state.store.engine, Path(config.KNOWLEDGE_DIR) / "index.sqlite"), encoder_factory)
     app.state.knowledge_imports = service
 
     def run(action, *args):

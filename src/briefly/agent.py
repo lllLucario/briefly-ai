@@ -36,7 +36,7 @@ from .compaction import Compactor
 from .context import Context
 from .context_builder import CONTEXT_OVERFLOW, SYSTEM_REPLY, ContextBuilder, system_reply
 from .context_store import TURN, ContextStore
-from .db import create_db_engine
+from .db import create_db_engine, database_url, is_postgres
 from .llm import create_chat_model, fresh_model_calls
 from .materials import EgressRestricted, MaterialStore, check_pasted_size, wrap_material
 from .output_check import INTERNAL_PATTERNS, PROGRAM_MATERIAL_REF, InternalTermCheck, reply_char_limit
@@ -64,6 +64,7 @@ __all__ = [
     "TOOL_ROUNDS_EXCEEDED",
     "build_system_prompt",
     "new_thread_id",
+    "open_checkpointer",
     "sqlite_checkpointer",
 ]
 
@@ -153,6 +154,27 @@ def _tool_error(error: Exception, request) -> str:
 def sqlite_checkpointer(path: str | Path) -> SqliteSaver:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     return SqliteSaver(sqlite3.connect(path, check_same_thread=False))
+
+
+def postgres_checkpointer(url: str) -> BaseCheckpointSaver:
+    """连接池要求和 PostgresSaver.from_conn_string 一致：autocommit、dict_row、不用预备语句。setup() 幂等。"""
+    from langgraph.checkpoint.postgres import PostgresSaver
+    from psycopg.rows import dict_row
+    from psycopg_pool import ConnectionPool
+    from sqlalchemy.engine import make_url
+
+    conninfo = make_url(database_url(url)).set(drivername="postgresql").render_as_string(hide_password=False)
+    pool = ConnectionPool(conninfo, min_size=1, max_size=10, open=True,
+                          kwargs=dict(autocommit=True, prepare_threshold=0, row_factory=dict_row))
+    saver = PostgresSaver(pool)
+    saver.setup()
+    return saver
+
+
+def open_checkpointer(url: str | None = None, path: str | Path | None = None) -> BaseCheckpointSaver:
+    """会话记录跟着业务库走：PostgreSQL 时放在同一个数据库，否则用独立的 SQLite 文件（DB_PATH）。"""
+    url = url or config.DATABASE_URL
+    return postgres_checkpointer(url) if is_postgres(database_url(url)) else sqlite_checkpointer(path or config.DB_PATH)
 
 
 class Agent:

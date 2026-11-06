@@ -121,6 +121,8 @@ def test_missing_material_stays_not_found(store):
 def test_section_slice_preserves_python_strip_and_unicode(store, body, limit):
     content = "前文不应读入。" + body + "另一章不应读入。"
     material, _ = store.add_text("材料", content)
+    if store.engine.dialect.name == "postgresql":
+        content = content.replace("\x00", "\ufffd")  # 等长替换，位置不变（见 MaterialStore）
     start, end = len("前文不应读入。"), len("前文不应读入。") + len(body)
     actual, length = store.section_text(material.id, start, end, limit)
     expected = content[start:end].strip()

@@ -18,14 +18,26 @@ def terms(text, *, query=False):
     return sorted(result)
 
 
-def vector_blob(values, dimension):
+def unit_vector(values, dimension):
     if len(values) != dimension or not all(math.isfinite(x) for x in values) or not any(values):
         raise ValueError("Embedding向量维度、有限性或范数无效")
     # 归一化后再存float32，避免极小/极大浮点数导致cosine溢出。
     scale = max(abs(x) for x in values)
     scaled = [x / scale for x in values]
     norm = math.sqrt(sum(x*x for x in scaled))
-    return struct.pack(f"<{dimension}f", *(x / norm for x in scaled))
+    return [x / norm for x in scaled]
+
+
+def vector_blob(values, dimension):
+    return struct.pack(f"<{dimension}f", *unit_vector(values, dimension))
+
+
+def open_index(engine, path):
+    """派生索引跟着业务库走：PostgreSQL 时表放在同一个数据库，否则用独立的 SQLite 文件。"""
+    if engine.dialect.name == "postgresql":
+        from .pg_index import PostgresIndex
+        return PostgresIndex(engine)
+    return LocalIndex(path)
 
 
 class LocalIndex:

@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from . import api_docs as docs
 from . import auth, config, mail
 from .errors import MODEL_FAILED, MODEL_TIMEOUT, PayloadTooLarge, UserInputError, is_timeout, validation_response
-from .agent import Agent, new_thread_id, sqlite_checkpointer
+from .agent import Agent, new_thread_id, open_checkpointer
 from .context_builder import SYSTEM_REPLY
 from .db import create_db_engine
 from .feishu import FeishuClient, client_from_config
@@ -213,7 +213,7 @@ class MailStatus(BaseModel):
 
 def default_agent(store: MaterialStore) -> Agent:
     model = create_chat_model()  # 先校验配置，失败时不创建会话数据库连接。
-    return Agent(model, checkpointer=sqlite_checkpointer(config.DB_PATH), store=store)
+    return Agent(model, checkpointer=open_checkpointer(), store=store)
 
 
 def visible_messages(messages: list[AnyMessage]) -> list[MessageOut]:

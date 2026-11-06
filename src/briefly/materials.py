@@ -204,6 +204,9 @@ class MaterialStore:
         content = content.replace("\r\n", "\n").replace("\r", "\n").strip()
         if not content:
             raise UserInputError("材料内容为空")
+        if self.engine.dialect.name == "postgresql":
+            # text 不能存 NUL。在算指纹之前换成等长的 U+FFFD：存下来的正文和指纹一致，章节和切片的位置不变
+            content = content.replace("\x00", "\ufffd")
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
         with self._session() as s:
             existing = s.scalar(select(Material).where(Material.content_hash == digest))

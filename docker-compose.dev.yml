@@ -1,0 +1,30 @@
+# 本地开发用的 PostgreSQL（含 pgvector）。只绑定本机地址，密码从 .env 读（BRIEFLY_PG_PASSWORD），不写在这里。
+# 启动：docker compose -f docker-compose.dev.yml up -d
+# 停止：docker compose -f docker-compose.dev.yml stop（数据保留在卷 briefly_dev_pgdata）
+# 清空数据才用 down -v，这会删除卷。
+name: briefly-dev
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg17  # 固定到具体版本；CI 用同一个镜像
+    container_name: briefly-dev-postgres
+    restart: "no"
+    environment:
+      POSTGRES_USER: briefly
+      POSTGRES_PASSWORD: ${BRIEFLY_PG_PASSWORD:?在 .env 里设置 BRIEFLY_PG_PASSWORD}
+      POSTGRES_DB: briefly
+      # 按码位排序，和 SQLite 的二进制比较一致；大小写转换仍支持 Unicode
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale-provider=builtin --builtin-locale=C.UTF-8
+    ports:
+      - "127.0.0.1:55432:5432"  # 只绑定本机；不占用 8000、8010，也避开默认的 5432
+    volumes:
+      - briefly_dev_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U briefly -d briefly"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  briefly_dev_pgdata:
+    name: briefly_dev_pgdata

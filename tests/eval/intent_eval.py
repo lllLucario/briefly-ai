@@ -9,6 +9,7 @@
 import argparse
 from collections import Counter, defaultdict
 import json
+import os
 from pathlib import Path
 
 from briefly import config
@@ -175,12 +176,12 @@ def kb_probe(root: Path, encoder_factory):
     目录里有 libs.json（多库：{键: {kb_id, …}}）时按用例的 state.kb 选库，否则用 kb_id.txt 的单库。"""
     from briefly.db import create_db_engine
     from briefly.knowledge.assistant import KnowledgeAssistant
-    from briefly.knowledge.index import LocalIndex
+    from briefly.knowledge.index import open_index
     from briefly.knowledge.ingestion import ImportService
     from briefly.knowledge.retrieval import RetrievalService
 
-    engine = create_db_engine("sqlite:///" + (root / "app.db").as_posix())
-    imports = ImportService(engine, root, LocalIndex(root / "index.sqlite"), encoder_factory)
+    engine = create_db_engine(os.getenv("BRIEFLY_EVAL_DATABASE_URL") or "sqlite:///" + (root / "app.db").as_posix())
+    imports = ImportService(engine, root, open_index(engine, root / "index.sqlite"), encoder_factory)
     assistant, cache = KnowledgeAssistant(RetrievalService(imports), None), {}
 
     def probe(kb_id, text):

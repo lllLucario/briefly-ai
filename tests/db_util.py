@@ -7,6 +7,7 @@ from itertools import count
 from pathlib import Path
 
 from briefly.db import create_db_engine
+import pg_mode
 
 _directory: Path | None = None
 _factory = None
@@ -30,6 +31,8 @@ def file_engine():
     """用例结束时自动释放；不需要传临时目录，所以普通辅助函数里也能用。
     建表逐条落盘很慢，所以只建一次模板，之后复制；create_db_engine 看到表已存在就不再建。"""
     global _template
+    if pg_mode.enabled():
+        return create_db_engine(f"sqlite:///{(_directory / f'app-{next(_numbers)}.db').as_posix()}")
     if _template is None:
         template = _factory.mktemp("db-template") / "template.db"
         create_db_engine(f"sqlite:///{template.as_posix()}").dispose()

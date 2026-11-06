@@ -91,7 +91,12 @@ def rows(client, kb=None):
 
 
 def generations(client):
-    with client.app_state.knowledge_imports.lifecycle.index.connect() as db:
+    index = client.app_state.knowledge_imports.lifecycle.index
+    if client.engine.dialect.name == "postgresql":
+        with client.engine.connect() as connection:
+            return (connection.exec_driver_sql("SELECT id FROM kb_index_generations").scalars().all(),
+                    connection.exec_driver_sql("SELECT count(*) FROM kb_index_chunks").scalar())
+    with index.connect() as db:
         return [row[0] for row in db.execute("SELECT id FROM generations")], db.execute("SELECT count(*) FROM lexical").fetchone()[0]
 
 

@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel, Field
 import logging
-from sqlalchemy import JSON, String, select, update
+from sqlalchemy import JSON, String, cast, select, update
 from sqlalchemy.orm import Mapped, mapped_column, sessionmaker
 
 from .errors import UserInputError
@@ -324,7 +324,8 @@ def register(app: FastAPI, get_agent, thread_locks, model_factory) -> None:
             changed = s.execute(update(WeeklyReport).where(
                 WeeklyReport.id == r.id,
                 WeeklyReport.note == before["note"],
-                WeeklyReport.material_ids == before["material_ids"],
+                # PostgreSQL 的 json 类型不能直接比较，转成文本比；两边都由同一个 json.dumps 写入
+                cast(WeeklyReport.material_ids, String) == json.dumps(before["material_ids"]),
                 WeeklyReport.status.not_in(["pending", "running"]),
             ).values(**after))
             if changed.rowcount != 1:
