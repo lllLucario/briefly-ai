@@ -1,6 +1,11 @@
 """SQLite 上的结构迁移：新库、旧库补齐并打版本、模型和迁移没有差异。PostgreSQL 的差异检查在 test_postgres_backend.py。"""
+import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
+
+import pytest
 
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
@@ -51,6 +56,66 @@ def test_old_database_keeps_data_and_gets_stamped(tmp_path):
         assert "outbound_claims" in inspect(connection).get_table_names()
         assert "ix_material_chunks_material_index" in {i["name"] for i in inspect(connection).get_indexes("material_chunks")}
     engine.dispose()
+
+
+_WORKER = """
+import sys, time
+from pathlib import Path
+from briefly.db import create_db_engine
+barrier, me, total = Path(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+(barrier / me).touch()
+deadline = time.monotonic() + 120
+while len(list(barrier.iterdir())) < total and time.monotonic() < deadline:  # 都导入完了才一起开始
+    time.sleep(0.005)
+create_db_engine(sys.argv[1]).dispose()
+if sys.argv[1].startswith("postgresql"):  # 正式启动的顺序：业务库，然后会话记录
+    from briefly.agent import postgres_checkpointer
+    postgres_checkpointer(sys.argv[1]).conn.close()
+"""
+
+
+def start_together(url: str, tmp_path: Path, processes: int = 4):
+    """真正的多个进程同时启动。全部成功才返回。"""
+    barrier = tmp_path / "barrier"
+    barrier.mkdir()
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"), "PYTHONUTF8": "1"}
+    workers = [subprocess.Popen([sys.executable, "-c", _WORKER, url, str(barrier), str(i), str(processes)], env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8") for i in range(processes)]
+    errors = []
+    for worker in workers:
+        _, err = worker.communicate(timeout=240)
+        if worker.returncode:
+            errors.append(err[-800:])
+    assert not errors, errors[0]
+
+
+def _new_file(path: Path) -> None:
+    """新建的库走同一条路：这里什么都不用准备。"""
+
+
+def _old_file(path: Path) -> None:
+    """W4 之前的库：有数据，没有版本表，缺一些新表。"""
+    create_db_engine(f"sqlite:///{path.as_posix()}").dispose()
+    db = sqlite3.connect(path)
+    db.execute("DROP TABLE alembic_version")
+    db.execute("DROP TABLE outbound_claims")
+    db.execute("INSERT INTO chat_sessions(thread_id,title,created_at,updated_at) VALUES ('t','旧会话','2026-01-01 00:00:00','2026-01-01 00:00:00')")
+    db.commit()
+    db.close()
+
+
+@pytest.mark.parametrize("prepare", [_new_file, _old_file], ids=["new", "old"])
+def test_concurrent_first_start_all_succeed(tmp_path, prepare):
+    """以前只有 PostgreSQL 排队：多个进程都读到“没有版本”，写 alembic_version 时撞主键，后到的启动失败。"""
+    path = tmp_path / "app.db"
+    prepare(path)
+    start_together(f"sqlite:///{path.as_posix()}", tmp_path)
+    db = sqlite3.connect(path)
+    assert db.execute("SELECT version_num FROM alembic_version").fetchall() == [(schema.head(),)]
+    assert db.execute("SELECT count(*) FROM sqlite_master WHERE name='outbound_claims'").fetchone() == (1,)
+    if prepare is _old_file:
+        assert db.execute("SELECT title FROM chat_sessions").fetchall() == [("旧会话",)]
+    db.close()
 
 
 def test_second_start_takes_the_fast_path(tmp_path, monkeypatch):

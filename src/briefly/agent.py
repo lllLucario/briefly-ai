@@ -156,8 +156,30 @@ def sqlite_checkpointer(path: str | Path) -> SqliteSaver:
     return SqliteSaver(sqlite3.connect(path, check_same_thread=False))
 
 
+_CHECKPOINT_SETUP_LOCK = 0x42524643
+_CHECKPOINT_SETUP_WAIT_S = 120
+
+
+def _setup_checkpoints(saver, conninfo: str) -> None:
+    """setup() 幂等，但不能并发：多个进程第一次启动时都会建表，撞唯一约束。这里让它们排队。
+
+    只能轮询 pg_try_advisory_lock，不能用阻塞的 pg_advisory_lock：等锁的语句持有快照，而 setup() 里的
+    CREATE INDEX CONCURRENTLY 要等所有旧快照结束，两边会互相等死，数据库也检测不出来。持锁的连接不开事务，同样不挡它。"""
+    import time
+
+    import psycopg
+
+    deadline = time.monotonic() + _CHECKPOINT_SETUP_WAIT_S
+    with psycopg.connect(conninfo, autocommit=True) as lock:
+        while not lock.execute("SELECT pg_try_advisory_lock(%s)", (_CHECKPOINT_SETUP_LOCK,)).fetchone()[0]:
+            if time.monotonic() > deadline:
+                raise TimeoutError("等待其他进程建会话记录表超时，请稍后重试")
+            time.sleep(0.1)
+        saver.setup()  # 连接关闭时锁自动释放
+
+
 def postgres_checkpointer(url: str) -> BaseCheckpointSaver:
-    """连接池要求和 PostgresSaver.from_conn_string 一致：autocommit、dict_row、不用预备语句。setup() 幂等。"""
+    """连接池要求和 PostgresSaver.from_conn_string 一致：autocommit、dict_row、不用预备语句。"""
     from langgraph.checkpoint.postgres import PostgresSaver
     from psycopg.rows import dict_row
     from psycopg_pool import ConnectionPool
@@ -167,7 +189,11 @@ def postgres_checkpointer(url: str) -> BaseCheckpointSaver:
     pool = ConnectionPool(conninfo, min_size=1, max_size=10, open=True,
                           kwargs=dict(autocommit=True, prepare_threshold=0, row_factory=dict_row))
     saver = PostgresSaver(pool)
-    saver.setup()
+    try:
+        _setup_checkpoints(saver, conninfo)
+    except BaseException:
+        pool.close()
+        raise
     return saver
 
 

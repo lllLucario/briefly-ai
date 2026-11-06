@@ -31,7 +31,8 @@ def test_old_word_upload_and_rich_preview(web_page,monkeypatch,tmp_path):
     page.locator('.tabs [data-tab="materials"]').click()
     page.locator("#open-add").click()
     page.locator("#file").set_input_files({"name":"中文旧制度.doc","mimeType":"application/msword","buffer":legacy_word.OLE_HEADER+b"fixture"})
-    expect(page.locator("#add-msg")).to_contain_text("中文旧制度.doc")
+    # 文件名在“正在解析”的进度里就会出现。要等导入完成：进程里第一次解析 Word 要加载 Docling，约 5 秒
+    expect(page.locator("#add-msg")).to_contain_text("已导入：中文旧制度.doc", timeout=60000)
     page.locator("#add-dialog [data-close]").first.click()
     expect(page.locator("#material-rows")).to_contain_text("中文旧制度.doc")
     assert page.evaluate("RICH_TYPES.has('doc')") is True
@@ -54,7 +55,7 @@ def test_direct_word_upload_uses_local_parser(web_page,monkeypatch,tmp_path):
     page.locator('.tabs [data-tab="materials"]').click()
     page.locator("#open-add").click()
     page.locator("#file").set_input_files({"name":"直接解析中文制度.doc","mimeType":"application/msword","buffer":legacy_word.OLE_HEADER+b"fixture"})
-    expect(page.locator("#add-msg")).to_contain_text("直接解析中文制度.doc")
+    expect(page.locator("#add-msg")).to_contain_text("已导入：直接解析中文制度.doc", timeout=60000)
     page.locator("#add-dialog [data-close]").first.click()
     expect(page.locator("#material-rows")).to_contain_text("直接解析中文制度.doc")
     materials=page.request.get(page.url.split('#')[0].rstrip('/')+'/materials').json()

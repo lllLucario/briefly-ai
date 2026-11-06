@@ -30,6 +30,7 @@ from briefly.knowledge.pg_index import PostgresIndex
 from briefly.knowledge.service import KnowledgeConflict, KnowledgeService
 from briefly.materials import MaterialStore
 from briefly.todos.models import Todo
+import pg_mode
 from test_knowledge_slicing import Encoder
 
 pytestmark = pytest.mark.postgres
@@ -272,6 +273,20 @@ def test_models_and_migrations_have_no_difference(engine):
         context = MigrationContext.configure(connection, opts=dict(compare_type=True, include_object=schema.include_object))
         assert compare_metadata(context, schema.target_metadata("postgresql")) == []
         assert schema.current(connection) == schema.head()
+
+
+def test_concurrent_first_start_on_empty_database_all_succeed(tmp_path):
+    """多个进程第一次启动：业务表由咨询锁排队，会话记录表也要排队，否则 setup() 撞唯一约束，后到的启动失败。"""
+    from test_schema_migrations import start_together
+
+    url = pg_mode._connection_url(pg_mode._new_schema())
+    start_together(url, tmp_path)
+    again = create_db_engine(url)
+    with again.connect() as connection:
+        assert schema.current(connection) == schema.head()
+        assert connection.execute(text("SELECT count(*) FROM checkpoint_migrations")).scalar() == 10
+        assert connection.execute(text("SELECT count(*) FROM pg_index WHERE NOT indisvalid")).scalar() == 0
+    again.dispose()
 
 
 def test_second_start_does_not_migrate_again(engine):

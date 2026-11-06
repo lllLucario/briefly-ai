@@ -4,6 +4,7 @@
 """
 SKIPS: dict[str, str] = {
     "tests/test_db_connections.py::test_create_app_on_memory_database_is_refused": "检查 SQLite 内存库的共用连接，PostgreSQL 没有内存库",
+    "tests/test_schema_migrations.py::test_concurrent_first_start": "SQLite 文件的并发升级，PostgreSQL 的在 test_postgres_backend.py",
     "tests/test_schema_migrations.py::test_new_database": "SQLite 文件的结构迁移，PostgreSQL 的在 test_postgres_backend.py",
     "tests/test_schema_migrations.py::test_baseline_tables": "比较 SQLite 迁移和内存库 create_all",
     "tests/test_schema_migrations.py::test_old_database": "SQLite 旧库打版本",
