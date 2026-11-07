@@ -4,7 +4,7 @@ from pathlib import Path
 
 from .errors import PayloadTooLarge
 from . import config
-from .agent import Agent, sqlite_checkpointer
+from .agent import Agent, open_checkpointer
 from .db import create_db_engine
 from .feishu import FeishuError, looks_like_feishu
 from .feishu.client import default_client
@@ -120,7 +120,11 @@ def main() -> None:
         from .intent_log import main as intent_log_main
 
         sys.exit(intent_log_main(sys.argv[2:]))
-    ap = argparse.ArgumentParser(prog="briefly", description="办公 AI Agent（追踪文件见 briefly track -h，周报见 briefly weekly -h，意图记录见 briefly intent-log -h）")
+    if sys.argv[1:2] == ["db"]:  # 数据库：结构升级、从 SQLite 迁移到 PostgreSQL、重建索引
+        from .db_migrate import main as db_main
+
+        sys.exit(db_main(sys.argv[2:]))
+    ap = argparse.ArgumentParser(prog="briefly", description="办公 AI Agent（追踪文件见 briefly track -h，周报见 briefly weekly -h，意图记录见 briefly intent-log -h，数据库见 briefly db -h）")
     ap.add_argument(
         "input", nargs="?", help="文件路径（txt/md/doc/docx/pdf/xlsx/xls/csv/pptx/ppt，或 png/jpg 等图片，图片与扫描件需本地 OCR）或飞书文档链接，- 表示标准输入；不填则进入对话模式"
     )
@@ -140,7 +144,7 @@ def main() -> None:
     attach(store)  # 配置了本地 Embedding 时材料检索用语义＋关键词
     agent = Agent(
         model,
-        checkpointer=sqlite_checkpointer(config.DB_PATH),
+        checkpointer=open_checkpointer(),
         thread_id=args.thread,
         store=store,
     )

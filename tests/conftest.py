@@ -11,6 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from sqlalchemy import StaticPool  # noqa: E402
 
 from briefly import config  # noqa: E402
+import pg_mode  # noqa: E402
+
+pg_mode.install()  # 设了 BRIEFLY_TEST_DATABASE_URL 时把数据库入口换成 PostgreSQL，必须早于下面和用例模块的导入
+
 import db_util  # noqa: E402
 
 
@@ -23,13 +27,27 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "browser" in item.keywords:
                 item.add_marker(pytest.mark.skip(reason="网页回归需显式使用 --run-browser"))
+    if pg_mode.enabled():
+        from pg_skips import SKIPS
+
+        for item in items:
+            for prefix, reason in SKIPS.items():
+                if item.nodeid.startswith(prefix):
+                    item.add_marker(pytest.mark.skip(reason=f"只适用于 SQLite：{reason}"))
+                    break
+    else:
+        for item in items:
+            if "postgres" in item.keywords:
+                item.add_marker(pytest.mark.skip(reason="需要设置 BRIEFLY_TEST_DATABASE_URL"))
 
 
 @pytest.fixture(autouse=True)
 def _file_engines(tmp_path, tmp_path_factory):
     db_util.start_test(tmp_path, tmp_path_factory)
+    pg_mode.start_test()
     yield
     db_util.finish_test()
+    pg_mode.finish_test()
 
 
 @pytest.fixture(autouse=True)

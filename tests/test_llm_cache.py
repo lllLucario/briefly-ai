@@ -252,7 +252,7 @@ def test_lookup_happens_after_authorization_and_bundle(indexed, scope, monkeypat
     pytest.param(lambda: answering("【可答性：可回答】年假5天。"), id="no_citation_needs_review"),
     pytest.param(lambda: answering("【可答性：可回答】年假5天〔依据9〕。"), id="bad_citation_needs_review"),
     pytest.param(lambda: answering(GOOD, finish_reason="length"), id="truncated"),
-    pytest.param(lambda: answering("【可答性：可回答】年假每年38天〔依据1〕。"), id="number_flag_after_check"),
+    pytest.param(lambda: answering("【可答性：可回答】年假每年380天〔依据1〕。"), id="number_flag_after_check"),
 ])
 def test_unclean_results_are_not_cached(indexed, scope, model):
     model = model()

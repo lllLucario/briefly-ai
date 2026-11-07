@@ -24,6 +24,7 @@ dependencies = [
     "numpy>=2.0,<3",  # 渲染图的像素运算
     "tzdata>=2024.1,<2028",  # Windows 下 zoneinfo 需要（每日扫描的时区）
     "httpx>=0.28,<1",  # 飞书开放平台 REST
+    "alembic>=1.20,<2",  # 业务库结构迁移（脚本在 briefly/migrations，随包分发）
 ]
 
 [project.optional-dependencies]
@@ -32,6 +33,14 @@ browser = ["playwright>=1.64,<2"]
 rag = ["fastembed>=0.9.1,<0.10", "sqlite-vec>=0.1.9,<0.2", "psutil>=7.2,<8"]
 # 本地图片文字识别（Apache-2.0；ONNX Runtime CPU 推理，PP-OCRv6 small 模型随包分发，不联网下载）
 ocr = ["rapidocr>=3.10,<3.11", "onnxruntime>=1.20,<2"]
+
+# PostgreSQL 后端（设置 DATABASE_URL 才启用，默认仍是 SQLite）：业务库、会话记录、知识和工作区索引
+postgres = [
+    "psycopg[binary]>=3.3,<4",
+    "psycopg-pool>=3.3,<4",
+    "pgvector>=0.5,<0.6",
+    "langgraph-checkpoint-postgres>=3.2,<4",
+]
 
 [project.scripts]
 briefly = "briefly.cli:main"
@@ -45,7 +54,8 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-briefly = ["prompts/*.md", "web/*", "web/vendor/*", "java/*.java", "java/*.jar", "java/*.json"]
+briefly = ["prompts/*.md", "web/*", "web/vendor/*", "java/*.java", "java/*.jar", "java/*.json",
+           "migrations/*.py", "migrations/*.mako", "migrations/versions/*.py"]
 
 [tool.uv]
 # 锁文件只解 CI 和开发实际使用的环境（Python 3.14 的 Linux、Windows），不改变 requires-python 声明。
@@ -62,4 +72,5 @@ required-environments = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["browser: 本机浏览器回归，使用 --run-browser 显式运行，不调用真实模型"]
+markers = ["browser: 本机浏览器回归，使用 --run-browser 显式运行，不调用真实模型",
+           "postgres: 只在 PostgreSQL 上有意义，需要设置 BRIEFLY_TEST_DATABASE_URL"]

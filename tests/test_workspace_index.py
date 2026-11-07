@@ -62,8 +62,8 @@ PLAN = ("# 季度方案\n## 背景\n门店扫码点单上线后，午高峰排�
 
 
 def vectors(index):
-    with index.connect() as db:
-        return db.execute("SELECT COUNT(*) FROM vectors").fetchone()[0]
+    with index.store.read() as tx:
+        return index.store.vector_count(tx)
 
 
 def test_incremental_update_only_reembeds_changed_slices(setup):
@@ -110,8 +110,8 @@ def test_tracked_new_version_replaces_old_in_index(env, tmp_path):  # noqa: F811
     env.svc.scan()
     hits = index.search("装修设计")
     assert hits and hits[0].material_id not in first
-    with index.connect() as db:
-        indexed = {row[0] for row in db.execute("SELECT material_id FROM entries")}
+    with index.store.read() as tx:
+        indexed = set(index.store.entries(tx))
     assert indexed == {hits[0].material_id}  # 旧版本移出工作区索引
     assert not any("供应商报价" in t for t in encoder.embedded)  # 没改的“风险”一节复用向量
 
@@ -121,8 +121,8 @@ def test_knowledge_only_material_is_not_indexed(setup):
     store.add_text("差旅制度", "一线城市住宿上限六百元。", source=KNOWLEDGE)
     store.add_text("周报", "本周完成门店盘点。")
     index.sync(encoder)
-    with index.connect() as db:
-        assert db.execute("SELECT COUNT(*) FROM entries").fetchone()[0] == 1
+    with index.store.read() as tx:
+        assert len(index.store.entries(tx)) == 1
     assert all("住宿" not in h.snippet for h in index.search("住宿上限"))
     assert not any("住宿" in t for t in encoder.embedded)
 
@@ -208,7 +208,7 @@ def test_material_changes_schedule_background_sync(setup):
     store.listeners.append(index.schedule)
     store.add_text("巡店记录", "周三巡店发现冷柜温度偏高。")
     index.wait()
-    with index.connect() as db:
-        assert db.execute("SELECT COUNT(*) FROM entries").fetchone()[0] == 1
-        assert db.execute("SELECT COUNT(*) FROM vectors").fetchone()[0] >= 1
+    with index.store.read() as tx:
+        assert len(index.store.entries(tx)) == 1
+        assert index.store.vector_count(tx) >= 1
     assert math.isclose(len(encoder.embedded), 1)

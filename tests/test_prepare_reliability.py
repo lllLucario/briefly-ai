@@ -105,7 +105,7 @@ finally:
     engine.dispose()
 """
     with PrepareLease(w.engine, rid):
-        result = subprocess.run([sys.executable, "-c", code, str(w.engine.url), str(rid)], capture_output=True, text=True, timeout=30)
+        result = subprocess.run([sys.executable, "-c", code, w.engine.url.render_as_string(hide_password=False), str(rid)], capture_output=True, text=True, timeout=30)
         assert result.returncode == 0, result.stderr
 
 

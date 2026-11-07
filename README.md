@@ -209,6 +209,40 @@ briefly weekly schedule --weekday 周五 --time 16:30
 
 运行数据默认保存在 `data/` 下，包括业务数据库 `app.db`、会话数据库 `briefly.db`、追踪快照及可选的飞书用户令牌。请妥善备份并保护本机数据；`.env`、数据库、令牌和追踪数据不应提交到 Git。
 
+## 使用 PostgreSQL（可选）
+
+默认用 SQLite，零配置，什么都不用改。设置 `DATABASE_URL` 指向 PostgreSQL 后，业务数据、会话记录、知识和工作区索引都放到这一个数据库，第一次启动时自动建表（Alembic）。需要 pgvector 扩展，建扩展要有相应权限。
+
+```bash
+pip install -e ".[rag,postgres]"
+```
+
+本地开发可以用仓库里的容器（pgvector 官方镜像，只绑定本机 `127.0.0.1:55432`，数据卷 `briefly_dev_pgdata`，密码取 `.env` 的 `BRIEFLY_PG_PASSWORD`）：
+
+```bash
+docker compose -f docker-compose.dev.yml up -d
+```
+
+自己建库时用 `C.UTF-8` 排序（容器已经这样设置），文本排序才和 SQLite 一致；其他排序规则可以运行，启动时会有一条警告。
+
+### 从 SQLite 迁移
+
+先停服务，然后：
+
+```bash
+briefly db migrate-from-sqlite --source data/app.db --checkpoints data/briefly.db --target postgresql://briefly:<密码>@127.0.0.1:55432/briefly
+```
+
+- 源库只读，目标库必须是空的，否则拒绝。
+- 迁移的是副本时，要连同 `-wal` 文件一起复制（`app.db-wal`、`briefly.db-wal`）。SQLite 的 WAL 模式下数据可能都在 `-wal` 里。业务库有会话、会话记录却一条没复制到时，报告和标准错误都会给出警告。
+- 业务表在一个事务里导入，核对每张表的行数和内容校验，并复制、核对会话记录之后才提交。中断或校验不一致时目标库仍是空的，直接重新运行即可。
+- 引用失效、超过列长度上限、知识库材料的正文含 NUL 字符，这些问题会在写入之前列出来，由人处理后再迁移。
+- 其他材料正文里的 NUL 字符（PostgreSQL 不能存）会换成等长的 U+FFFD，位置不变，指纹按替换后的正文重算。
+- 索引不复制，迁移后用当前的 Embedding 重建，并逐代校验。配了 `BRIEFLY_EMBEDDING_DIR` 时会自动做；中断或没配时之后运行 `briefly db rebuild-index --target <地址>`。
+- 飞书令牌文件和知识库原件目录（`data/knowledge`）是文件，不在数据库里，不用动，继续放在原处。
+
+**回滚：** 把 `DATABASE_URL` 改回 SQLite 地址即可，源库没有被改过。迁移之后写进 PostgreSQL 的新数据不会回到 SQLite。
+
 ## 测试
 
 默认回归使用假模型、模拟飞书响应及 SMTP 替身，不调用真实外部服务：
@@ -239,7 +273,7 @@ python tests/eval/journey_browser.py --real-model -n 2
 
 ## 技术结构
 
-技术栈：Python、LangChain / LangGraph、OpenAI 兼容模型接口、FastAPI、SQLAlchemy、SQLite、原生 HTML / JavaScript / CSS；解析使用 Docling、pdfplumber、pypdf、openpyxl、xlrd 和 Apache POI / Tika（旧版 Office 直读），图片文字识别使用 RapidOCR；知识库使用 fastembed（BGE-small 中文）、sqlite-vec 与 SQLite FTS5；飞书通过 httpx 调用 REST API。
+技术栈：Python、LangChain / LangGraph、OpenAI 兼容模型接口、FastAPI、SQLAlchemy、Alembic、SQLite（默认）或 PostgreSQL＋pgvector、原生 HTML / JavaScript / CSS；解析使用 Docling、pdfplumber、pypdf、openpyxl、xlrd 和 Apache POI / Tika（旧版 Office 直读），图片文字识别使用 RapidOCR；知识库使用 fastembed（BGE-small 中文）、sqlite-vec 与 SQLite FTS5；飞书通过 httpx 调用 REST API。
 
 ```text
 src/briefly/

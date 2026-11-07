@@ -21,6 +21,7 @@ import argparse
 from collections import Counter
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -101,12 +102,17 @@ def to_pdf(source: Path, out_dir: Path) -> Path:
     return out_dir / (source.stem + ".pdf")
 
 
+def eval_database_url(root: Path) -> str:
+    """评测默认用目录里的 SQLite；设 BRIEFLY_EVAL_DATABASE_URL 时用 PostgreSQL（对比两种后端的检索结果）。"""
+    return os.getenv("BRIEFLY_EVAL_DATABASE_URL") or "sqlite:///" + (root / "app.db").as_posix()
+
+
 def open_imports(root: Path, encoder):
     from briefly.db import create_db_engine
-    from briefly.knowledge.index import LocalIndex
+    from briefly.knowledge.index import open_index
     from briefly.knowledge.ingestion import ImportService
-    engine = create_db_engine("sqlite:///" + (root / "app.db").as_posix())
-    return engine, ImportService(engine, root, LocalIndex(root / "index.sqlite"), lambda: encoder)
+    engine = create_db_engine(eval_database_url(root))
+    return engine, ImportService(engine, root, open_index(engine, root / "index.sqlite"), lambda: encoder)
 
 
 def build(root: Path) -> None:

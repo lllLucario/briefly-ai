@@ -473,7 +473,7 @@ def test_percent_encoded_url_does_not_create_stray_directories(tmp_path, monkeyp
 # ---- 56 并发提交相同内容
 def test_concurrent_same_material_returns_the_existing_one(store):
     """在 SELECT 没查到、INSERT 之前，另一个连接写入同样的内容：和串行时的结果一样，不是 500。"""
-    other = create_db_engine(str(store.engine.url))
+    other = create_db_engine(store.engine.url.render_as_string(hide_password=False))
     raced = []
 
     def race(conn, cursor, statement, parameters, context, executemany):

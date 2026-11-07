@@ -136,7 +136,7 @@ def test_deleted_material_and_reused_id_do_not_rebind_reference(resources):
     ref=svc.chunk(kb.id,doc.id,ver.id,1)["reference"]
     purge(store, mat.id)
     replacement,_=store.add_text("其他制度","新住宿999元")
-    assert replacement.id == mat.id  # SQLite可重用末尾整数主键
+    assert replacement.id == mat.id or engine.dialect.name == "postgresql"  # SQLite可重用末尾整数主键；PostgreSQL的序列不会
     source=svc.resolve_reference(kb.id,ref)
     assert source["status"] == "source_deleted" and source["content"] is None
     assert source["source"]["title"] == "旧制度"

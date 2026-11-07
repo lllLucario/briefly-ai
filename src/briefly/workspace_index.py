@@ -1,6 +1,6 @@
 """工作区（材料库）语义索引：默认可见的材料全部自动建索引，检索前对齐最新，向量按内容复用。
 
-与知识库索引分开存放（独立 SQLite 文件），不进知识库的版本、发布与代次体系，每份材料只保留最新内容：
+与知识库索引分开存放（SQLite 时是独立文件，PostgreSQL 时是业务库里的独立表，见 workspace_store.py），不进知识库的版本、发布与代次体系，每份材料只保留最新内容：
 - 切片沿用知识库的 token_slices（v5），向量用同一个本地 Embedding，检索沿用语义＋关键词两路 RRF 与相关度下限；
 - 切片向量按（Embedding 指纹, embedding_text 的 SHA256）缓存：材料改动（追踪新版本、重新上传）后只有内容变了的
   切片需要重新向量化；
@@ -8,12 +8,10 @@
 - 添加或删除材料后由后台线程同步；检索前再比对一次材料 content_hash 与索引记录，不一致的先增量更新。
   关键词索引随切片即时写入；向量没算完的材料先用关键词结果，并在结果里标明。
 """
-from contextlib import contextmanager
 from dataclasses import replace
 import hashlib
 import logging
 from pathlib import Path
-import sqlite3
 import threading
 
 from sqlalchemy import select
@@ -22,11 +20,12 @@ from sqlalchemy.orm import Session
 from .errors import UserInputError
 from . import config
 from .knowledge.evidence import NOTES, constraints
-from .knowledge.index import terms, vector_blob
+from .knowledge.index import vector_blob
 from .knowledge.retrieval import both_routes, relevance_floor, relevant, similarity
 from .knowledge.service import fingerprint
 from .knowledge.slicing import token_slices
 from .materials import Material, SearchHit, visible
+from .workspace_store import PostgresWorkspaceStore, SqliteWorkspaceStore
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +53,7 @@ class WorkspaceIndex:
     def __init__(self, engine, path, encoder_factory, *, inline_embed: int | None = None) -> None:
         self.engine = engine
         self.path = Path(path)
+        self.store = PostgresWorkspaceStore(engine) if engine.dialect.name == "postgresql" else SqliteWorkspaceStore(path)
         self.encoder_factory = encoder_factory
         self.inline_embed = config.WORKSPACE_INLINE_EMBED if inline_embed is None else inline_embed
         self._lock = threading.Lock()  # 切片与写索引串行；向量计算在锁外
@@ -80,33 +80,9 @@ class WorkspaceIndex:
         return fingerprint(dict(embedding=fingerprint(encoder.identity), schema=SCHEMA, slicing="title-token-offsets/v5",
                                 tokens=SLICE_TOKENS, lexical="cjk-bigrams-ascii-v1", metric="cosine-normalized-f32"))
 
-    @contextmanager
     def connect(self):
-        import sqlite_vec
-
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        db = sqlite3.connect(self.path, timeout=30)
-        try:
-            db.enable_load_extension(True)
-            try:
-                sqlite_vec.load(db)
-            finally:
-                db.enable_load_extension(False)
-            db.execute("PRAGMA journal_mode=WAL")
-            db.execute("CREATE TABLE IF NOT EXISTS entries (material_id INTEGER PRIMARY KEY, content_hash TEXT NOT NULL, "
-                       "signature TEXT NOT NULL, error TEXT)")
-            db.execute("CREATE TABLE IF NOT EXISTS slices (id INTEGER PRIMARY KEY, material_id INTEGER NOT NULL, "
-                       "number INTEGER NOT NULL, section TEXT NOT NULL, start_pos INTEGER NOT NULL, end_pos INTEGER NOT NULL, "
-                       "content_sha TEXT NOT NULL, text_sha TEXT NOT NULL, embedding_text TEXT NOT NULL, "
-                       "UNIQUE(material_id, number))")
-            db.execute("CREATE INDEX IF NOT EXISTS slices_text ON slices(text_sha)")
-            db.execute("CREATE TABLE IF NOT EXISTS vectors (signature TEXT NOT NULL, text_sha TEXT NOT NULL, "
-                       "embedding BLOB NOT NULL, PRIMARY KEY(signature, text_sha))")
-            db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS lexical USING fts5(tokens, tokenize='ascii')")
-            db.commit()
-            yield db
-        finally:
-            db.close()
+        """SQLite 文件的连接；PostgreSQL 后端没有这个文件，读写都经 self.store。"""
+        return self.store.connect()
 
     # —— 同步 ——
 
@@ -141,9 +117,8 @@ class WorkspaceIndex:
     def reuse_stat(self) -> dict:
         """向量复用的现状（不是累计）：内容相同的切片共用一条向量，hits 是少算的切片数，misses 是实际算过的向量数。"""
         try:
-            with self.connect() as db:
-                slices = db.execute("SELECT COUNT(*) FROM slices").fetchone()[0]
-                vectors = db.execute("SELECT COUNT(DISTINCT text_sha) FROM slices").fetchone()[0]
+            with self.store.read() as tx:
+                slices, vectors = self.store.slice_counts(tx)
         except Exception as e:
             log.warning("读取工作区索引统计失败: %s", type(e).__name__)
             slices = vectors = 0
@@ -165,29 +140,23 @@ class WorkspaceIndex:
             with Session(self.engine) as s:
                 eligible = dict(s.execute(select(Material.id, Material.content_hash).where(visible())).all())
             removed, added, failed = 0, 0, 0
-            with self.connect() as db, db:
-                entries = {row[0]: (row[1], row[2]) for row in db.execute("SELECT material_id, content_hash, signature FROM entries")}
+            with self.store.transaction() as tx:
+                entries = self.store.entries(tx)
                 stale = [m for m, (digest, sig) in entries.items() if eligible.get(m) != digest or sig != signature]
                 for material_id in stale:
-                    self._remove(db, material_id)
+                    self.store.remove(tx, material_id)
                 removed = len(stale)
                 for material_id in sorted(set(eligible) - (set(entries) - set(stale))):
                     added += 1
-                    if not self._add(db, material_id, signature, encoder):
+                    if not self._add(tx, material_id, signature, encoder):
                         failed += 1
                 if removed:
                     # 只保留仍被切片用到的向量；新版本已在上面写入切片，同内容的向量不会被清掉
-                    db.execute("DELETE FROM vectors WHERE NOT EXISTS (SELECT 1 FROM slices s WHERE s.text_sha = vectors.text_sha)")
+                    self.store.prune_vectors(tx)
         embedded, pending = self._embed(encoder, signature, embed_limit)
         return dict(removed=removed, added=added, failed=failed, embedded=embedded, pending=pending)
 
-    @staticmethod
-    def _remove(db, material_id: int) -> None:
-        db.execute("DELETE FROM lexical WHERE rowid IN (SELECT id FROM slices WHERE material_id=?)", (material_id,))
-        db.execute("DELETE FROM slices WHERE material_id=?", (material_id,))
-        db.execute("DELETE FROM entries WHERE material_id=?", (material_id,))
-
-    def _add(self, db, material_id: int, signature: str, encoder) -> bool:
+    def _add(self, tx, material_id: int, signature: str, encoder) -> bool:
         with Session(self.engine) as s:
             material = s.get(Material, material_id)
             if material is None:
@@ -197,33 +166,25 @@ class WorkspaceIndex:
             _, slices = token_slices(content, title, _markdown(report), encoder, tokens=SLICE_TOKENS, report=report)
         except ValueError as exc:
             # 切不了的材料（标题过长等）记下原因，不在每次检索时重试；检索时这份材料用关键词结果
-            db.execute("INSERT INTO entries VALUES (?,?,?,?)", (material_id, digest, signature, str(exc)[:200]))
+            self.store.add_entry(tx, material_id, digest, signature, str(exc)[:200])
             return False
-        for piece in slices:
-            rowid = db.execute(
-                "INSERT INTO slices(material_id,number,section,start_pos,end_pos,content_sha,text_sha,embedding_text) VALUES (?,?,?,?,?,?,?,?)",
-                (material_id, piece.index, piece.section, piece.start, piece.end, sha256(piece.content),
-                 sha256(piece.embedding_text), piece.embedding_text)).lastrowid
-            db.execute("INSERT INTO lexical(rowid,tokens) VALUES (?,?)", (rowid, " ".join(terms(piece.embedding_text))))
-        db.execute("INSERT INTO entries VALUES (?,?,?,NULL)", (material_id, digest, signature))
+        self.store.add_slices(tx, material_id, [
+            (piece.index, piece.section, piece.start, piece.end, sha256(piece.content), sha256(piece.embedding_text), piece.embedding_text)
+            for piece in slices])
+        self.store.add_entry(tx, material_id, digest, signature)
         return True
 
-    def _missing(self, db, signature: str) -> list[tuple[str, str]]:
-        return db.execute("SELECT text_sha, MIN(embedding_text) FROM slices s WHERE NOT EXISTS (SELECT 1 FROM vectors v "
-                          "WHERE v.signature=? AND v.text_sha=s.text_sha) GROUP BY text_sha ORDER BY MIN(s.id)",
-                          (signature,)).fetchall()
-
     def _embed(self, encoder, signature: str, limit: int | None) -> tuple[int, int]:
-        with self.connect() as db:
-            missing = self._missing(db, signature)
+        with self.store.read() as tx:
+            missing = self.store.missing(tx, signature)
         todo = missing if limit is None else missing[:limit]
         dimension = encoder.identity["dimension"]
         for start in range(0, len(todo), EMBED_BATCH):
             batch = todo[start:start + EMBED_BATCH]
             vectors = encoder.embed_documents([text for _, text in batch])
-            rows = [(signature, text_sha, vector_blob(vector, dimension)) for (text_sha, _), vector in zip(batch, vectors)]
-            with self.connect() as db, db:
-                db.executemany("INSERT OR IGNORE INTO vectors VALUES (?,?,?)", rows)
+            rows = [(text_sha, vector) for (text_sha, _), vector in zip(batch, vectors)]
+            with self.store.transaction() as tx:
+                self.store.save_vectors(tx, signature, rows, dimension)
         return len(todo), len(missing) - len(todo)
 
     # —— 检索 ——
@@ -257,9 +218,8 @@ class WorkspaceIndex:
         ids = {rows[e["slice"]][1] for e in ranked}
         with Session(self.engine) as s:
             materials = {m.id: m for m in s.scalars(select(Material).where(Material.id.in_(ids)))}
-        with self.connect() as db:
-            texts = dict(db.execute(f"SELECT id, embedding_text FROM slices WHERE id IN ({','.join('?' * len(ranked))})",
-                                    [e["slice"] for e in ranked])) if ranked else {}
+        with self.store.read() as tx:
+            texts = self.store.embedding_texts(tx, [e["slice"] for e in ranked])
         from types import SimpleNamespace
         from .knowledge.service import _table_header
         out = []
@@ -294,30 +254,19 @@ class WorkspaceIndex:
             eligible = set(material_ids)
         if not eligible:
             return [], {}, set(), set()
-        vector = vector_blob(encoder.embed_query(query), encoder.identity["dimension"])
-        with self.connect() as db:
-            db.execute("CREATE TEMP TABLE scope (material_id INTEGER PRIMARY KEY)")
-            db.executemany("INSERT INTO scope VALUES (?)", ((x,) for x in eligible))
-            dense = db.execute(
-                "SELECT s.id, vec_distance_cosine(v.embedding, ?) AS distance FROM slices s JOIN scope USING(material_id) "
-                "JOIN vectors v ON v.signature=? AND v.text_sha=s.text_sha ORDER BY distance, s.id LIMIT ?",
-                (vector, signature, PER_ROUTE)).fetchall()
-            match = " OR ".join('"' + term + '"' for term in terms(query, query=True))
-            lexical = [] if not match else db.execute(
-                "SELECT s.id, bm25(lexical) AS score FROM lexical JOIN slices s ON s.id=lexical.rowid JOIN scope USING(material_id) "
-                "WHERE lexical MATCH ? ORDER BY score, s.id LIMIT ?", (match, PER_ROUTE)).fetchall()
+        vector, dimension = encoder.embed_query(query), encoder.identity["dimension"]
+        vector_blob(vector, dimension)  # 向量无效时在打开连接之前报错
+        with self.store.read() as tx:
+            self.store.scope(tx, eligible)
+            dense, lexical = self.store.routes(tx, query, vector, dimension, signature, PER_ROUTE)
             scores, routes = {}, {}
             for route, ranking in (("semantic", dense), ("lexical", lexical)):
                 for rank, (slice_id, raw) in enumerate(ranking, 1):
                     scores[slice_id] = scores.get(slice_id, 0) + 1 / (RRF_K + rank)
                     routes.setdefault(slice_id, []).append(dict(route=route, rank=rank, raw_score=raw))
-            rows = {} if not scores else {r[0]: r for r in db.execute(
-                f"SELECT id, material_id, number, section, start_pos, end_pos FROM slices WHERE id IN ({','.join('?' * len(scores))})",
-                list(scores))}
-            pending = {r[0] for r in db.execute(
-                "SELECT DISTINCT s.material_id FROM slices s JOIN scope USING(material_id) WHERE NOT EXISTS "
-                "(SELECT 1 FROM vectors v WHERE v.signature=? AND v.text_sha=s.text_sha)", (signature,))}
-            failed = {r[0] for r in db.execute("SELECT material_id FROM entries JOIN scope USING(material_id) WHERE error IS NOT NULL")}
+            rows = self.store.slice_rows(tx, scores)
+            pending = self.store.pending(tx, signature)
+            failed = self.store.failed(tx)
         ranked = [dict(slice=slice_id, retrieval=dict(rrf_score=score, routes=routes[slice_id]))
                   for slice_id, score in sorted(scores.items(), key=lambda row: (-row[1], row[0]))]
         floor = relevance_floor(encoder.identity) if ranked else None
