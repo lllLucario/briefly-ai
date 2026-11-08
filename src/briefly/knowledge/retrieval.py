@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from ..errors import UserInputError
 from ..relevance_floor import describe, embedding_fingerprint, kb_floor
-from .models import IndexGeneration, KnowledgeVersion
+from .models import KnowledgeVersion
 from .payload import evidence_payload
 from .service import KnowledgeConflict, KnowledgeNotFound
 
@@ -107,15 +107,9 @@ class RetrievalService:
         from .service import fingerprint
         expected = fingerprint(encoder.identity)
         versions = metadata["versions"]
-        with svc._session() as s:
-            for item in versions:
-                if item["embedding_fingerprint"] != expected:
-                    raise KnowledgeConflict("范围内存在不兼容的Embedding代次，请重建索引")
-                version = s.get(KnowledgeVersion, item["version_id"])
-                generation = s.get(IndexGeneration, item["generation_id"])
-                if version is None or generation is None:  # 取范围之后知识库被删除
-                    raise KnowledgeNotFound("知识库不存在或已移除")
-                self.imports.lifecycle.index.verify(generation, self.imports.lifecycle.rows(s, version))
+        if any(item["embedding_fingerprint"] != expected for item in versions):
+            raise KnowledgeConflict("范围内存在不兼容的Embedding代次，请重建索引")
+        self.imports.lifecycle.verify_versions(versions)
         vector = encoder.embed_query(question)
         dense, lexical = self.imports.lifecycle.index.search(question, vector, encoder.identity["dimension"],
             [v["generation_id"] for v in versions], limit=PARAMETERS["per_route"])

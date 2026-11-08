@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+from collections import defaultdict
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -14,6 +15,7 @@ from .models import IndexGeneration, KnowledgeBase, KnowledgeBaseRemoval, Knowle
 from .evidence import constraints, coverage, quality_snapshot
 
 KB_REMOVED = "knowledge_base_deleted"  # 引用状态：所在的知识库已删除
+BATCH = 200  # 范围校验每批处理的文档数：一批一次取切片，控制 IN 列表长度和内存
 
 
 class KnowledgeNotFound(UserInputError):
@@ -130,6 +132,10 @@ class KnowledgeService:
     @staticmethod
     def _material(s, version):
         material = s.get(Material, version.material_id, options=[defer(Material.content, raiseload=True)]) if version.material_id else None
+        return KnowledgeService._check_material(version, material)
+
+    @staticmethod
+    def _check_material(version, material):
         if material is None:
             return None, "source_deleted"
         if material.content_hash != version.content_hash:
@@ -402,16 +408,36 @@ class KnowledgeService:
             return generation
 
     @staticmethod
-    def _verify_chunks(s, version):
+    def load_chunks(s, versions):
+        """一次取出多个版本的切片：{version_id: [(index, start, end, content, embedding_text)]}，各自按 index 排序。
+        保留原材料切片的版本读 MaterialChunk（embedding_text 为 None），其余读版本自己的 KnowledgeChunk。
+        只取列不建 ORM 对象；调用方按 BATCH 分批传入，控制单次 IN 列表长度和内存。"""
+        preserved = {v.material_id for v in versions if v.chunk_config.get("strategy") == "preserved-material-chunks"}
+        native = {v.id for v in versions if v.chunk_config.get("strategy") != "preserved-material-chunks"}
+        by_material, by_version = defaultdict(list), defaultdict(list)
+        if preserved:
+            for key, *row in s.execute(select(MaterialChunk.material_id, MaterialChunk.index, MaterialChunk.start, MaterialChunk.end,
+                    MaterialChunk.content).where(MaterialChunk.material_id.in_(preserved)).order_by(MaterialChunk.material_id, MaterialChunk.index)):
+                by_material[key].append((*row, None))
+        if native:
+            for key, *row in s.execute(select(KnowledgeChunk.version_id, KnowledgeChunk.index, KnowledgeChunk.start, KnowledgeChunk.end,
+                    KnowledgeChunk.content, KnowledgeChunk.embedding_text).where(KnowledgeChunk.version_id.in_(native))
+                    .order_by(KnowledgeChunk.version_id, KnowledgeChunk.index)):
+                by_version[key].append(tuple(row))
+        return {v.id: by_material.get(v.material_id, []) if v.chunk_config.get("strategy") == "preserved-material-chunks"
+                else by_version.get(v.id, []) for v in versions}
+
+    @staticmethod
+    def _verify_chunks(s, version, chunks=None):
+        """chunks 为 load_chunks 取出的该版本切片；不传时自己取。逐片核对位置和哈希，与切片清单不符即拒绝。"""
         if version.chunk_config.get("strategy") not in {"preserved-material-chunks", "title-token-offsets"}:
             raise KnowledgeConflict("未知版本切片配置，不能读取索引")
         native = version.chunk_config["strategy"] != "preserved-material-chunks"
-        query = select(KnowledgeChunk).where(KnowledgeChunk.version_id == version.id).order_by(KnowledgeChunk.index) if native else select(MaterialChunk).where(
-            MaterialChunk.material_id == version.material_id).order_by(MaterialChunk.index)
-        chunks = list(s.scalars(query))
-        actual = [(c.index, c.start, c.end, hashlib.sha256(c.content.encode()).hexdigest()) for c in chunks]
+        if chunks is None:
+            chunks = KnowledgeService.load_chunks(s, [version])[version.id]
+        actual = [(index, start, end, hashlib.sha256(content.encode()).hexdigest()) for index, start, end, content, _ in chunks]
         expected = [(c["index"], c["start"], c["end"], c["sha256"]) for c in version.chunk_manifest]
-        encoded_ok = not native or [hashlib.sha256(c.embedding_text.encode()).hexdigest() for c in chunks] == [c.get("embedding_sha256") for c in version.chunk_manifest]
+        encoded_ok = not native or [hashlib.sha256(text.encode()).hexdigest() for *_, text in chunks] == [c.get("embedding_sha256") for c in version.chunk_manifest]
         if actual != expected or not encoded_ok or chunk_fingerprint(version.chunk_config, version.chunk_manifest) != version.chunk_fingerprint:
             raise KnowledgeConflict("源切片已变化，不能使用原版本建立或读取索引")
 
@@ -444,31 +470,42 @@ class KnowledgeService:
         with self._session() as s:
             for kb_id in set(kb_ids):
                 self._kb(s, kb_id)
-            docs = list(s.scalars(select(KnowledgeDocument).where(KnowledgeDocument.kb_id.in_(kb_ids), KnowledgeDocument.deleted_at.is_(None)).order_by(KnowledgeDocument.id)))
+            # 文档、发布、版本、代次、原材料一次联表取出；切片按批取，逐片哈希核对不省略。
+            rows = s.execute(select(KnowledgeDocument, KnowledgePublication, KnowledgeVersion, IndexGeneration, Material)
+                .options(defer(Material.content, raiseload=True))
+                .outerjoin(KnowledgePublication, KnowledgePublication.document_id == KnowledgeDocument.id)
+                .outerjoin(KnowledgeVersion, KnowledgeVersion.id == KnowledgePublication.version_id)
+                .outerjoin(IndexGeneration, IndexGeneration.id == KnowledgePublication.generation_id)
+                .outerjoin(Material, Material.id == KnowledgeVersion.material_id)
+                .where(KnowledgeDocument.kb_id.in_(kb_ids), KnowledgeDocument.deleted_at.is_(None))
+                .order_by(KnowledgeDocument.id)).all()
             ready, unavailable = [], []
-            for doc in docs:
-                publication = s.get(KnowledgePublication, doc.id)
-                if publication is None:
-                    unavailable.append(dict(document_id=doc.id, reason="not_indexed"))
-                    continue
-                version = s.get(KnowledgeVersion, publication.version_id)
-                generation = s.get(IndexGeneration, publication.generation_id)
-                if version is None or generation is None:  # 这几次读取之间知识库被删除
-                    unavailable.append(dict(document_id=doc.id, reason="document_removed"))
-                    continue
-                material, reason = self._material(s, version)
-                if not reason:
-                    try:
-                        self._verify_chunks(s, version)
-                    except KnowledgeConflict:
-                        reason = "source_changed"
-                if reason or generation.status != "ready" or not self._compatible(generation, version):
-                    unavailable.append(dict(document_id=doc.id, reason=reason or "index_not_ready"))
-                    continue
-                ready.append(dict(kb_id=doc.kb_id, document_id=doc.id, version_id=version.id,
-                                  generation_id=generation.id, material_id=material.id,
-                                  embedding_fingerprint=generation.embedding_identity["index_contract"]["embedding_fingerprint"],
-                                  index_fingerprint=index_fingerprint(generation.embedding_identity)))
+            for start in range(0, len(rows), BATCH):
+                batch = rows[start:start + BATCH]
+                checked = [(doc, version, generation, *self._check_material(version, material))
+                           for doc, publication, version, generation, material in batch if version is not None and generation is not None]
+                chunks = self.load_chunks(s, [version for _, version, _, _, reason in checked if not reason])
+                checked = {doc.id: item for doc, *item in checked}
+                for doc, publication, *_ in batch:
+                    if publication is None:
+                        unavailable.append(dict(document_id=doc.id, reason="not_indexed"))
+                        continue
+                    if doc.id not in checked:  # 这几次读取之间知识库被删除
+                        unavailable.append(dict(document_id=doc.id, reason="document_removed"))
+                        continue
+                    version, generation, material, reason = checked[doc.id]
+                    if not reason:
+                        try:
+                            self._verify_chunks(s, version, chunks[version.id])
+                        except KnowledgeConflict:
+                            reason = "source_changed"
+                    if reason or generation.status != "ready" or not self._compatible(generation, version):
+                        unavailable.append(dict(document_id=doc.id, reason=reason or "index_not_ready"))
+                        continue
+                    ready.append(dict(kb_id=doc.kb_id, document_id=doc.id, version_id=version.id,
+                                      generation_id=generation.id, material_id=material.id,
+                                      embedding_fingerprint=generation.embedding_identity["index_contract"]["embedding_fingerprint"],
+                                      index_fingerprint=index_fingerprint(generation.embedding_identity)))
             status = "partial" if ready and unavailable else "not_ready" if unavailable else "ready" if ready else "empty_library"
             return dict(status=status, material_ids=sorted({v["material_id"] for v in ready}), versions=ready, unavailable=unavailable)
 

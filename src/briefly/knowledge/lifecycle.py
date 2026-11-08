@@ -1,9 +1,8 @@
 """真实索引构建与发布；先完成派生库事务，再以源版本/文档修订号条件激活。"""
 from sqlalchemy import select, update
 
-from ..materials import MaterialChunk
-from .models import IndexGeneration, KnowledgeChunk, KnowledgeDocument, KnowledgePublication
-from .service import KnowledgeConflict, KnowledgeNotFound, KnowledgeService
+from .models import IndexGeneration, KnowledgeDocument, KnowledgePublication
+from .service import BATCH, KnowledgeConflict, KnowledgeNotFound, KnowledgeService
 
 
 class IndexLifecycle:
@@ -12,12 +11,28 @@ class IndexLifecycle:
         self.index = index
 
     @staticmethod
-    def rows(s, version):
+    def rows(s, version, chunks=None):
+        """索引的 (index, 文本)：保留原材料切片用正文，版本自有切片用 embedding_text。chunks 为 load_chunks 的结果。"""
+        if chunks is None:
+            chunks = KnowledgeService.load_chunks(s, [version])[version.id]
         if version.chunk_config["strategy"] == "preserved-material-chunks":
-            chunks = s.scalars(select(MaterialChunk).where(MaterialChunk.material_id == version.material_id).order_by(MaterialChunk.index))
-            return [(c.index, c.content) for c in chunks]
-        chunks = s.scalars(select(KnowledgeChunk).where(KnowledgeChunk.version_id == version.id).order_by(KnowledgeChunk.index))
-        return [(c.index, c.embedding_text) for c in chunks]
+            return [(index, content) for index, _, _, content, _ in chunks]
+        return [(index, text) for index, *_, text in chunks]
+
+    def verify_versions(self, items):
+        """逐份核对范围内各代次的索引制品（签名、清单、逐片哈希、向量维度），与单份 verify 相同；
+        按批取版本、代次和切片，每批只开一次索引连接。items 为 scope()["versions"] 的条目。"""
+        from .models import KnowledgeVersion
+        with self.knowledge._session() as s:
+            for start in range(0, len(items), BATCH):
+                batch = items[start:start + BATCH]
+                versions = {v.id: v for v in s.scalars(select(KnowledgeVersion).where(KnowledgeVersion.id.in_({i["version_id"] for i in batch})))}
+                generations = {g.id: g for g in s.scalars(select(IndexGeneration).where(IndexGeneration.id.in_({i["generation_id"] for i in batch})))}
+                if any(i["version_id"] not in versions or i["generation_id"] not in generations for i in batch):
+                    raise KnowledgeNotFound("知识库不存在或已移除")  # 取范围之后知识库被删除
+                chunks = KnowledgeService.load_chunks(s, list(versions.values()))
+                self.index.verify_many([(generations[i["generation_id"]], self.rows(s, versions[i["version_id"]], chunks[i["version_id"]]))
+                                        for i in batch])
 
     def build(self, kb_id, doc_id, version_id, encoder, *, expected_revision, guard=None, on_generation=None):
         svc = self.knowledge
@@ -82,16 +97,9 @@ class IndexLifecycle:
         scope = self.knowledge.scope(kb_ids)
         from .service import fingerprint
         expected = fingerprint(encoder.identity) if encoder is not None else None
-        with self.knowledge._session() as s:
-            for item in scope["versions"]:
-                if expected is not None and item["embedding_fingerprint"] != expected:
-                    raise KnowledgeConflict("知识库索引使用其他Embedding配置，请选择对应模型或重建")
-                from .models import KnowledgeVersion
-                version = s.get(KnowledgeVersion, item["version_id"])
-                generation = s.get(IndexGeneration, item["generation_id"])
-                if version is None or generation is None:  # 取范围之后知识库被删除
-                    raise KnowledgeNotFound("知识库不存在或已移除")
-                self.index.verify(generation, self.rows(s, version))
+        if expected is not None and any(item["embedding_fingerprint"] != expected for item in scope["versions"]):
+            raise KnowledgeConflict("知识库索引使用其他Embedding配置，请选择对应模型或重建")
+        self.verify_versions(scope["versions"])
         return scope
 
     def clean_removed(self):

@@ -7,6 +7,7 @@
 """
 import hashlib
 import math
+from collections import defaultdict
 
 from sqlalchemy import Text, bindparam, text
 from sqlalchemy.dialects.postgresql import ARRAY
@@ -63,15 +64,28 @@ class PostgresIndex:
         return None if distance is None or not math.isfinite(distance) else 1 - distance
 
     def verify(self, generation, rows):
+        self.verify_many([(generation, rows)])
+
+    def verify_many(self, pairs):
+        """pairs 为 [(generation, rows)]；一次连接取出全部代次的元数据和切片，逐个按 verify 的规则核对。"""
+        if not pairs:
+            return
+        scope = sorted({generation.id for generation, _ in pairs})
+        actual = defaultdict(list)
         with self.engine.connect() as connection:
-            meta = connection.execute(text("SELECT signature,manifest FROM kb_index_generations WHERE id=:g"), dict(g=generation.id)).first()
+            meta = {gid: (signature, manifest) for gid, signature, manifest in connection.execute(
+                text("SELECT id,signature,manifest FROM kb_index_generations WHERE id = ANY(:scope)").bindparams(_SCOPE), dict(scope=scope))}
+            for gid, number, content, size in connection.execute(text(
+                    "SELECT generation,number,content,vector_dims(embedding) FROM kb_index_chunks WHERE generation = ANY(:scope) "
+                    "ORDER BY generation,number").bindparams(_SCOPE), dict(scope=scope)):
+                actual[gid].append((number, content, size))
+        for generation, rows in pairs:
             expected = fingerprint([(n, hashlib.sha256(t.encode()).hexdigest()) for n, t in rows])
-            actual = connection.execute(text("SELECT number,content,vector_dims(embedding) FROM kb_index_chunks WHERE generation=:g ORDER BY number"),
-                                        dict(g=generation.id)).all()
-        actual_hash = fingerprint([(n, hashlib.sha256(t.encode()).hexdigest()) for n, t, _ in actual])
-        if meta is None or tuple(meta) != (self.signature(generation), expected) or actual_hash != expected \
-                or any(size != generation.dimension for _, _, size in actual):
-            raise KnowledgeConflict("索引制品缺失或与版本契约不匹配，需要重建")
+            found = actual.get(generation.id, [])
+            actual_hash = fingerprint([(n, hashlib.sha256(t.encode()).hexdigest()) for n, t, _ in found])
+            if meta.get(generation.id) != (self.signature(generation), expected) or actual_hash != expected \
+                    or any(size != generation.dimension for _, _, size in found):
+                raise KnowledgeConflict("索引制品缺失或与版本契约不匹配，需要重建")
 
     def delete(self, generation_ids):
         with self.engine.begin() as connection:

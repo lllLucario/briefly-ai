@@ -1,6 +1,8 @@
 """本地SQLite派生索引；按代次原子写入，业务库独立决定发布与可见性。"""
+from collections import defaultdict
 from contextlib import contextmanager
 import hashlib
+import json
 import math
 from pathlib import Path
 import re
@@ -104,12 +106,26 @@ class LocalIndex:
         return None if row[0] is None or not math.isfinite(row[0]) else 1 - row[0]
 
     def verify(self, generation, rows):
+        self.verify_many([(generation, rows)])
+
+    def verify_many(self, pairs):
+        """pairs 为 [(generation, rows)]；一次连接取出全部代次的元数据和切片，逐个按 verify 的规则核对。"""
+        if not pairs:
+            return
+        ids = json.dumps(sorted({generation.id for generation, _ in pairs}))
+        actual = defaultdict(list)
         with self.connect() as db:
-            meta = db.execute("SELECT signature,manifest FROM generations WHERE id=?", (generation.id,)).fetchone()
+            meta = {gid: (signature, manifest) for gid, signature, manifest in db.execute(
+                "SELECT id,signature,manifest FROM generations WHERE id IN (SELECT value FROM json_each(?))", (ids,))}
+            for gid, number, content, size in db.execute("SELECT generation,number,content,length(embedding) FROM chunks "
+                    "WHERE generation IN (SELECT value FROM json_each(?)) ORDER BY generation,number", (ids,)):
+                actual[gid].append((number, content, size))
+        for generation, rows in pairs:
             expected = fingerprint([(n, hashlib.sha256(t.encode()).hexdigest()) for n, t in rows])
-            actual = db.execute("SELECT number,content,length(embedding) FROM chunks WHERE generation=? ORDER BY number", (generation.id,)).fetchall()
-            actual_hash = fingerprint([(n, hashlib.sha256(t.encode()).hexdigest()) for n, t, _ in actual])
-            if meta != (self.signature(generation), expected) or actual_hash != expected or any(size != generation.dimension * 4 for _, _, size in actual):
+            found = actual.get(generation.id, [])
+            actual_hash = fingerprint([(n, hashlib.sha256(t.encode()).hexdigest()) for n, t, _ in found])
+            if meta.get(generation.id) != (self.signature(generation), expected) or actual_hash != expected \
+                    or any(size != generation.dimension * 4 for _, _, size in found):
                 raise KnowledgeConflict("索引制品缺失或与版本契约不匹配，需要重建")
 
     def delete(self, generation_ids):
