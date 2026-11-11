@@ -1,0 +1,86 @@
+# 服务镜像：构建、冒烟检查，通过后推送到 GHCR（ghcr.io/<仓库>）。PR 只构建和检查，不推送。
+# 本机不需要装 Docker 来构建；拉取和运行见 docker-compose.yml。
+name: Image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: build, smoke, push
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.7-pg17  # 和 docker-compose.dev.yml、ci.yml 同一个镜像
+        env:
+          POSTGRES_USER: briefly
+          POSTGRES_PASSWORD: ci-only-password  # 只在这个容器里有效，随任务销毁
+          POSTGRES_DB: briefly
+          POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale-provider=builtin --builtin-locale=C.UTF-8
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U briefly -d briefly"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4.4.1
+
+      - name: 标签（main 打 latest，另有提交号；v* 标签打同名）
+        id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+            type=ref,event=tag
+
+      - name: 构建到本机
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          load: true
+          tags: briefly-ai:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 镜像大小
+        run: docker image ls briefly-ai:smoke
+
+      - name: 冒烟检查（SQLite 和 PostgreSQL 各启动一次，不调用真实模型）
+        run: bash docker/smoke.sh briefly-ai:smoke postgresql://briefly:ci-only-password@127.0.0.1:5432/briefly
+
+      - name: 登录 GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 推送（复用上面的构建缓存）
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha

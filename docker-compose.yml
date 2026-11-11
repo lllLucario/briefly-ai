@@ -1,0 +1,34 @@
+# 用 GHCR 上的镜像运行 Briefly AI（后端 + 网页）。镜像由 GitHub Actions 构建，本机只需要拉取。
+# 启动：docker compose up -d，然后打开 http://127.0.0.1:8000
+# 更新：docker compose pull && docker compose up -d
+# 停止：docker compose stop（数据保留在卷 briefly_data）；清空数据才用 down -v
+# 配置读同目录的 .env（照 .env.example 填）；必须设置 BRIEFLY_API_KEY 和 BRIEFLY_ACCESS_TOKEN。
+# 这个文件只跑应用；开发时要本机 PostgreSQL 用 docker-compose.dev.yml。
+name: briefly
+
+services:
+  app:
+    image: ghcr.io/llllucario/briefly-ai:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # 以下几项以容器内的路径为准，覆盖 .env 里给本机开发写的值
+      BRIEFLY_HOST: 0.0.0.0
+      BRIEFLY_PORT: "8000"
+      BRIEFLY_EMBEDDING_DIR: /opt/briefly/models/bge-small-zh-v1.5
+      BRIEFLY_LIBREOFFICE: /usr/bin/soffice
+      BRIEFLY_JAVA: /usr/bin/java
+      BRIEFLY_TIKA_APP_JAR: /opt/briefly/tika/tika-app-3.3.3.jar
+      BRIEFLY_KNOWLEDGE_DIR: data/knowledge
+      BRIEFLY_TRACKING_DIR: data/tracking
+      BRIEFLY_DB_PATH: data/briefly.db
+      # 容器里服务绑定 0.0.0.0，没有访问令牌会拒绝启动
+      BRIEFLY_ACCESS_TOKEN: ${BRIEFLY_ACCESS_TOKEN:?在 .env 里设置 BRIEFLY_ACCESS_TOKEN（足够长的随机值）}
+    ports:
+      - "127.0.0.1:8000:8000"  # 只绑定本机；要给其他机器访问，改这里并把访问用的主机名加进 BRIEFLY_ALLOWED_HOSTS
+    volumes:
+      - briefly_data:/app/data
+
+volumes:
+  briefly_data:
+    name: briefly_data

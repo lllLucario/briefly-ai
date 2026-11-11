@@ -1,0 +1,8 @@
+# 构建只需要 pyproject.toml、uv.lock、src/ 和 docker/；其余一律不进构建上下文（尤其是密钥和本地资料）
+*
+!pyproject.toml
+!uv.lock
+!src
+!docker
+**/__pycache__
+**/*.egg-info

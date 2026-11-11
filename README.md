@@ -243,6 +243,21 @@ briefly db migrate-from-sqlite --source data/app.db --checkpoints data/briefly.d
 
 **回滚：** 把 `DATABASE_URL` 改回 SQLite 地址即可，源库没有被改过。迁移之后写进 PostgreSQL 的新数据不会回到 SQLite。
 
+## 用 Docker 运行（可选）
+
+不想在本机装 Python、LibreOffice 和 Java 时，可以直接运行打包好的镜像。镜像由 GitHub Actions 构建并通过冒烟检查后推送到 `ghcr.io/llllucario/briefly-ai`（只有 linux/amd64），本机不需要构建。镜像里已带 LibreOffice、Java＋Tika 3.3.3 和 BGE-small 中文模型，旧版 Office 文件和知识库入库开箱可用。
+
+```bash
+cp .env.example .env            # 填 BRIEFLY_API_KEY，并设置 BRIEFLY_ACCESS_TOKEN（容器里必须有）
+docker compose up -d            # 打开 http://127.0.0.1:8000，用令牌登录
+docker compose pull && docker compose up -d   # 更新到最新镜像
+```
+
+- 数据（SQLite 库、知识库索引、追踪快照）在卷 `briefly_data`，`docker compose stop` 不会丢，`down -v` 才会清空。
+- 端口只绑定本机。要给其他机器访问，改 [docker-compose.yml](docker-compose.yml) 的端口映射，并把访问用的主机名加进 `BRIEFLY_ALLOWED_HOSTS`；前面还应有 HTTPS。
+- 镜像同样支持 PostgreSQL：在 `.env` 设置容器能连到的 `DATABASE_URL` 即可。
+- 模型版本固定在 [Dockerfile](Dockerfile) 里，和开发环境用的是同一版本；换版本等于换模型，已有索引要重建。
+
 ## 测试
 
 默认回归使用假模型、模拟飞书响应及 SMTP 替身，不调用真实外部服务：
