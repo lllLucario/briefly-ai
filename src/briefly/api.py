@@ -64,7 +64,7 @@ USAGE_FIELDS = [  # 上下文用量里给网页看的字段，与 CLI /context �
 
 
 class MaterialIn(BaseModel):
-    title: str = ""
+    title: str = Field(default="", max_length=200)  # 超长时明确报错，不静默截断
     content: str
 
 
@@ -136,12 +136,13 @@ class SkillOut(BaseModel):
 
 class ChatIn(BaseModel):
     text: str
-    thread_id: str | None = None  # 不填则开始新会话
+    # 以下编号都存进有长度上限的列（PostgreSQL 超长会报错），先在接口挡住（问题登记表第 89 条）
+    thread_id: str | None = Field(default=None, max_length=64)  # 不填则开始新会话
     material_ids: list[int] = []
-    skill: str | None = None  # 显式指定能力（命令行等）；不填由意图漏斗与模型判断
-    kb_id: str | None = None  # 本轮查询的知识库；知识检索只在这一个库内进行
+    skill: str | None = Field(default=None, max_length=32)  # 显式指定能力（命令行等）；不填由意图漏斗与模型判断
+    kb_id: str | None = Field(default=None, max_length=32)  # 本轮查询的知识库；知识检索只在这一个库内进行
     skip_funnel: bool = False  # 用户认为系统理解错了：同一句话不经意图判断，直接交给助理
-    corrects: str | None = None  # skip_funnel 时被纠正的那条用户消息 ID（message_id），记入意图日志
+    corrects: str | None = Field(default=None, max_length=64)  # skip_funnel 时被纠正的那条用户消息 ID（message_id），记入意图日志
     fresh: bool = False  # 用户点了“修改要求后重试”又原样发送：这是在要新结果，不读模型缓存
 
 

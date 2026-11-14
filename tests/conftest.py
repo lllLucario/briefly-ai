@@ -72,6 +72,13 @@ def _isolated_feishu_user(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_session_db(tmp_path, monkeypatch):
+    """测试不得打开本机真实的会话记录库（data/briefly.db）：用默认智能体的用例（例如 /chat 校验失败前已经建好智能体）
+    会用 sqlite_checkpointer 打开 DB_PATH。每个测试用自己的临时文件。"""
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "briefly.db"))
+
+
+@pytest.fixture(autouse=True)
 def _no_local_embedding(monkeypatch):
     """单元测试不加载本机 .env 配置的真实 Embedding 模型：意图漏斗只用规则层，结果不随本机环境变化。"""
     monkeypatch.setattr(config, "EMBEDDING_DIR", "")
@@ -161,6 +168,17 @@ def _no_real_feishu_credentials(monkeypatch):
     """本机 .env 里的飞书凭证不进测试：否则定时提醒的用例会真的连飞书（CI 没有凭证，以前只在本机发生）。"""
     for name in ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_NOTIFY_USER", "FEISHU_FOLDER_TOKEN"):
         monkeypatch.setattr(config, name, "")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_mail_settings(monkeypatch):
+    """本机 .env 里的邮箱配置不进测试：否则“是否已配置邮箱”、默认收件人、发件人随机器不同（问题登记表第 90 条）。
+
+    要测已配置邮箱的情况，用例自己设置这些值，并注入 SMTP 替身。
+    """
+    for name in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "MAIL_FROM_NAME", "MAIL_DEFAULT_TO"):
+        monkeypatch.setattr(config, name, "")
+    monkeypatch.setattr(config, "SMTP_PORT", 465)
 
 
 @pytest.fixture(autouse=True)

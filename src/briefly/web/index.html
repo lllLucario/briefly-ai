@@ -375,7 +375,7 @@
       </label>
     </div>
     <form id="paste-form" class="add-pane stack hidden">
-      <input id="paste-title" placeholder="标题（可不填）">
+      <input id="paste-title" maxlength="200" placeholder="标题（可不填）">
       <textarea id="paste-content" rows="10" placeholder="粘贴文字内容"></textarea>
       <div class="row end"><button class="primary">保存为材料</button></div>
     </form>
@@ -418,7 +418,7 @@
   <dialog id="evidence-dialog">
     <h3 id="evidence-dialog-title"></h3>
     <form id="evidence-form" class="stack">
-      <input id="ev-title" placeholder="标题">
+      <input id="ev-title" maxlength="200" placeholder="标题">
       <textarea id="ev-desc" rows="4" placeholder="描述"></textarea>
       <select id="ev-category">
         <option value="done">已完成</option><option value="in_progress">进行中</option><option value="plan">计划</option>
@@ -471,8 +471,8 @@
       <small class="muted">需要 briefly-api 在运行；也可以用系统计划任务定时执行 briefly weekly run-due。</small>
       <h4>生成时默认填写</h4>
       <div class="row gap wrap">
-        <label>读者 <input id="set-audience" placeholder="如 直属上级、导师"></label>
-        <label>署名 <input id="set-author" placeholder="写在周报上的名字"></label>
+        <label>读者 <input id="set-audience" maxlength="100" placeholder="如 直属上级、导师"></label>
+        <label>署名 <input id="set-author" maxlength="100" placeholder="写在周报上的名字"></label>
       </div>
       <h4>你在文档里的名字</h4>
       <input id="set-owners" placeholder="Word 修订作者、飞书里的姓名，可多个，逗号分隔">
