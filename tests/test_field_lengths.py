@@ -8,9 +8,11 @@ from datetime import date
 import pytest
 from fastapi.testclient import TestClient
 
+from briefly.agent import Agent
 from briefly.api import create_app
 from briefly.materials import MaterialStore
 from db_util import file_engine
+from fakes import fake, text_msg
 
 
 @pytest.fixture
@@ -70,16 +72,14 @@ def test_pasted_material_title_over_limit_is_rejected(client):
 
 
 @pytest.mark.parametrize(("field", "limit"), [("thread_id", 64), ("corrects", 64), ("skill", 32), ("kb_id", 32)])
-def test_chat_identifiers_over_column_limit_are_rejected_before_the_model(client, field, limit):
-    # 这些编号由客户端给出，存进有长度上限的列；在接口挡住，不进模型，也不会在 PostgreSQL 上变成 500
-    try:
+def test_chat_identifiers_over_column_limit_are_rejected_before_the_model(field, limit):
+    # 这些编号由客户端给出，存进有长度上限的列；在接口挡住，不进模型，也不会在 PostgreSQL 上变成 500。
+    # 注入假模型的智能体：不依赖本机有没有配模型，也不打开会话记录库
+    model = fake(text_msg("不该被调用"))
+    engine = file_engine()
+    with TestClient(create_app(MaterialStore(engine), agent_factory=lambda store: Agent(model, store=store))) as client:
         _rejected(client.post("/chat", json={"text": "你好", field: "x" * (limit + 1)}), field, limit)
-    finally:
-        # 校验失败前 FastAPI 已经解析了依赖、建好智能体；它的会话记录连接要自己关，否则留到后面的用例里才被回收
-        agent = client.app.state.agent
-        if agent is not None:
-            agent.graph.checkpointer.conn.close()
-
+    assert model.calls == []  # 模型没有被调用
 
 def test_local_mail_settings_do_not_leak_into_tests(client):
     # 问题登记表第 90 条：本机 .env 配了邮箱也不影响测试；要“已配置”的用例自己设置并注入替身
