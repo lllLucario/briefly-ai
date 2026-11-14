@@ -103,7 +103,7 @@ def register(app: FastAPI) -> None:
     @app.get("/todos", tags=[docs.TODOS], summary="待办列表（父子都在，按 parent_id 组织成两级）")
     def list_todos(archived: bool = False):
         s = svc()
-        rows = s.list(include_archived=archived)
+        rows = s.list_todos(include_archived=archived)
         counts = s.link_counts()
         latest = s.latest_progress()
         kids: dict[int, list[Todo]] = {}

@@ -159,7 +159,7 @@ def test_two_weeks_record_their_own_activity(ctx):
     assert "完成方案设计" in last and "完成接口开发" not in last
     assert "完成接口开发" in this and "完成方案设计" not in this
     assert [r.inputs["todo_refs"][0]["todo_id"] for r in reports] == [t.id, t.id]
-    assert len(todos.list()) == 1  # 不复制待办
+    assert len(todos.list_todos()) == 1  # 不复制待办
 
 
 def test_checklist_edits_do_not_touch_the_todo_until_sync_is_confirmed(ctx):
