@@ -7,15 +7,41 @@ from .date_check import _pairs, review_dates
 from .weekly.engine import unverified_numbers
 
 _CITED = re.compile(r"依据\s*\d+(?:\s*[-–—~～至到、]\s*\d+)*")
+# 中文日期整体：2026年11月14日、11月14日（号也算）
+_NOW_CHINESE_DATE = re.compile(r"(?<![\d.])(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]")
+
+
+def _now_forms(now) -> set[str]:
+    """当前时间的完整写法，两位数补零和不补零都算。"""
+    forms = set()
+    for month in {f"{now.month:02}", str(now.month)}:
+        for day in {f"{now.day:02}", str(now.day)}:
+            for sep in "-/":
+                forms.add(f"{month}{sep}{day}")
+                forms.add(f"{now.year}{sep}{month}{sep}{day}")
+    for hour in {f"{now.hour:02}", str(now.hour)}:
+        forms.add(f"{hour}:{now.minute:02}")
+        forms.add(f"{hour}:{now.minute:02}:{now.second:02}")
+    return forms
+
+
+def _strip_current_month(m, now, now_forms: set[str]) -> str:
+    """回答里的中文日期：就是今天就整个放行；年、月是当前年月时只留下日去核对，月份不单独再报。"""
+    if (f"{m[1]}-" if m[1] else "") + f"{m[2]}-{m[3]}" in now_forms:
+        return " "
+    if (m[1] is None or int(m[1]) == now.year) and int(m[2]) == now.month:
+        return f" {m[3]}日"
+    return m[0]
 
 
 def number_issues(answer: str, sources: list[str], now=None) -> list[str]:
     evidence = "\n".join(sources)
-    if now is not None:
-        evidence += f"\n{now:%Y-%m-%d} {now:%Y年%m月%d日} {now:%m-%d} {now:%H:%M} {now:%H:%M:%S}"
     # 数字千分位与单位换写是同一数值；不因 1.2 万改写为 12000 而提醒。
     clean = lambda text: re.sub(r"(?<=\d),(?=\d{3}(?:\D|$))", "", text)
     evidence, answer = clean(evidence), clean(answer)
+    # 当前时间只放行完整的时间和日期写法（19:38、2026-11-14、11月14日），不把拆开的 38、14、11 当依据：
+    # 否则 19:38 时编造的“年假 38 天”、14 号时的“14 天”都不会提醒（问题登记表第 108 条）
+    now_forms = _now_forms(now) if now is not None else set()
     # 模型有时把执行顺序写在同一行；这些仍是序号，不是新增业务数字。
     answer = re.sub(r"(?<![\d.])\d+[.、)）]\s+", "", answer)
     # 依据编号（〔依据3〕、依据1–37、依据1-3、5）是出处标注，不是业务数字；正文里的数字照常核对
@@ -48,10 +74,12 @@ def number_issues(answer: str, sources: list[str], now=None) -> list[str]:
             n = int("".join(str(digits[ch]) for ch in word))
         values.add(Decimal(n) * {"": 1, "千": 1000, "万": 10000, "亿": 100000000}[m[2]])
     issues = []
+    if now is not None:
+        answer = _NOW_CHINESE_DATE.sub(lambda m: _strip_current_month(m, now, now_forms), answer)
     compact = re.sub(r"\s+", "", evidence)
     # 先提取再按完整数值比较，避免把 5 当成 25 或 12.5 中已有的数字。
     for number in unverified_numbers(answer, ""):
-        if number in known:
+        if number in known or number in now_forms:
             continue
         # 区间的一端（原文 9:30-10:00，回答换了连接号拆成 9:30 和 10:00）仍是原文数字
         if not re.fullmatch(r"\d+(?:\.\d+)?", number) and re.search(r"(?<![\d.:])" + re.escape(number) + r"(?![\d.:])", compact):

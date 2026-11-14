@@ -127,6 +127,20 @@ def test_number_formats_known_dates_and_ordinals_do_not_warn():
     assert number_issues("定额补贴20/50/90元", ["分为每月20元、50元、80元三种"], now) == ["20/50/90"]
 
 
+
+def test_current_time_only_vouches_for_whole_time_and_date_forms():
+    # 问题登记表第 108 条：当前时间拆开的分钟、日、月不能替编造的数字作证
+    now = datetime(2026, 11, 4, 9, 5, 8, tzinfo=timezone.utc)
+    for answer, expected in [("年假5天", ["5"]), ("年假4天", ["4"]), ("共11人", ["11"]), ("年假 05 天", ["05"]),
+                             ("下周三是11月11日", ["11"]), ("截止2025年11月4日", ["2025", "11", "4"])]:
+        assert number_issues(answer, ["无关原文"], now) == expected, answer
+    # 完整的当前时间和日期照常放行，补零与否、各种分隔符都算
+    for answer in ("现在9:05", "现在是09:05:08", "今天2026-11-04", "今天11-4", "报告于 2026/11/4 提交",
+                   "今天是2026年11月4日", "今天是11月4号", "今天是11月04日"):
+        assert number_issues(answer, ["无关原文"], now) == [], answer
+    # 原文里有的数字不受影响
+    assert number_issues("年假5天，11人参加", ["年假5天，共11人参加"], now) == []
+
 def test_line_start_section_numbers_are_known():
     # 多级条款编号写在行首，上一行以句号结尾；去掉空白后句号会紧贴编号
     source = "c) review of retention records.\n6.4.2 档案保管\n6.4.2.1\nPaper files shall be kept dry.\n9.1 生效日期\n"

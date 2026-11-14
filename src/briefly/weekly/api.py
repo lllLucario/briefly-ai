@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 from fastapi import BackgroundTasks, FastAPI
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..errors import UserInputError
 from .. import api_docs as docs
@@ -43,14 +43,14 @@ class ReviewIn(BaseModel):
 
 
 class ItemIn(BaseModel):
-    title: str | None = None
+    title: str | None = Field(default=None, max_length=200)  # 超长时明确报错，不静默截断（问题登记表第 89 条）
     description: str | None = None
     category: str | None = None
 
 
 class MergeIn(BaseModel):
     ids: list[int]
-    title: str | None = None
+    title: str | None = Field(default=None, max_length=200)
     description: str | None = None
 
 
@@ -59,8 +59,9 @@ class SplitIn(BaseModel):
 
 
 class GenerateIn(BaseModel):
-    audience: str | None = None  # 不填用周报设置里的默认读者
-    name: str | None = None  # 不填用周报设置里的署名
+    # 和周报设置同样的上限：署名之后会写进飞书文档标题、邮件主题，这两列有长度上限
+    audience: str | None = Field(default=None, max_length=100)  # 不填用周报设置里的默认读者
+    name: str | None = Field(default=None, max_length=100)  # 不填用周报设置里的署名
 
 
 class ContentIn(BaseModel):
@@ -76,8 +77,8 @@ class SyncIn(BaseModel):
 
 
 class SettingsIn(BaseModel):
-    audience: str | None = None
-    author: str | None = None
+    audience: str | None = Field(default=None, max_length=100)
+    author: str | None = Field(default=None, max_length=100)
     owner_names: list[str] | None = None
 
 

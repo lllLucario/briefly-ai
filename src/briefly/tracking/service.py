@@ -143,7 +143,7 @@ class TrackingService:
                 if kind == FEISHU_FOLDER:
                     with self._session() as s:
                         info = s.get(FeishuFolder, source.id) or FeishuFolder(source_id=source.id)
-                        info.name = name or info.name
+                        info.name = (name or info.name)[:200]  # 列上限 200；名称只用于显示
                         s.merge(info)
                         s.commit()
                 result.added.append(source)
