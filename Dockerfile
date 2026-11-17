@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Briefly AI 服务镜像：后端 + 网页，自带旧格式转换（LibreOffice、Java + Tika）和本地 Embedding 模型。
-# 由 .github/workflows/image.yml 在 GitHub Actions 上构建并推送到 GHCR，本机不需要构建。
-# 只支持 linux/amd64（uv.lock 只锁了这个平台）。
+# 由 .github/workflows/image.yml 在 GitHub Actions 上构建并推送到 GHCR（只构建 linux/amd64），运行正式镜像时本机不需要构建。
+# uv.lock 锁的是 Linux／Windows 上的 Python 3.14，不限 CPU 架构：本地开发用 docker-compose.local.yml 在本机架构（如 Apple 芯片的 arm64）构建。
 
 FROM ghcr.io/astral-sh/uv:0.13.7 AS uv
 
