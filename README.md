@@ -258,6 +258,24 @@ docker compose pull && docker compose up -d   # 更新到最新镜像
 - 镜像同样支持 PostgreSQL：在 `.env` 设置容器能连到的 `DATABASE_URL` 即可。
 - 模型版本固定在 [Dockerfile](Dockerfile) 里，和开发环境用的是同一版本；换版本等于换模型，已有索引要重建。
 
+### 本地开发环境（本机源码＋PostgreSQL）
+
+[docker-compose.local.yml](docker-compose.local.yml) 用本机源码构建镜像（Apple 芯片上是 arm64，原生运行），连 [docker-compose.dev.yml](docker-compose.dev.yml) 里的 PostgreSQL，数据目录直接挂本机 `data/`。它和上面的正式配置是两个独立的 Compose 项目，数据互不影响，但都占 8000 端口，不要同时运行。
+
+`.env` 里需要 `BRIEFLY_API_KEY`、`BRIEFLY_ACCESS_TOKEN` 和 `BRIEFLY_PG_PASSWORD`。第一次使用时库是空的，先把 SQLite 数据迁进去，再启动应用（应用一启动就会建表，迁移命令要求目标库为空）：
+
+```bash
+docker compose -f docker-compose.local.yml up -d postgres
+docker compose -f docker-compose.local.yml run --rm --no-deps app briefly db migrate-from-sqlite
+docker compose -f docker-compose.local.yml up -d     # 每次都按本机源码构建，改了代码再跑一次
+docker compose -f docker-compose.local.yml logs -f app
+docker compose -f docker-compose.local.yml stop
+```
+
+- 迁移命令默认读 `data/app.db`、`data/briefly.db`，写入 `DATABASE_URL`，并用镜像里的模型重建索引。没有旧数据时跳过这一步，直接 `up -d`。
+- 业务数据在卷 `briefly_dev_pgdata`；知识库原件、追踪快照、飞书令牌等文件仍在本机 `data/`。迁移后 `data/` 里的 SQLite 文件不再使用，可作为备份保留。
+- 本机脚本连同一个库用 `127.0.0.1:55432`（见 [配置示例](.env.example)）。
+
 ## 测试
 
 默认回归使用假模型、模拟飞书响应及 SMTP 替身，不调用真实外部服务：

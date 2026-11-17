@@ -1,0 +1,33 @@
+# 本地开发环境：用本机源码构建应用镜像，连本地 PostgreSQL（pgvector），数据目录直接挂本机 data/。
+# 和 docker-compose.yml（正式运行，拉 GHCR 镜像、用命名卷 briefly_data）是两个独立项目，互不影响，但都占 8000 端口，不要同时运行。
+#
+# 启动：docker compose -f docker-compose.local.yml up -d   （每次都按本机源码构建，没改动时走缓存；改了代码再跑一次即可）
+# 首次使用、库还是空的时候，先启动 postgres 并把 SQLite 数据迁进来（见 README“本地开发环境”）。
+# 停止：docker compose -f docker-compose.local.yml stop
+# 日志：docker compose -f docker-compose.local.yml logs -f app
+# 清空 PostgreSQL 数据才用 down -v，这会删除卷 briefly_dev_pgdata。
+#
+# 需要 .env 里有 BRIEFLY_API_KEY、BRIEFLY_ACCESS_TOKEN、BRIEFLY_PG_PASSWORD。
+# 在 Mac（Apple 芯片）上构建出来的是 arm64 镜像，原生运行。
+name: briefly-local
+
+include:
+  - docker-compose.dev.yml  # postgres 服务和卷 briefly_dev_pgdata 沿用这里的定义
+
+services:
+  app:
+    extends:
+      file: docker-compose.yml  # 环境变量、端口、令牌要求和正式配置保持一致
+      service: app
+    build: .
+    image: briefly-ai:local
+    pull_policy: build
+    restart: "no"
+    environment:
+      # 容器之间用服务名 postgres 访问；本机脚本连 127.0.0.1:55432（见 .env.example）
+      DATABASE_URL: postgresql://briefly:${BRIEFLY_PG_PASSWORD:?在 .env 里设置 BRIEFLY_PG_PASSWORD}@postgres:5432/briefly
+    volumes:
+      - ./data:/app/data  # 绑定挂载：知识库原件、追踪快照、飞书令牌等文件直接放在本机 data/
+    depends_on:
+      postgres:
+        condition: service_healthy
