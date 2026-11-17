@@ -142,7 +142,7 @@ def test_archive_never_cascades_silently(todos):
     assert todos.get(a.id).parent_id is None and todos.get(a.id).archived_at is None
     assert todos.store.get(material.id)  # 材料不受影响
     assert [m.material_id for m in todos.materials(parent.id)] == [material.id]  # 关联也保留
-    assert parent.id not in [t.id for t in todos.list()] and parent.id in [t.id for t in todos.list(include_archived=True)]
+    assert parent.id not in [t.id for t in todos.list_todos()] and parent.id in [t.id for t in todos.list_todos(include_archived=True)]
     with pytest.raises(ValueError, match="已归档"):
         todos.add_note(parent.id, "x")
     todos.restore(parent.id)
@@ -154,7 +154,7 @@ def test_archive_never_cascades_silently(todos):
     assert todos.get(c.id).archived_at is not None
     with pytest.raises(ValueError, match="先恢复父待办"):
         todos.restore(c.id)
-    assert b.id in [t.id for t in todos.list()]
+    assert b.id in [t.id for t in todos.list_todos()]
 
 
 def test_link_material_is_idempotent_and_shared_across_todos(todos):

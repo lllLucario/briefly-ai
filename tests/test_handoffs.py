@@ -271,7 +271,7 @@ def test_business_tools_are_read_only_and_page_real_data(env):
     assert "真实保存的任务" in tools["read_todos"].invoke({})
     assert "第2/2页" in tools["read_todos"].invoke({"todo_id":t.id,"page":2})
     assert "尚未保存正式周报" in tools["read_weekly_reports"].invoke({})
-    assert app.state.weekly.list_reports()==[] and len(svc.list())==1
+    assert app.state.weekly.list_reports()==[] and len(svc.list_todos())==1
 
 
 def test_feishu_tool_artifact_is_an_original_source_without_explicit_selection(env):

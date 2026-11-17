@@ -5,6 +5,8 @@
 - 材料只存一份（材料库）：待办里上传的文件走材料库的上传流程，按内容去重；解除关联不删除材料。
 - 活动只追加，按时间窗口查询，供周报准备使用；文件内容的版本和变化仍在文件追踪模块，这里只引用。
 """
+from __future__ import annotations
+
 from dataclasses import dataclass
 from contextlib import nullcontext
 from datetime import date, datetime, timedelta
@@ -164,7 +166,7 @@ class TodoService:
             raise TodoNotFound(f"待办 {todo_id} 不存在")
         return todo
 
-    def list(self, include_archived: bool = False) -> list[Todo]:
+    def list_todos(self, include_archived: bool = False) -> list[Todo]:
         query = select(Todo).order_by(Todo.id)
         if not include_archived:
             query = query.where(Todo.archived_at.is_(None))
